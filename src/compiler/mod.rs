@@ -1,4 +1,6 @@
-use std::collections::VecDeque;
+use std::{collections::VecDeque, ops::Range};
+
+use ariadne::{Report, Source};
 
 use crate::parser::{
     class::{Class, ClassView},
@@ -27,10 +29,21 @@ impl ClassLoader {
         }
     }
 
-    pub fn load_string(&mut self, class: &str) {
-        let mut vdc = VecDeque::new();
-        parse(&mut vdc, &mut class.chars().collect());
-        self.load(vdc.parse());
+    pub fn load_string(&mut self, class: &str, filename: &str) {
+        if let Err(e) = try {
+            let mut vdc = VecDeque::new();
+            parse(
+                &mut vdc,
+                &mut class.chars().collect(),
+                class.chars().count(),
+                filename,
+            )?;
+            self.load(vdc.parse()?);
+        } {
+            let e: Report<(String, Range<usize>)> = e;
+            e.eprint((filename.to_owned(), Source::from(class)))
+                .unwrap();
+        };
     }
 
     pub fn load(&mut self, class: Class) {

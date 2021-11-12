@@ -1,4 +1,8 @@
-use std::collections::VecDeque;
+use std::{collections::VecDeque, ops::Range};
+
+use ariadne::{Color, ColorGenerator, Fmt, Label, Report, ReportKind};
+
+use crate::errors::Span;
 
 use self::expression::BooleanOperator;
 
@@ -11,29 +15,29 @@ pub mod token_utils;
 pub mod ty;
 
 pub trait TokenExtracter<T> {
-    fn extract(&mut self) -> T;
+    fn extract(&mut self) -> Result<T, Report<(String, Range<usize>)>>;
 }
 
 pub trait TokenParser<T> {
-    fn parse(self) -> T;
+    fn parse(self) -> Result<T, Report<(String, Range<usize>)>>;
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
 pub enum Token {
-    Comma,
-    Dot,
-    Char(String),
-    DoubleDot,
-    Equals,
-    At,
-    SemiColon,
-    Literal(String),
-    Keyword(Keyword),
-    Number(i32),
-    TypeName(String),
-    Block(ClosableType, VecDeque<Token>),
-    Comment(String),
-    BooleanOperator(BooleanOperator),
+    Comma(Span),
+    Dot(Span),
+    Char(Span, String),
+    DoubleDot(Span),
+    Equals(Span),
+    At(Span),
+    SemiColon(Span),
+    Literal(Span, String),
+    Keyword(Span, Keyword),
+    Number(Span, i32),
+    TypeName(Span, String),
+    Block(Span, ClosableType, VecDeque<Token>),
+    Comment(Span, String),
+    BooleanOperator(Span, BooleanOperator),
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
@@ -45,28 +49,34 @@ pub enum ClosableType {
 
 fn validate(current_token: Token) -> Token {
     match current_token {
-        Token::Literal(e) => match e.as_str() {
-            "if" => Token::Keyword(Keyword::If),
-            "else" => Token::Keyword(Keyword::Else),
-            "return" => Token::Keyword(Keyword::Return),
-            "class" => Token::Keyword(Keyword::Class),
-            "extends" => Token::Keyword(Keyword::Extends),
-            "as" => Token::Keyword(Keyword::As),
-            "loop" => Token::Keyword(Keyword::Loop),
-            "in" => Token::Keyword(Keyword::In),
-            "for" => Token::Keyword(Keyword::For),
-            "while" => Token::Keyword(Keyword::While),
-            "continue" => Token::Keyword(Keyword::Continue),
-            "break" => Token::Keyword(Keyword::Break),
-            _ => Token::Literal(e),
+        Token::Literal(span, e) => match e.as_str() {
+            "if" => Token::Keyword(span, Keyword::If),
+            "else" => Token::Keyword(span, Keyword::Else),
+            "return" => Token::Keyword(span, Keyword::Return),
+            "class" => Token::Keyword(span, Keyword::Class),
+            "extends" => Token::Keyword(span, Keyword::Extends),
+            "as" => Token::Keyword(span, Keyword::As),
+            "loop" => Token::Keyword(span, Keyword::Loop),
+            "in" => Token::Keyword(span, Keyword::In),
+            "for" => Token::Keyword(span, Keyword::For),
+            "while" => Token::Keyword(span, Keyword::While),
+            "continue" => Token::Keyword(span, Keyword::Continue),
+            "break" => Token::Keyword(span, Keyword::Break),
+            _ => Token::Literal(span, e),
         },
         e => e,
     }
 }
 
-pub fn parse(token_map: &mut VecDeque<Token>, char: &mut VecDeque<char>) -> Option<ClosableType> {
+pub fn parse(
+    token_map: &mut VecDeque<Token>,
+    char: &mut VecDeque<char>,
+    initial_size: usize,
+    file: &str,
+) -> Result<Option<ClosableType>, Report<(String, std::ops::Range<usize>)>> {
     let mut current_token = None;
     while let Some(c) = char.pop_front() {
+        let current = initial_size - char.len() - 1;
         match c {
             '/' => {
                 if char.front() == Some(&'*') {
@@ -83,7 +93,10 @@ pub fn parse(token_map: &mut VecDeque<Token>, char: &mut VecDeque<char>) -> Opti
                     if let Some(e) = char.pop_front() {
                         comment.push(e);
                     }
-                    token_map.push_back(Token::Comment(comment));
+                    token_map.push_back(Token::Comment(
+                        Span::new(file.to_owned(), current, initial_size - char.len()),
+                        comment,
+                    ));
                 } else if char.front() == Some(&'/') {
                     if let Some(e) = current_token.take() {
                         token_map.push_back(validate(e));
@@ -95,7 +108,10 @@ pub fn parse(token_map: &mut VecDeque<Token>, char: &mut VecDeque<char>) -> Opti
                         }
                         comment.push(c);
                     }
-                    token_map.push_back(Token::Comment(comment));
+                    token_map.push_back(Token::Comment(
+                        Span::new(file.to_owned(), current, initial_size - char.len()),
+                        comment,
+                    ));
                 }
             }
             '\'' => {
@@ -109,27 +125,34 @@ pub fn parse(token_map: &mut VecDeque<Token>, char: &mut VecDeque<char>) -> Opti
                     }
                     literal.push(c);
                 }
-                token_map.push_back(Token::Char(literal));
+                token_map.push_back(Token::Char(
+                    Span::new(file.to_owned(), current, initial_size - char.len()),
+                    literal,
+                ));
             }
             '{' | '(' | '<' => {
                 if let Some(e) = current_token.take() {
                     token_map.push_back(validate(e));
                 }
                 let mut vec = VecDeque::new();
-                let closable_type = parse(&mut vec, char).unwrap();
-                token_map.push_back(Token::Block(closable_type, vec));
+                let closable_type = parse(&mut vec, char, initial_size, file)?.unwrap();
+                token_map.push_back(Token::Block(
+                    Span::new(file.to_owned(), current, initial_size - char.len()),
+                    closable_type,
+                    vec,
+                ));
             }
             '}' => {
                 if let Some(e) = current_token.take() {
                     token_map.push_back(validate(e));
                 }
-                return Some(ClosableType::Bracket);
+                return Ok(Some(ClosableType::Bracket));
             }
             ')' => {
                 if let Some(e) = current_token.take() {
                     token_map.push_back(validate(e));
                 }
-                return Some(ClosableType::Parenthesis);
+                return Ok(Some(ClosableType::Parenthesis));
             }
             '&' => {
                 if char.front() == Some(&'&') {
@@ -137,7 +160,10 @@ pub fn parse(token_map: &mut VecDeque<Token>, char: &mut VecDeque<char>) -> Opti
                         token_map.push_back(validate(e));
                     }
                     char.remove(0);
-                    token_map.push_back(Token::BooleanOperator(BooleanOperator::And));
+                    token_map.push_back(Token::BooleanOperator(
+                        Span::new(file.to_owned(), current, initial_size - char.len()),
+                        BooleanOperator::And,
+                    ));
                     continue;
                 }
             }
@@ -147,7 +173,10 @@ pub fn parse(token_map: &mut VecDeque<Token>, char: &mut VecDeque<char>) -> Opti
                         token_map.push_back(validate(e));
                     }
                     char.remove(0);
-                    token_map.push_back(Token::BooleanOperator(BooleanOperator::Or));
+                    token_map.push_back(Token::BooleanOperator(
+                        Span::new(file.to_owned(), current, initial_size - char.len()),
+                        BooleanOperator::Or,
+                    ));
                     continue;
                 }
             }
@@ -155,7 +184,7 @@ pub fn parse(token_map: &mut VecDeque<Token>, char: &mut VecDeque<char>) -> Opti
                 if let Some(e) = current_token.take() {
                     token_map.push_back(validate(e));
                 }
-                return Some(ClosableType::Type);
+                return Ok(Some(ClosableType::Type));
             }
             '.' | ':' | ',' | ' ' | ';' | '=' | '\n' | '\r' | '@' => {
                 if let Some(e) = current_token.take() {
@@ -167,51 +196,113 @@ pub fn parse(token_map: &mut VecDeque<Token>, char: &mut VecDeque<char>) -> Opti
         match current_token.take() {
             None => match c {
                 '.' => {
-                    token_map.push_back(Token::Dot);
+                    token_map.push_back(Token::Dot(Span::new(
+                        file.to_owned(),
+                        current,
+                        initial_size - char.len(),
+                    )));
                 }
                 ':' => {
-                    token_map.push_back(Token::DoubleDot);
+                    token_map.push_back(Token::DoubleDot(Span::new(
+                        file.to_owned(),
+                        current,
+                        initial_size - char.len(),
+                    )));
                 }
                 ',' => {
-                    token_map.push_back(Token::Comma);
+                    token_map.push_back(Token::Comma(Span::new(
+                        file.to_owned(),
+                        current,
+                        initial_size - char.len(),
+                    )));
                 }
                 ';' => {
-                    token_map.push_back(Token::SemiColon);
+                    token_map.push_back(Token::SemiColon(Span::new(
+                        file.to_owned(),
+                        current,
+                        initial_size - char.len(),
+                    )));
                 }
                 '=' => {
-                    token_map.push_back(Token::Equals);
+                    token_map.push_back(Token::Equals(Span::new(
+                        file.to_owned(),
+                        current,
+                        initial_size - char.len(),
+                    )));
                 }
                 '@' => {
-                    token_map.push_back(Token::At);
+                    token_map.push_back(Token::At(Span::new(
+                        file.to_owned(),
+                        current,
+                        initial_size - char.len(),
+                    )));
                 }
                 'A'..='Z' => {
-                    current_token = Some(Token::TypeName(c.to_string()));
+                    current_token = Some(Token::TypeName(
+                        Span::new(file.to_owned(), current, initial_size - char.len()),
+                        c.to_string(),
+                    ));
                 }
                 'a'..='z' => {
-                    current_token = Some(Token::Literal(c.to_string()));
+                    current_token = Some(Token::Literal(
+                        Span::new(file.to_owned(), current, initial_size - char.len()),
+                        c.to_string(),
+                    ));
                 }
                 '0'..='9' => {
-                    current_token = Some(Token::Number(c.to_digit(10).unwrap() as i32));
+                    current_token = Some(Token::Number(
+                        Span::new(file.to_owned(), current, initial_size - char.len()),
+                        c.to_digit(10).unwrap() as i32,
+                    ));
                 }
                 _ => (),
             },
-            Some(Token::Literal(mut a)) if matches!(c, 'A'..='Z' | 'a'..='z' | '0'..='9' | '_') => {
+            Some(Token::Literal(span, mut a)) if matches!(c, 'A'..='Z' | 'a'..='z' | '0'..='9' | '_') =>
+            {
                 a.push(c);
-                current_token = Some(Token::Literal(a));
+                current_token = Some(Token::Literal(
+                    Span::new(file.to_owned(), current, initial_size - char.len()).merge(&span),
+                    a,
+                ));
             }
-            Some(Token::TypeName(mut a)) if matches!(c, 'A'..='Z' | 'a'..='z' | '0'..='9' | '_') => {
+            Some(Token::TypeName(span, mut a)) if matches!(c, 'A'..='Z' | 'a'..='z' | '0'..='9' | '_') =>
+            {
                 a.push(c);
-                current_token = Some(Token::TypeName(a));
+                current_token = Some(Token::TypeName(
+                    Span::new(file.to_owned(), current, initial_size - char.len()).merge(&span),
+                    a,
+                ));
             }
-            Some(Token::Number(a)) if matches!(c, '0'..='9') => {
-                current_token = Some(Token::Number(a * 10 + c.to_digit(10).unwrap() as i32));
+            Some(Token::Number(span, a)) if matches!(c, '0'..='9') => {
+                current_token = Some(Token::Number(
+                    Span::new(file.to_owned(), current, initial_size - char.len()).merge(&span),
+                    a * 10 + c.to_digit(10).unwrap() as i32,
+                ));
             }
             Some(e) => {
-                panic!("Invalid situation {:?} {:?}", e, c)
+                let mut colors = ColorGenerator::new();
+                let a = colors.next();
+                let out = Color::Fixed(81);
+                let span = e.span();
+                return Err(Report::build(ReportKind::Error, span.file.to_owned(), 0)
+                    .with_code(1)
+                    .with_message(format!("Invalid token"))
+                    .with_label(
+                        Label::new((span.file.to_owned(), 32..33))
+                            .with_message(format!("This is a {} token", e.name().fg(a)))
+                            .with_color(a),
+                    )
+                    .with_note(format!(
+                        "Expected {}, {} or {}",
+                        "Literal".fg(out),
+                        "TypeName".fg(out),
+                        "Number".fg(out)
+                    ))
+                    .finish());
             }
         }
     }
-    None
+    Ok(None)
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
@@ -228,4 +319,42 @@ pub enum Keyword {
     While,
     For,
     In,
+}
+impl Token {
+    pub fn span(&self) -> &Span {
+        let (Self::At(span, ..)
+        | Self::Block(span, ..)
+        | Self::BooleanOperator(span, ..)
+        | Self::Char(span, ..)
+        | Self::Comma(span, ..)
+        | Self::Comment(span, ..)
+        | Self::Dot(span, ..)
+        | Self::DoubleDot(span, ..)
+        | Self::Equals(span, ..)
+        | Self::Keyword(span, ..)
+        | Self::Literal(span, ..)
+        | Self::Number(span, ..)
+        | Self::SemiColon(span, ..)
+        | Self::TypeName(span, ..)) = self;
+        span
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            Token::Comma(_) => "Comma",
+            Token::Dot(_) => "Dot",
+            Token::Char(_, _) => "Char",
+            Token::DoubleDot(_) => "DoubleDot",
+            Token::Equals(_) => "Equals",
+            Token::At(_) => "At",
+            Token::SemiColon(_) => "SemiColon",
+            Token::Literal(_, _) => "Literal",
+            Token::Keyword(_, _) => "Keyword",
+            Token::Number(_, _) => "Number",
+            Token::TypeName(_, _) => "TypeName",
+            Token::Block(_, _, _) => "Block",
+            Token::Comment(_, _) => "Comment",
+            Token::BooleanOperator(_, _) => "BooleanOperator",
+        }
+    }
 }

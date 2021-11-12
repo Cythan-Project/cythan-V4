@@ -1,4 +1,5 @@
 #![feature(box_syntax)]
+#![feature(try_blocks)]
 
 use std::rc::Rc;
 
@@ -22,6 +23,7 @@ use crate::{
 };
 
 mod compiler;
+mod errors;
 mod mir_utils;
 mod parser;
 
@@ -314,7 +316,17 @@ fn main() {
         superclass: None,
     });
     for file in std::fs::read_dir("std").unwrap() {
-        cl.load_string(&std::fs::read_to_string(file.as_ref().unwrap().path()).unwrap());
+        cl.load_string(
+            &std::fs::read_to_string(file.as_ref().unwrap().path()).unwrap(),
+            &file
+                .as_ref()
+                .unwrap()
+                .path()
+                .as_os_str()
+                .to_str()
+                .unwrap()
+                .to_owned(),
+        );
     }
     cl.inject_method(
         "Val",

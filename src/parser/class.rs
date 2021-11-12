@@ -1,5 +1,9 @@
-use std::collections::{HashMap, VecDeque};
+use std::{
+    collections::{HashMap, VecDeque},
+    ops::Range,
+};
 
+use ariadne::Report;
 use either::Either;
 
 use crate::{
@@ -219,27 +223,27 @@ impl TemplateFixer {
 }
 
 impl TokenParser<Class> for VecDeque<Token> {
-    fn parse(mut self) -> Class {
-        let annotations = self.extract();
-        if !matches!(self.get_token(), Some(Token::Keyword(Keyword::Class))) {
+    fn parse(mut self) -> Result<Class, Report<(String, Range<usize>)>> {
+        let annotations = self.extract()?;
+        if !matches!(self.get_token(), Some(Token::Keyword(_, Keyword::Class))) {
             panic!("Expected keyword class");
         }
-        let name = if let Some(Token::TypeName(name)) = self.get_token() {
+        let name = if let Some(Token::TypeName(_, name)) = self.get_token() {
             name
         } else {
             panic!("Expected class name");
         };
         let template = match self.get_token() {
-            Some(Token::Block(ClosableType::Type, inside)) => Some(inside.parse()),
+            Some(Token::Block(_, ClosableType::Type, inside)) => Some(inside.parse()?),
             Some(e) => {
                 self.push_front(e);
                 None
             }
             None => None,
         };
-        let superclass = if matches!(self.front(), Some(Token::Keyword(Keyword::Extends))) {
+        let superclass = if matches!(self.front(), Some(Token::Keyword(_, Keyword::Extends))) {
             self.get_token();
-            Some(self.extract())
+            Some(self.extract()?)
         } else {
             None
         };
@@ -251,24 +255,24 @@ impl TokenParser<Class> for VecDeque<Token> {
             superclass,
             template,
         };
-        if let Some(Token::Block(ClosableType::Bracket, inside)) = self.get_token() {
+        if let Some(Token::Block(_, ClosableType::Bracket, inside)) = self.get_token() {
             split_complex(inside, |t| {
-                if t == &Token::SemiColon {
+                if matches!(t, &Token::SemiColon(_)) {
                     SplitAction::SplitConsume
-                } else if matches!(t, Token::Block(ClosableType::Bracket, _)) {
+                } else if matches!(t, Token::Block(_, ClosableType::Bracket, _)) {
                     SplitAction::Split
                 } else {
                     SplitAction::None
                 }
             })
             .into_iter()
-            .for_each(|mut x| {
-                if matches!(x.back(), Some(Token::Block(ClosableType::Bracket, _))) {
-                    class.methods.push(x.parse());
+            .map(|mut x| {
+                if matches!(x.back(), Some(Token::Block(_, ClosableType::Bracket, _))) {
+                    class.methods.push(x.parse()?);
                 } else {
-                    let annotations: Vec<Annotation> = self.extract();
-                    let ty: Type = x.extract();
-                    let name = if let Some(Token::Literal(name)) = x.get_token() {
+                    let annotations: Vec<Annotation> = self.extract()?;
+                    let ty: Type = x.extract()?;
+                    let name = if let Some(Token::Literal(_, name)) = x.get_token() {
                         name
                     } else {
                         panic!("Expected field name");
@@ -279,8 +283,10 @@ impl TokenParser<Class> for VecDeque<Token> {
                         ty,
                     });
                 }
-            });
-            class
+                Ok(())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+            Ok(class)
         } else {
             panic!("Expected braces after class name");
         }

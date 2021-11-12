@@ -1,9 +1,11 @@
 use std::{
     collections::{HashMap, VecDeque},
     fmt::Debug,
+    ops::Range,
     rc::Rc,
 };
 
+use ariadne::Report;
 use either::Either;
 
 use crate::{
@@ -14,8 +16,10 @@ use crate::{
     },
     mir_utils::block_inliner::{need_block, remove_skips},
     parser::{
-        expression::TokenProcessor, token_utils::split_simple, ty::Type, ClosableType, Token,
-        TokenExtracter, TokenParser,
+        expression::TokenProcessor,
+        token_utils::{split_complex, SplitAction},
+        ty::Type,
+        ClosableType, Token, TokenExtracter, TokenParser,
     },
 };
 
@@ -146,20 +150,20 @@ impl MethodView {
 }
 
 impl TokenParser<Method> for VecDeque<Token> {
-    fn parse(mut self) -> Method {
-        let annotations = self.extract();
-        let tp = if matches!(self.front(), Some(Token::TypeName(_))) {
-            Some(self.extract())
+    fn parse(mut self) -> Result<Method, Report<(String, Range<usize>)>> {
+        let annotations = self.extract()?;
+        let tp = if matches!(self.front(), Some(Token::TypeName(_, _))) {
+            Some(self.extract()?)
         } else {
             None
         };
-        let name = if let Some(Token::Literal(name)) = self.get_token() {
+        let name = if let Some(Token::Literal(_, name)) = self.get_token() {
             name
         } else {
             panic!("Expected method name");
         };
         let template = match self.get_token() {
-            Some(Token::Block(ClosableType::Type, inside)) => Some(inside.parse()),
+            Some(Token::Block(_, ClosableType::Type, inside)) => Some(inside.parse()?),
             Some(e) => {
                 self.push_front(e);
                 None
@@ -167,34 +171,40 @@ impl TokenParser<Method> for VecDeque<Token> {
             None => None,
         };
         let arguments: Vec<(Type, String)> =
-            if let Some(Token::Block(ClosableType::Parenthesis, inside)) = self.get_token() {
-                split_simple(inside, &Token::Comma)
-                    .into_iter()
-                    .map(|mut a| {
-                        let ty = a.extract();
-                        let name = if let Some(Token::Literal(name)) = a.get_token() {
-                            name
-                        } else {
-                            panic!("Expected argument name");
-                        };
-                        (ty, name)
-                    })
-                    .collect()
+            if let Some(Token::Block(_, ClosableType::Parenthesis, inside)) = self.get_token() {
+                split_complex(inside, |a| {
+                    if matches!(a, Token::Comma(_)) {
+                        SplitAction::SplitConsume
+                    } else {
+                        SplitAction::None
+                    }
+                })
+                .into_iter()
+                .map(|mut a| {
+                    let ty = a.extract()?;
+                    let name = if let Some(Token::Literal(_, name)) = a.get_token() {
+                        name
+                    } else {
+                        panic!("Expected argument name");
+                    };
+                    Ok((ty, name))
+                })
+                .collect::<Result<_, _>>()?
             } else {
                 panic!("Expected brackets after method name");
             };
-        let code = if let Some(Token::Block(ClosableType::Bracket, inside)) = self.get_token() {
-            Either::Left(inside.parse())
+        let code = if let Some(Token::Block(_, ClosableType::Bracket, inside)) = self.get_token() {
+            Either::Left(inside.parse()?)
         } else {
             panic!("Expected braces after method arguments");
         };
-        Method {
+        Ok(Method {
             name,
             return_type: tp,
             arguments,
             template,
             code,
             annotations,
-        }
+        })
     }
 }

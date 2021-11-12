@@ -11,3 +11,4 @@ edition = "2018"
 either = "*"
 cythan-compiler = { git = "https://github.com/Cythan-Project/cythan-compiler" }
 cythan = { path = "Cythan-V2" }
+ariadne = "0.1.3"
