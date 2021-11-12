@@ -1,0 +1,37 @@
+WHITESPACE = _{" " | "\t" | "\n" | "\r"}
+COMMENT = _{"/*"~(!"*/" ~ ANY)*~"*/"}
+
+none = {""?}
+char = _{ 'A'..'Z' | 'a'..'z' | '0'..'9' | "_" }
+types = {ty~(","~ty)}
+template = @{"<"~types~">"}
+type_name = @{'A'..'Z' ~ char*}
+identifier = @{('a'..'z') ~ char*}
+ty = {type_name ~ (template | none)}
+
+typed_identifier = {ty~identifier}
+cfields = {(typed_identifier~";")*}
+
+cargs = {(typed_identifier~(","~typed_identifier)*)?}
+var_assignement = {(ty|none)~identifier~"="~cexpression}
+
+character_content = {(!"'" ~ ANY)}
+number = {('0'..'9')+}
+character = _{"'"~character_content~"'"}
+cexpressions = {(cexpression~(","~cexpression)*)?}
+codeblock = {(cexpression~";")*}
+method_call = {identifier~"."~identifier~(template|none)~"("~cexpressions~")"}
+field_access = {identifier~"."~identifier}
+static_call = {ty~"."~identifier~(template|none)~"("~cexpressions~")"}
+else_close = _{"else"~"{"~codeblock~"}"}
+condition = {"if"~cexpression~"{"~codeblock~"}"~else_close}
+return_statement = {"return"~cexpression}
+boolean_operator = {"||" | "&&"}
+boolean_expression = {inner_cexpression ~ boolean_operator ~ cexpression}
+inner_cexpression = _{condition | number | character | var_assignement | field_access | static_call | method_call | return_statement | identifier}
+cexpression = {("("~(boolean_expression | inner_cexpression) ~")") | (boolean_expression | inner_cexpression)}
+cfunc = {(template|none)~(ty|none)~identifier~"("~cargs~")"~"{"~codeblock~"}"}
+cfuncs = {cfunc*}
+cstruct = {"struct"~type_name~"{"~cfields~cfuncs~"}"}
+
+parse = {SOI ~ cstruct ~EOI }

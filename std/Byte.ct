@@ -1,0 +1,29 @@
+class Byte {
+    Val lower;
+    Val higher;
+
+    Byte fromVal(Val a) {
+        return Byte {
+            lower = a,
+            higher = 0
+        };
+    }
+
+    print(Byte self) {
+        System.setRegister<N1>(self.higher);
+        System.setRegister<N2>(self.lower);
+        System.setRegister<N0>(1);
+    }
+
+    Bool equalsZero(Byte self) {
+        if self.lower as Bool {
+            if self.higher as Bool {
+                return Bool.true();
+            } else {
+                return Bool.false();
+            }
+        } else {
+            return Bool.false();
+        }
+    }
+}

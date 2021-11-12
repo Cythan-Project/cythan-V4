@@ -1,0 +1,28 @@
+@AllowOnly(0..=1)
+class Bool {
+
+    Val value;
+
+    Bool true() {
+        return Bool { value = 0 };
+    }
+
+    Bool false() {
+        return Bool { value = 1 };
+    }
+
+    print(Bool self) {
+        if self {
+            't'.print();
+            'r'.print();
+            'u'.print();
+            'e'.print();
+        } else {
+            'f'.print();
+            'a'.print();
+            'l'.print();
+            's'.print();
+            'e'.print();
+        };
+    }
+}

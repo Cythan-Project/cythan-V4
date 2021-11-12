@@ -1,0 +1,18 @@
+class Val {
+    
+    Bool equalsZero(Val self) {
+        return self as Bool;
+    }
+
+    Bool equals(Val self, Val other) {
+        Val copy = self;
+        Val copy1 = other;
+        loop {
+            if copy.equalsZero() {
+                return copy1.equalsZero();
+            };
+            copy.dec();
+            copy1.dec();
+        };
+    }
+}

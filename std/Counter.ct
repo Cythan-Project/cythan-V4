@@ -1,0 +1,21 @@
+class Counter {
+
+    Val number;
+    Array<String, N2> array;
+
+    Val main() {
+        /* Array<Byte, N3> array;
+        array.set<N0>('a');
+        array.set<N1>('b');
+        array.set<N2>('c'); */
+        /* if 0.equals(1) {
+            array.get<N1>().print();
+            array.get<N0>().print();
+            array.get<N2>().print();
+        }; */
+        /* Byte k = array.get<N0>(); */
+        5.equals(5).print();
+        0.equals(5).print();
+        return 0;
+    }
+}
