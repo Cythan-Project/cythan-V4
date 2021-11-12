@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 
 use crate::parser::{
     class::{Class, ClassView},
@@ -9,6 +9,7 @@ use crate::parser::{
 };
 
 pub mod asm;
+pub mod asm_interpreter;
 pub mod compiler;
 pub mod compiler_states;
 pub mod mir;
@@ -58,35 +59,5 @@ impl ClassLoader {
             .unwrap()
             .methods
             .push(method);
-    }
-}
-
-struct TemplateResolver {
-    aliases: HashMap<String, Type>,
-}
-
-impl TemplateResolver {
-    fn new() -> TemplateResolver {
-        TemplateResolver {
-            aliases: HashMap::new(),
-        }
-    }
-
-    fn resolve_type(&self, ty: &Type) -> Type {
-        if let Some(e) = self.resolve_name(&ty.name) {
-            e.clone()
-        } else {
-            Type {
-                name: ty.name.to_owned(),
-                template: ty
-                    .template
-                    .as_ref()
-                    .map(|x| x.iter().map(|x| self.resolve_type(x)).collect()),
-            }
-        }
-    }
-
-    fn resolve_name(&self, name: &str) -> Option<&Type> {
-        self.aliases.get(name)
     }
 }

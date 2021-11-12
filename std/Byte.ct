@@ -9,6 +9,14 @@ class Byte {
         };
     }
 
+    Byte input() {
+        System.setRegister<N0>(2);
+        return Byte {
+            lower = System.getRegister<N2>(),
+            higher = System.getRegister<N1>()
+        };
+    }
+
     print(Byte self) {
         System.setRegister<N1>(self.higher);
         System.setRegister<N2>(self.lower);

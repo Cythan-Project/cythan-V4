@@ -14,8 +14,25 @@ class Counter {
             array.get<N2>().print();
         }; */
         /* Byte k = array.get<N0>(); */
-        5.equals(5).print();
-        0.equals(5).print();
+        /*Byte.input().print();*/
+        /* Array<Byte, N3> array;
+        array.set<N0>('a');
+        array.set<N1>('b');
+        array.set<N2>('c');
+        array.get<N1>().print();
+        array.setDyn(1, 'd');
+        array.getDyn(2).print(); */
+        Morpion morpion = Morpion.new();
+        morpion.play();
+        // test
         return 0;
+        /*a*/
+    }
+
+    Bool testBlocks(Val v) {
+        if v.equalsZero() {
+            return Bool.true();
+        };
+        return Bool.false();
     }
 }

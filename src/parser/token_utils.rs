@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use super::Token;
+use super::{expression::TokenProcessor, Token};
 
 pub fn split_simple(tokens: VecDeque<Token>, token: &Token) -> Vec<VecDeque<Token>> {
     split_complex(tokens, |t| {
@@ -51,7 +51,7 @@ pub fn split_complex(
 pub fn take_until(tokens: &mut VecDeque<Token>, until: impl Fn(&Token) -> bool) -> VecDeque<Token> {
     let mut i = VecDeque::new();
     loop {
-        if let Some(e) = tokens.pop_front() {
+        if let Some(e) = tokens.get_token() {
             if !until(&e) {
                 i.push_back(e);
             } else {

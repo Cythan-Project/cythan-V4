@@ -5,10 +5,30 @@ use crate::parser::{
     ClosableType, Keyword, Token, TokenExtracter,
 };
 
-use super::{
-    ty::{TemplateDefinition, Type},
-    TokenParser,
-};
+pub trait TokenProcessor {
+    fn get_token(&mut self) -> Option<Token>;
+    fn length(&self) -> usize;
+}
+
+impl TokenProcessor for VecDeque<Token> {
+    fn get_token(&mut self) -> Option<Token> {
+        while let Some(e) = self.pop_front() {
+            if matches!(e, Token::Comment(_)) {
+                continue;
+            }
+            return Some(e);
+        }
+        return None;
+    }
+
+    fn length(&self) -> usize {
+        self.iter()
+            .filter(|x| !matches!(x, &Token::Comment(_)))
+            .count()
+    }
+}
+
+use super::{ty::Type, TokenParser};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
@@ -54,7 +74,7 @@ pub enum Expr {
 }
 
 fn chain_expression(tokens: &mut VecDeque<Token>, exp: Expr) -> Expr {
-    let k = match tokens.pop_front() {
+    let k = match tokens.get_token() {
         None | Some(Token::SemiColon) => return exp,
         Some(Token::Equals) => Expr::Assignement {
             target: Box::new(exp),
@@ -68,8 +88,8 @@ fn chain_expression(tokens: &mut VecDeque<Token>, exp: Expr) -> Expr {
             }
         }
         Some(Token::Dot) => {
-            if let Some(Token::Literal(name)) = tokens.pop_front() {
-                match tokens.pop_front() {
+            if let Some(Token::Literal(name)) = tokens.get_token() {
+                match tokens.get_token() {
                     Some(Token::Block(ClosableType::Parenthesis, arguments)) => Expr::Method {
                         source: box exp,
                         name,
@@ -81,7 +101,7 @@ fn chain_expression(tokens: &mut VecDeque<Token>, exp: Expr) -> Expr {
                     },
                     Some(Token::Block(ClosableType::Type, template)) => {
                         if let Some(Token::Block(ClosableType::Parenthesis, arguments)) =
-                            tokens.pop_front()
+                            tokens.get_token()
                         {
                             Expr::Method {
                                 source: box exp,
@@ -117,7 +137,7 @@ fn chain_expression(tokens: &mut VecDeque<Token>, exp: Expr) -> Expr {
 
 impl TokenParser<Expr> for VecDeque<Token> {
     fn parse(mut self) -> Expr {
-        let tk = if let Some(e) = self.pop_front() {
+        let tk = if let Some(e) = self.get_token() {
             e
         } else {
             panic!("Expected expression")
@@ -141,7 +161,7 @@ impl TokenParser<Expr> for VecDeque<Token> {
                     })
                     .parse(),
                     then: {
-                        if let Some(Token::Block(ClosableType::Bracket, e)) = self.pop_front() {
+                        if let Some(Token::Block(ClosableType::Bracket, e)) = self.get_token() {
                             e.parse()
                         } else {
                             panic!("Expected brackets after if")
@@ -149,7 +169,7 @@ impl TokenParser<Expr> for VecDeque<Token> {
                     },
                     or_else: if matches!(self.front(), Some(Token::Keyword(Keyword::Else))) {
                         self.remove(0);
-                        if let Some(Token::Block(ClosableType::Bracket, e)) = self.pop_front() {
+                        if let Some(Token::Block(ClosableType::Bracket, e)) = self.get_token() {
                             Some(e.parse())
                         } else {
                             panic!("Expected brackets after if")
@@ -163,7 +183,7 @@ impl TokenParser<Expr> for VecDeque<Token> {
                 Keyword::Extends => panic!("Unexpected extends"),
                 Keyword::As => panic!("Unexpected as"),
                 Keyword::Loop => Expr::Loop(
-                    if let Some(Token::Block(ClosableType::Bracket, e)) = self.pop_front() {
+                    if let Some(Token::Block(ClosableType::Bracket, e)) = self.get_token() {
                         e.parse()
                     } else {
                         panic!("Expected brackets after loop")
@@ -177,7 +197,7 @@ impl TokenParser<Expr> for VecDeque<Token> {
             },
             Token::Number(a) => Expr::Number(a),
             Token::TypeName(a) => {
-                let template = match self.pop_front() {
+                let template = match self.get_token() {
                     Some(Token::Block(ClosableType::Type, e)) => Some(e.parse()),
                     Some(e) => {
                         self.push_front(e);
@@ -185,18 +205,18 @@ impl TokenParser<Expr> for VecDeque<Token> {
                     }
                     None => None,
                 };
-                match self.pop_front() {
+                match self.get_token() {
                     Some(Token::Block(ClosableType::Bracket, inside)) => Expr::New {
                         class: Type { name: a, template },
                         fields: split_simple(inside, &Token::Comma)
                             .into_iter()
                             .map(|mut a| {
-                                let name = if let Some(Token::Literal(name)) = a.pop_front() {
+                                let name = if let Some(Token::Literal(name)) = a.get_token() {
                                     name
                                 } else {
                                     panic!("Expected argument name");
                                 };
-                                if !matches!(a.pop_front(), Some(Token::Equals)) {
+                                if !matches!(a.get_token(), Some(Token::Equals)) {
                                     panic!("Expected equals");
                                 };
                                 let value = a.parse();
@@ -231,7 +251,7 @@ impl TokenParser<Vec<Expr>> for VecDeque<Token> {
     fn parse(self) -> Vec<Expr> {
         split_simple(self, &Token::SemiColon)
             .into_iter()
-            .filter(|a| !a.is_empty())
+            .filter(|a| a.length() != 0)
             .map(|a| a.parse())
             .collect()
     }

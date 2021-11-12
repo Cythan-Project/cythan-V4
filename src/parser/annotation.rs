@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use super::{ClosableType, Token, TokenExtracter};
+use super::{expression::TokenProcessor, ClosableType, Token, TokenExtracter};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Annotation {
@@ -12,11 +12,11 @@ impl TokenExtracter<Vec<Annotation>> for VecDeque<Token> {
     fn extract(&mut self) -> Vec<Annotation> {
         let mut annotations = Vec::new();
         loop {
-            match self.pop_front() {
+            match self.get_token() {
                 Some(Token::At) => {
-                    if let Some(Token::Literal(name) | Token::TypeName(name)) = self.pop_front() {
+                    if let Some(Token::Literal(name) | Token::TypeName(name)) = self.get_token() {
                         if let Some(Token::Block(ClosableType::Parenthesis, inside)) =
-                            self.pop_front()
+                            self.get_token()
                         {
                             annotations.push(Annotation {
                                 name,

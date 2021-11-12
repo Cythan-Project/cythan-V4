@@ -70,7 +70,7 @@ impl Display for Mir {
             Mir::Skip => write!(f, "skip"),
             Mir::Block(a) => write!(
                 f,
-                "{{\n  {}\n}}",
+                "block {{\n  {}\n}}",
                 a.0.iter()
                     .map(|x| x.to_string())
                     .collect::<Vec<_>>()

@@ -4,6 +4,11 @@ class Val {
         return self as Bool;
     }
 
+    Val input() {
+        System.setRegister<N0>(2);
+        return System.getRegister<N2>();
+    }
+
     Bool equals(Val self, Val other) {
         Val copy = self;
         Val copy1 = other;
@@ -14,5 +19,26 @@ class Val {
             copy.dec();
             copy1.dec();
         };
+    }
+
+    Bool greater(Val self, Val other) {
+        Val copy = self;
+        Val copy1 = other;
+        loop {
+            if copy.equalsZero() {
+                return Bool.false();
+            };
+            if copy1.equalsZero() {
+                return Bool.true();
+            };
+            copy.dec();
+            copy1.dec();
+        };
+    }
+
+    print(Val self) {
+        System.setRegister<N1>(3);
+        System.setRegister<N2>(self);
+        System.setRegister<N0>(1);
     }
 }

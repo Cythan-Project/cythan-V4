@@ -14,7 +14,8 @@ use crate::{
     },
     mir_utils::block_inliner::{need_block, remove_skips},
     parser::{
-        token_utils::split_simple, ty::Type, ClosableType, Token, TokenExtracter, TokenParser,
+        expression::TokenProcessor, token_utils::split_simple, ty::Type, ClosableType, Token,
+        TokenExtracter, TokenParser,
     },
 };
 
@@ -152,12 +153,12 @@ impl TokenParser<Method> for VecDeque<Token> {
         } else {
             None
         };
-        let name = if let Some(Token::Literal(name)) = self.pop_front() {
+        let name = if let Some(Token::Literal(name)) = self.get_token() {
             name
         } else {
             panic!("Expected method name");
         };
-        let template = match self.pop_front() {
+        let template = match self.get_token() {
             Some(Token::Block(ClosableType::Type, inside)) => Some(inside.parse()),
             Some(e) => {
                 self.push_front(e);
@@ -166,12 +167,12 @@ impl TokenParser<Method> for VecDeque<Token> {
             None => None,
         };
         let arguments: Vec<(Type, String)> =
-            if let Some(Token::Block(ClosableType::Parenthesis, inside)) = self.pop_front() {
+            if let Some(Token::Block(ClosableType::Parenthesis, inside)) = self.get_token() {
                 split_simple(inside, &Token::Comma)
                     .into_iter()
                     .map(|mut a| {
                         let ty = a.extract();
-                        let name = if let Some(Token::Literal(name)) = a.pop_front() {
+                        let name = if let Some(Token::Literal(name)) = a.get_token() {
                             name
                         } else {
                             panic!("Expected argument name");
@@ -182,7 +183,7 @@ impl TokenParser<Method> for VecDeque<Token> {
             } else {
                 panic!("Expected brackets after method name");
             };
-        let code = if let Some(Token::Block(ClosableType::Bracket, inside)) = self.pop_front() {
+        let code = if let Some(Token::Block(ClosableType::Bracket, inside)) = self.get_token() {
             Either::Left(inside.parse())
         } else {
             panic!("Expected braces after method arguments");

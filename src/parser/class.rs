@@ -5,6 +5,7 @@ use either::Either;
 use crate::{
     compiler::ClassLoader,
     parser::{
+        expression::TokenProcessor,
         token_utils::{split_complex, SplitAction},
         ClosableType, Keyword, TokenExtracter,
     },
@@ -191,7 +192,7 @@ impl TemplateFixer {
                 source: box self.expr(*source),
                 name,
                 arguments: arguments.into_iter().map(|x| self.expr(x)).collect(),
-                template,
+                template: template.map(|x| x.into_iter().map(|x| self.ty(x)).collect()),
             },
             Expr::Block(a) => Expr::Block(a.into_iter().map(|x| self.expr(x)).collect()),
             Expr::Return(a) => Expr::Return(a.map(|x| box self.expr(*x))),
@@ -217,15 +218,15 @@ impl TemplateFixer {
 impl TokenParser<Class> for VecDeque<Token> {
     fn parse(mut self) -> Class {
         let annotations = self.extract();
-        if !matches!(self.pop_front(), Some(Token::Keyword(Keyword::Class))) {
+        if !matches!(self.get_token(), Some(Token::Keyword(Keyword::Class))) {
             panic!("Expected keyword class");
         }
-        let name = if let Some(Token::TypeName(name)) = self.pop_front() {
+        let name = if let Some(Token::TypeName(name)) = self.get_token() {
             name
         } else {
             panic!("Expected class name");
         };
-        let template = match self.pop_front() {
+        let template = match self.get_token() {
             Some(Token::Block(ClosableType::Type, inside)) => Some(inside.parse()),
             Some(e) => {
                 self.push_front(e);
@@ -234,7 +235,7 @@ impl TokenParser<Class> for VecDeque<Token> {
             None => None,
         };
         let superclass = if matches!(self.front(), Some(Token::Keyword(Keyword::Extends))) {
-            self.pop_front();
+            self.get_token();
             Some(self.extract())
         } else {
             None
@@ -247,7 +248,7 @@ impl TokenParser<Class> for VecDeque<Token> {
             superclass,
             template,
         };
-        if let Some(Token::Block(ClosableType::Bracket, inside)) = self.pop_front() {
+        if let Some(Token::Block(ClosableType::Bracket, inside)) = self.get_token() {
             split_complex(inside, |t| {
                 if t == &Token::SemiColon {
                     SplitAction::SplitConsume
@@ -264,7 +265,7 @@ impl TokenParser<Class> for VecDeque<Token> {
                 } else {
                     let annotations: Vec<Annotation> = self.extract();
                     let ty: Type = x.extract();
-                    let name = if let Some(Token::Literal(name)) = x.pop_front() {
+                    let name = if let Some(Token::Literal(name)) = x.get_token() {
                         name
                     } else {
                         panic!("Expected field name");

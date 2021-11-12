@@ -1,21 +1,18 @@
 #![feature(box_syntax)]
 
-use std::{cell::RefCell, collections::HashMap, iter::once, rc::Rc};
+use std::rc::Rc;
 
-use compiler::ClassLoader;
-use cythan::{Cythan, InterruptedCythan};
+use compiler::{asm_interpreter::MemoryState, ClassLoader};
+
 use either::Either;
 
 use crate::{
     compiler::{
-        asm::Context,
         compiler_states::{CodeManager, LocalState, OutputData, TypedMemory},
-        mir::{Mir, MirCodeBlock, MirState},
-        template::Template,
+        mir::{Mir, MirCodeBlock},
     },
     parser::{
         class::Class,
-        expression::CodeBlock,
         method::Method,
         ty::{TemplateDefinition, Type},
     },
@@ -125,6 +122,119 @@ fn main() {
                     OutputData::new(MirCodeBlock::new(), Some(TypedMemory::new(ty.clone(), ps)))
                 }))),
             },
+            Method {
+                name: "setDyn".to_owned(),
+                annotations: vec![],
+                return_type: None,
+                arguments: vec![
+                    (
+                        Type {
+                            name: "Array".to_owned(),
+                            template: Some(vec![Type::simple("T"), Type::simple("E")]),
+                        },
+                        "self".to_owned(),
+                    ),
+                    (
+                        Type {
+                            name: "Val".to_owned(),
+                            template: None,
+                        },
+                        "pos".to_owned(),
+                    ),
+                    (
+                        Type {
+                            name: "T".to_owned(),
+                            template: None,
+                        },
+                        "a".to_owned(),
+                    ),
+                ],
+                template: None,
+                code: Either::Right(Rc::new(Box::new(|ls, cm, mv| {
+                    //let position: u32 = mv.template.as_ref().unwrap()[0].name[1..].parse().unwrap();
+                    let size: u32 = mv.arguments[0].0.template.as_ref().unwrap()[1].name[1..]
+                        .parse()
+                        .unwrap();
+                    let ty = &mv.arguments[0].0.template.as_ref().unwrap()[0];
+                    let unit_size = cm.cl.view(ty).size(&cm.cl);
+                    let mpos = cm.alloc();
+                    let mut mircb = MirCodeBlock::new();
+                    mircb.copy(mpos, ls.get_var("pos").unwrap().locations[0]);
+                    let from = ls.get_var("a").unwrap().locations.clone();
+                    let mut mir = MirCodeBlock::new();
+                    for position in (0..size).rev() {
+                        let to = ls
+                            .get_var("self")
+                            .unwrap()
+                            .locations
+                            .iter()
+                            .skip((unit_size * position) as usize)
+                            .take(unit_size as usize)
+                            .copied()
+                            .collect::<Vec<_>>();
+                        let mut cb = MirCodeBlock::new();
+                        cb.copy_bulk(&to, &from);
+                        mir.0.insert(0, Mir::Decrement(mpos));
+                        mir = MirCodeBlock::from(vec![Mir::If0(mpos, cb, mir)]);
+                    }
+                    mircb.add(mir);
+
+                    OutputData::new(mircb, None)
+                }))),
+            },
+            Method {
+                name: "getDyn".to_owned(),
+                annotations: vec![],
+                return_type: Some(Type::simple("T")),
+                arguments: vec![
+                    (
+                        Type {
+                            name: "Array".to_owned(),
+                            template: Some(vec![Type::simple("T"), Type::simple("E")]),
+                        },
+                        "self".to_owned(),
+                    ),
+                    (
+                        Type {
+                            name: "Val".to_owned(),
+                            template: None,
+                        },
+                        "pos".to_owned(),
+                    ),
+                ],
+                template: None,
+                code: Either::Right(Rc::new(Box::new(|ls, cm, mv| {
+                    //let position: u32 = mv.template.as_ref().unwrap()[0].name[1..].parse().unwrap();
+                    let size: u32 = mv.arguments[0].0.template.as_ref().unwrap()[1].name[1..]
+                        .parse()
+                        .unwrap();
+                    let ty = &mv.arguments[0].0.template.as_ref().unwrap()[0];
+                    let unit_size = cm.cl.view(ty).size(&cm.cl);
+                    let mpos = cm.alloc();
+                    let mut mircb = MirCodeBlock::new();
+                    mircb.copy(mpos, ls.get_var("pos").unwrap().locations[0]);
+                    let to = cm.alloc_block(unit_size as usize);
+                    let mut mir = MirCodeBlock::new();
+                    for position in (0..size).rev() {
+                        let from = ls
+                            .get_var("self")
+                            .unwrap()
+                            .locations
+                            .iter()
+                            .skip((unit_size * position) as usize)
+                            .take(unit_size as usize)
+                            .copied()
+                            .collect::<Vec<_>>();
+                        let mut cb = MirCodeBlock::new();
+                        cb.copy_bulk(&to, &from);
+                        mir.0.insert(0, Mir::Decrement(mpos));
+                        mir = MirCodeBlock::from(vec![Mir::If0(mpos, cb, mir)]);
+                    }
+                    mircb.add(mir);
+
+                    OutputData::new(mircb, Some(TypedMemory::new(ty.clone(), to)))
+                }))),
+            },
         ],
         superclass: None,
     });
@@ -134,6 +244,26 @@ fn main() {
         template: None,
         fields: vec![],
         methods: vec![
+            Method {
+                name: "getRegister".to_owned(),
+                annotations: vec![],
+                return_type: Some(Type {
+                    name: "Val".to_owned(),
+                    template: None,
+                }),
+                arguments: vec![],
+                template: Some(TemplateDefinition(vec!["N".to_owned()])),
+                code: Either::Right(Rc::new(Box::new(|_ls, cm, mv| {
+                    let asp = cm.alloc();
+                    OutputData::new(
+                        MirCodeBlock(vec![Mir::ReadRegister(
+                            asp,
+                            mv.template.as_ref().unwrap()[0].name[1..].parse().unwrap(),
+                        )]),
+                        Some(TypedMemory::new(Type::simple("Val"), vec![asp])),
+                    )
+                }))),
+            },
             Method {
                 name: "setRegister".to_owned(),
                 annotations: vec![],
@@ -191,7 +321,7 @@ fn main() {
             return_type: None,
             arguments: vec![(Type::simple("Val"), "self".to_owned())],
             template: None,
-            code: Either::Right(Rc::new(Box::new(|ls, _cm, mv| {
+            code: Either::Right(Rc::new(Box::new(|ls, _cm, _mv| {
                 let mut mir = MirCodeBlock::new();
                 let loc = ls.get_var("self").unwrap().locations[0];
                 mir.add_mir(Mir::Decrement(loc));
@@ -207,7 +337,7 @@ fn main() {
             return_type: None,
             arguments: vec![(Type::simple("Val"), "self".to_owned())],
             template: None,
-            code: Either::Right(Rc::new(Box::new(|ls, _cm, mv| {
+            code: Either::Right(Rc::new(Box::new(|ls, _cm, _mv| {
                 let mut mir = MirCodeBlock::new();
                 let loc = ls.get_var("self").unwrap().locations[0];
                 mir.add_mir(Mir::Increment(loc));
@@ -247,7 +377,8 @@ fn compile_and_run(mir: &MirCodeBlock) {
             .join("\n"),
     )
     .unwrap();
-    let mut mirstate = MirState::default();
+    MemoryState::new(2048, 8).execute_block(mir);
+    /* let mut mirstate = MirState::default();
     mir.to_asm(&mut mirstate);
     let mut compile_state = Template::default();
     let mut ctx = Context::default();
@@ -259,19 +390,32 @@ fn compile_and_run(mir: &MirCodeBlock) {
     std::fs::write("out.ct", &k).unwrap();
     let k = cythan_compiler::compile(&k).unwrap();
     let mut machine = InterruptedCythan::new_stdio(k, 4, 2 * 2_usize.pow(4 /* base */) + 3);
-    loop {
-        for _ in 0..1000 {
+    'a: loop {
+        for _ in 0..10000 {
             machine.next();
         }
 
+        std::fs::write(
+            "out.txt",
+            machine
+                .cases
+                .iter()
+                .map(|x| x.to_string())
+                .collect::<Vec<_>>()
+                .join(" "),
+        )
+        .unwrap();
+
         let o = machine.cases.clone();
 
-        machine.next();
+        for _ in 0..10 {
+            machine.next();
 
-        if o == machine.cases {
-            break;
+            if o == machine.cases {
+                break 'a;
+            }
         }
-    }
+    } */
 }
 
 #[test]

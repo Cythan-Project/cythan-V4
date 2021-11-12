@@ -129,62 +129,34 @@ if_0 {
     'end1:no_op
 }
 
-'v2:0
-'v3:0
-'v5:0
-'v6:0
-'v7:0
-'v8:0
 'v4:0
-'v21:0
-'v22:0
-'v23:0
-'v24:0
-'v25:0
-'v26:0
-'v27:0
-'v28:0
-'v29:0
-'v30:0
-'v31:0
-'v32:0
-'v33:0
-'v34:0
-'v35:0
+'v3:0
+'v6:0
+'v2:0
+'v7:0
 'v9:0
 'v10:0
 'v11:0
 'v12:0
 'v13:0
 'v14:0
-'v15:0
 'v16:0
+'v15:0
+'v8:0
 'v17:0
-'v18:0
 'v19:0
+'v18:0
 'v20:0
-'v36:0
-'v37:0
-'v39:0
-'v40:0
-'v41:0
-'v42:0
-'v38:0
-'v55:0
-'v56:0
-'v57:0
-'v58:0
-'v59:0
-'v60:0
-'v61:0
-'v62:0
-'v63:0
-'v64:0
-'v65:0
-'v66:0
-'v67:0
-'v68:0
-'v69:0
+'v21:0
+'v22:0
+'v23:0
+'v24:0
+'v26:0
+'v28:0
+'v27:0
+'v25:0
+'v30:0
+'v29:0
 'v43:0
 'v44:0
 'v45:0
@@ -197,7 +169,22 @@ if_0 {
 'v52:0
 'v53:0
 'v54:0
-'v70:0
+'v55:0
+'v56:0
+'v57:0
+'v31:0
+'v32:0
+'v33:0
+'v34:0
+'v35:0
+'v36:0
+'v37:0
+'v38:0
+'v39:0
+'v40:0
+'v41:0
+'v42:0
+'v58:0
 'v1:0
 
 
@@ -206,162 +193,139 @@ if_0 {
 
 'start:no_op
 
-'#5 'v2
-'#5 'v3
-'#0 'v5
-'v2 'v5
-'#0 'v6
-'v3 'v6
 'lA1:no_op
-'v5 'v7
-if_0('v7 'lD2)
-jump('lF2)
-'lD2:no_op
-'v6 'v8
-'v8 'v4
-jump('lB1)
-'lF2:no_op
-dec('v5)
-dec('v6)
-jump('lA1)
-'lB1:no_op
-if_0('v4 'lD3)
-'#6 'v21
-'#6 'v22
-'v22 '#return_1
-'v21 '#return_2
-'#1 'v23
-'v23 '#return_0
-'#1 'v24
-'#6 'v25
-'v25 '#return_1
-'v24 '#return_2
-'#1 'v26
-'v26 '#return_0
-'#12 'v27
-'#6 'v28
-'v28 '#return_1
-'v27 '#return_2
-'#1 'v29
-'v29 '#return_0
-'#3 'v30
-'#7 'v31
-'v31 '#return_1
-'v30 '#return_2
-'#1 'v32
-'v32 '#return_0
-'#5 'v33
-'#6 'v34
-'v34 '#return_1
-'v33 '#return_2
-'#1 'v35
-'v35 '#return_0
+'#2 'v4
+'v4 '#return_0
+'#return_2 'v6
+'v6 'v3
+'#0 'v2
+'v3 'v2
+'#8 'v7
+'#0 'v9
+'v2 'v9
+'#0 'v10
+'v7 'v10
+'lA2:no_op
+'#7 'v11
+'#5 'v12
+'v12 '#return_1
+'v11 '#return_2
+'#1 'v13
+'v13 '#return_0
+'v9 'v14
+if_0('v14 'lD3)
 jump('lF3)
 'lD3:no_op
-'#4 'v9
-'#7 'v10
-'v10 '#return_1
-'v9 '#return_2
-'#1 'v11
-'v11 '#return_0
-'#2 'v12
-'#7 'v13
-'v13 '#return_1
-'v12 '#return_2
-'#1 'v14
-'v14 '#return_0
-'#5 'v15
-'#7 'v16
-'v16 '#return_1
-'v15 '#return_2
-'#1 'v17
-'v17 '#return_0
-'#5 'v18
-'#6 'v19
-'v19 '#return_1
-'v18 '#return_2
-'#1 'v20
-'v20 '#return_0
+'#1 'v16
+'v16 'v15
+'v15 'v8
+jump('lB2)
 'lF3:no_op
-'#0 'v36
-'#5 'v37
-'#0 'v39
-'v36 'v39
-'#0 'v40
-'v37 'v40
-'lA4:no_op
-'v39 'v41
-if_0('v41 'lD5)
+'v10 'v17
+if_0('v17 'lD4)
+jump('lF4)
+'lD4:no_op
+'#0 'v19
+'v19 'v18
+'v18 'v8
+jump('lB2)
+'lF4:no_op
+dec('v9)
+dec('v10)
+jump('lA2)
+'lB2:no_op
+if_0('v8 'lD5)
 jump('lF5)
 'lD5:no_op
-'v40 'v42
-'v42 'v38
-jump('lB4)
+jump('lA1)
 'lF5:no_op
-dec('v39)
-dec('v40)
-jump('lA4)
-'lB4:no_op
-if_0('v38 'lD6)
-'#6 'v55
+'#3 'v20
+'v20 '#return_1
+'v2 '#return_2
+'#1 'v21
+'v21 '#return_0
+'#10 'v22
+'#3 'v23
+'v23 '#return_1
+'v22 '#return_2
+'#1 'v24
+'v24 '#return_0
+'v2 'v26
+if_0('v26 'lD7)
+jump('lF7)
+'lD7:no_op
+'#0 'v28
+'v28 'v27
+'v27 'v25
+jump('lG6)
+'lF7:no_op
+'#1 'v30
+'v30 'v29
+'v29 'v25
+jump('lG6)
+'lG6:no_op
+if_0('v25 'lD8)
+'#6 'v43
+'#6 'v44
+'v44 '#return_1
+'v43 '#return_2
+'#1 'v45
+'v45 '#return_0
+'#1 'v46
+'#6 'v47
+'v47 '#return_1
+'v46 '#return_2
+'#1 'v48
+'v48 '#return_0
+'#12 'v49
+'#6 'v50
+'v50 '#return_1
+'v49 '#return_2
+'#1 'v51
+'v51 '#return_0
+'#3 'v52
+'#7 'v53
+'v53 '#return_1
+'v52 '#return_2
+'#1 'v54
+'v54 '#return_0
+'#5 'v55
 '#6 'v56
 'v56 '#return_1
 'v55 '#return_2
 '#1 'v57
 'v57 '#return_0
-'#1 'v58
-'#6 'v59
-'v59 '#return_1
-'v58 '#return_2
-'#1 'v60
-'v60 '#return_0
-'#12 'v61
-'#6 'v62
-'v62 '#return_1
-'v61 '#return_2
-'#1 'v63
-'v63 '#return_0
-'#3 'v64
-'#7 'v65
-'v65 '#return_1
-'v64 '#return_2
-'#1 'v66
-'v66 '#return_0
-'#5 'v67
-'#6 'v68
-'v68 '#return_1
-'v67 '#return_2
-'#1 'v69
-'v69 '#return_0
-jump('lF6)
-'lD6:no_op
-'#4 'v43
-'#7 'v44
-'v44 '#return_1
-'v43 '#return_2
-'#1 'v45
-'v45 '#return_0
-'#2 'v46
-'#7 'v47
-'v47 '#return_1
-'v46 '#return_2
-'#1 'v48
-'v48 '#return_0
-'#5 'v49
-'#7 'v50
-'v50 '#return_1
-'v49 '#return_2
-'#1 'v51
-'v51 '#return_0
-'#5 'v52
-'#6 'v53
-'v53 '#return_1
-'v52 '#return_2
-'#1 'v54
-'v54 '#return_0
-'lF6:no_op
-'#0 'v70
-'v70 'v1
+jump('lF8)
+'lD8:no_op
+'#4 'v31
+'#7 'v32
+'v32 '#return_1
+'v31 '#return_2
+'#1 'v33
+'v33 '#return_0
+'#2 'v34
+'#7 'v35
+'v35 '#return_1
+'v34 '#return_2
+'#1 'v36
+'v36 '#return_0
+'#5 'v37
+'#7 'v38
+'v38 '#return_1
+'v37 '#return_2
+'#1 'v39
+'v39 '#return_0
+'#5 'v40
+'#6 'v41
+'v41 '#return_1
+'v40 '#return_2
+'#1 'v42
+'v42 '#return_0
+'lF8:no_op
+jump('lA1)
+'lB1:no_op
+'#0 'v58
+'v58 'v1
 '#3 '#return_1
 'v1 '#return_2
 '#1 '#return_0

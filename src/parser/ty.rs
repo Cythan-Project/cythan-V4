@@ -1,6 +1,6 @@
 use std::{collections::VecDeque, fmt::Debug};
 
-use super::{ClosableType, Token, TokenExtracter, TokenParser};
+use super::{expression::TokenProcessor, ClosableType, Token, TokenExtracter, TokenParser};
 use crate::parser::token_utils::split_simple;
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -51,7 +51,7 @@ impl TokenParser<TemplateDefinition> for VecDeque<Token> {
             split_simple(self, &Token::Comma)
                 .into_iter()
                 .map(|mut a| {
-                    if let Some(Token::TypeName(name)) = a.pop_front() {
+                    if let Some(Token::TypeName(name)) = a.get_token() {
                         name
                     } else {
                         panic!("Expected type name in type definition")
@@ -71,8 +71,8 @@ impl TokenParser<Vec<Type>> for VecDeque<Token> {
 }
 impl TokenExtracter<Type> for VecDeque<Token> {
     fn extract(&mut self) -> Type {
-        if let Some(Token::TypeName(name)) = self.pop_front() {
-            let template = match self.pop_front() {
+        if let Some(Token::TypeName(name)) = self.get_token() {
+            let template = match self.get_token() {
                 Some(Token::Block(ClosableType::Type, inside)) => Some(inside.parse()),
                 Some(e) => {
                     self.push_front(e);

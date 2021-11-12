@@ -53,6 +53,8 @@ fn validate(current_token: Token) -> Token {
             "in" => Token::Keyword(Keyword::In),
             "for" => Token::Keyword(Keyword::For),
             "while" => Token::Keyword(Keyword::While),
+            "continue" => Token::Keyword(Keyword::Continue),
+            "break" => Token::Keyword(Keyword::Break),
             _ => Token::Literal(e),
         },
         e => e,
@@ -77,6 +79,18 @@ pub fn parse(token_map: &mut VecDeque<Token>, char: &mut VecDeque<char>) -> Opti
                     }
                     if let Some(e) = char.pop_front() {
                         comment.push(e);
+                    }
+                    token_map.push_back(Token::Comment(comment));
+                } else if char.front() == Some(&'/') {
+                    if let Some(e) = current_token.take() {
+                        token_map.push_back(validate(e));
+                    }
+                    let mut comment = String::new();
+                    while let Some(c) = char.pop_front() {
+                        if c == '\n' {
+                            break;
+                        }
+                        comment.push(c);
                     }
                     token_map.push_back(Token::Comment(comment));
                 }

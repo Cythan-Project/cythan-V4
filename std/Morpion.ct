@@ -1,0 +1,135 @@
+class Morpion {
+
+    Array<Val, N9> grid;
+
+    Morpion new() {
+        return Morpion {
+            grid = Array<Val, N9> tmp
+        };
+    }
+
+    set(Morpion self, Val pos, Val val) {
+        self.grid.setDyn(pos, val);
+    }
+
+    Val getDyn(Morpion self, Val pos) {
+        return self.grid.getDyn(pos);
+    }
+    Val get<TE>(Morpion self) {
+        return self.grid.get<TE>();
+    }
+
+    display(Morpion self) {
+        Val count = 0;
+        loop {
+            if count.equals(9) {
+                Byte.fromVal(10).print();
+                break;
+            };
+            if count.equals(3) {
+                Byte.fromVal(10).print();
+            };
+            if count.equals(6) {
+                Byte.fromVal(10).print();
+            };
+            Val j = self.getDyn(count);
+            if j.equalsZero() {
+                '-'.print();
+            } else {
+                if j.equals(1) {
+                    'O'.print();
+                } else {
+                    'X'.print();
+                };
+            };
+            count.inc();
+            
+        }
+    }
+
+    play(Morpion self) {
+        Val currentPlayer = 1;
+        self.display();
+        loop {
+            Val pos = Val.input();
+            pos.dec();
+            if pos.greater(8) {
+                continue;
+            };
+            if self.getDyn(pos).equalsZero() {
+                self.set(pos, currentPlayer);
+                self.display();
+                if self.winner(currentPlayer) {
+                    if currentPlayer.equals(1) {
+                        'O'.print();
+                    } else {
+                        'X'.print();
+                    };
+                    ' '.print();
+                    'w'.print();
+                    'o'.print();
+                    'n'.print();
+                    Byte.fromVal(10).print();
+                    break;
+                };
+                currentPlayer = if currentPlayer.equals(1) {
+                    2
+                } else {
+                    1
+                };
+            } else {
+                'E'.print();
+                Byte.fromVal(10).print();
+            };
+        };
+    }
+
+    Bool winner(Morpion self, Val tocheck) {
+        if self.get<N0>().equals(tocheck) {
+            if self.get<N1>().equals(tocheck) {
+                if self.get<N2>().equals(tocheck) {
+                    return Bool.true();
+                };
+            };
+            if self.get<N3>().equals(tocheck) {
+                if self.get<N6>().equals(tocheck) {
+                    return Bool.true();
+                };
+            };
+            if self.get<N4>().equals(tocheck) {
+                if self.get<N8>().equals(tocheck) {
+                    return Bool.true();
+                };
+            };
+        };
+        if self.get<N1>().equals(tocheck) {
+            if self.get<N4>().equals(tocheck) {
+                if self.get<N7>().equals(tocheck) {
+                    return Bool.true();
+                };
+            };
+        };
+        if self.get<N2>().equals(tocheck) {
+            if self.get<N4>().equals(tocheck) {
+                if self.get<N6>().equals(tocheck) {
+                    return Bool.true();
+                };
+            };
+        };
+        if self.get<N3>().equals(tocheck) {
+            if self.get<N4>().equals(tocheck) {
+                if self.get<N5>().equals(tocheck) {
+                    return Bool.true();
+                };
+            };
+        };
+        if self.get<N6>().equals(tocheck) {
+            if self.get<N7>().equals(tocheck) {
+                if self.get<N8>().equals(tocheck) {
+                    return Bool.true();
+                };
+            };
+        };
+        return Bool.false();
+    }
+}

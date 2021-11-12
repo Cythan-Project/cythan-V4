@@ -1,6 +1,6 @@
 use crate::{
     compiler::compiler_states::TypedMemory,
-    parser::{class::ClassView, expression::Expr, ty::Type},
+    parser::{expression::Expr, ty::Type},
 };
 
 use super::{
@@ -86,7 +86,7 @@ pub fn compile(expr: &Expr, ls: &mut LocalState, cm: &mut CodeManager) -> Output
                     }
                     let alc = cm.alloc_type(&a.ty).unwrap();
                     let mut tr = then_r.mir;
-                    tr.copy_bulk(&alc, &a.locations);
+                    tr.copy_bulk(&alc, &b.locations);
                     let mut er = else_r.mir;
                     er.copy_bulk(&alc, &a.locations);
 
@@ -144,7 +144,7 @@ pub fn compile(expr: &Expr, ls: &mut LocalState, cm: &mut CodeManager) -> Output
             mir,
             Some(ls.get_var(a).expect("Variable not found").clone()),
         ),
-        Expr::Type(a) => {
+        Expr::Type(_a) => {
             panic!("Expected something else than Type in expression")
         }
         Expr::Field { source, name } => {

@@ -1,10 +1,4 @@
-use std::{
-    cell::{Ref, RefCell, RefMut},
-    collections::HashMap,
-    rc::Rc,
-};
-
-use either::Either;
+use std::collections::HashMap;
 
 use crate::parser::{class::ClassView, ty::Type};
 
