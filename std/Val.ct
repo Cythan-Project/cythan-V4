@@ -27,8 +27,7 @@ class Val {
         loop {
             if copy.equalsZero() {
                 return Bool.false();
-            };
-            if copy1.equalsZero() {
+            } else if copy1.equalsZero() {
                 return Bool.true();
             };
             copy.dec();

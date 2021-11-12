@@ -211,6 +211,9 @@ impl TemplateFixer {
             Expr::Loop(a) => Expr::Loop(a.into_iter().map(|x| self.expr(x)).collect()),
             Expr::Break => Expr::Break,
             Expr::Continue => Expr::Continue,
+            Expr::BooleanExpression(a, b, c) => {
+                Expr::BooleanExpression(box self.expr(*a), b, box self.expr(*c))
+            }
         }
     }
 }

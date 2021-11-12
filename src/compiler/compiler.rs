@@ -1,6 +1,9 @@
 use crate::{
     compiler::compiler_states::TypedMemory,
-    parser::{expression::Expr, ty::Type},
+    parser::{
+        expression::{BooleanOperator, Expr},
+        ty::Type,
+    },
 };
 
 use super::{
@@ -264,5 +267,47 @@ pub fn compile(expr: &Expr, ls: &mut LocalState, cm: &mut CodeManager) -> Output
         }
         Expr::Break => OutputData::new(MirCodeBlock::from(vec![Mir::Break]), None),
         Expr::Continue => OutputData::new(MirCodeBlock::from(vec![Mir::Continue]), None),
+        Expr::BooleanExpression(a, bo, c) => {
+            let alp = cm.alloc();
+            let a = compile(a, ls, cm);
+            let loca = if let Some(a) = a.return_value {
+                if a.ty.name != "Bool" {
+                    panic!("Boolean expression must be a bool");
+                }
+                a.locations[0]
+            } else {
+                panic!("Boolean expression must return a value");
+            };
+            let b = compile(c, ls, cm);
+            let locb = if let Some(b) = b.return_value {
+                if b.ty.name != "Bool" {
+                    panic!("Boolean expression must be a bool");
+                }
+                b.locations[0]
+            } else {
+                panic!("Boolean expression must return a value");
+            };
+            mir.add(a.mir);
+            if bo == &BooleanOperator::And {
+                let mut cb = MirCodeBlock::new();
+                cb.add(b.mir);
+                cb.copy(alp, locb);
+                mir.add_mir(Mir::If0(
+                    loca,
+                    cb,
+                    MirCodeBlock::from(vec![Mir::Set(alp, 1)]),
+                ));
+            } else {
+                let mut cb = MirCodeBlock::new();
+                cb.add(b.mir);
+                cb.copy(alp, locb);
+                mir.add_mir(Mir::If0(
+                    loca,
+                    MirCodeBlock::from(vec![Mir::Set(alp, 0)]),
+                    cb,
+                ));
+            }
+            OutputData::new(mir, Some(TypedMemory::new(Type::simple("Bool"), vec![alp])))
+        }
     }
 }

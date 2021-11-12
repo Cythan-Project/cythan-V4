@@ -1,5 +1,7 @@
 use std::collections::VecDeque;
 
+use self::expression::BooleanOperator;
+
 pub mod annotation;
 pub mod class;
 pub mod expression;
@@ -31,6 +33,7 @@ pub enum Token {
     TypeName(String),
     Block(ClosableType, VecDeque<Token>),
     Comment(String),
+    BooleanOperator(BooleanOperator),
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
@@ -127,6 +130,26 @@ pub fn parse(token_map: &mut VecDeque<Token>, char: &mut VecDeque<char>) -> Opti
                     token_map.push_back(validate(e));
                 }
                 return Some(ClosableType::Parenthesis);
+            }
+            '&' => {
+                if char.front() == Some(&'&') {
+                    if let Some(e) = current_token.take() {
+                        token_map.push_back(validate(e));
+                    }
+                    char.remove(0);
+                    token_map.push_back(Token::BooleanOperator(BooleanOperator::And));
+                    continue;
+                }
+            }
+            '|' => {
+                if char.front() == Some(&'|') {
+                    if let Some(e) = current_token.take() {
+                        token_map.push_back(validate(e));
+                    }
+                    char.remove(0);
+                    token_map.push_back(Token::BooleanOperator(BooleanOperator::Or));
+                    continue;
+                }
             }
             '>' => {
                 if let Some(e) = current_token.take() {

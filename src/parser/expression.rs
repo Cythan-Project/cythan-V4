@@ -71,6 +71,13 @@ pub enum Expr {
     Continue,
     Block(CodeBlock),
     Return(Option<Box<Expr>>),
+    BooleanExpression(Box<Expr>, BooleanOperator, Box<Expr>),
+}
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
+pub enum BooleanOperator {
+    And,
+    Or,
 }
 
 fn chain_expression(tokens: &mut VecDeque<Token>, exp: Expr) -> Expr {
@@ -87,6 +94,11 @@ fn chain_expression(tokens: &mut VecDeque<Token>, exp: Expr) -> Expr {
                 target: t,
             }
         }
+        Some(Token::BooleanOperator(e)) => Expr::BooleanExpression(
+            box exp,
+            e,
+            Box::new(tokens.drain(0..).collect::<VecDeque<_>>().parse()),
+        ),
         Some(Token::Dot) => {
             if let Some(Token::Literal(name)) = tokens.get_token() {
                 match tokens.get_token() {
@@ -130,9 +142,37 @@ fn chain_expression(tokens: &mut VecDeque<Token>, exp: Expr) -> Expr {
                 panic!("Expected literal after dot")
             }
         }
-        Some(e) => panic!("Unexpected token after literal {:?}", e),
+        Some(e) => {
+            panic!("Unexpected token after literal {:?} {:?}", e, tokens)
+        }
     };
     chain_expression(tokens, k)
+}
+
+fn parse_if(tokens: &mut VecDeque<Token>) -> Expr {
+    Expr::If {
+        condition: box take_until(tokens, |e| {
+            matches!(e, Token::Block(ClosableType::Bracket, _))
+        })
+        .parse(),
+        then: {
+            if let Some(Token::Block(ClosableType::Bracket, e)) = tokens.get_token() {
+                e.parse()
+            } else {
+                panic!("Expected brackets after if")
+            }
+        },
+        or_else: if matches!(tokens.front(), Some(Token::Keyword(Keyword::Else))) {
+            tokens.remove(0);
+            match tokens.get_token() {
+                Some(Token::Block(ClosableType::Bracket, e)) => Some(e.parse()),
+                Some(Token::Keyword(Keyword::If)) => Some(vec![parse_if(tokens)]),
+                _ => panic!("Expected brackets after else"),
+            }
+        } else {
+            None
+        },
+    }
 }
 
 impl TokenParser<Expr> for VecDeque<Token> {
@@ -148,6 +188,7 @@ impl TokenParser<Expr> for VecDeque<Token> {
             Token::Dot => panic!("Unexpected comma"),
             Token::DoubleDot => panic!("Unexpected comma"),
             Token::SemiColon => panic!("Unexpected comma"),
+            Token::BooleanOperator(_) => panic!("Unexpected boolean operator"),
             Token::Equals => {
                 println!("{:?}", self);
                 panic!("Unexpected equals")
@@ -155,29 +196,7 @@ impl TokenParser<Expr> for VecDeque<Token> {
             Token::Literal(a) => Expr::Variable(a),
             Token::Keyword(a) => match a {
                 Keyword::Return => return Expr::Return(Some(box self.parse())),
-                Keyword::If => Expr::If {
-                    condition: box take_until(&mut self, |e| {
-                        matches!(e, Token::Block(ClosableType::Bracket, _))
-                    })
-                    .parse(),
-                    then: {
-                        if let Some(Token::Block(ClosableType::Bracket, e)) = self.get_token() {
-                            e.parse()
-                        } else {
-                            panic!("Expected brackets after if")
-                        }
-                    },
-                    or_else: if matches!(self.front(), Some(Token::Keyword(Keyword::Else))) {
-                        self.remove(0);
-                        if let Some(Token::Block(ClosableType::Bracket, e)) = self.get_token() {
-                            Some(e.parse())
-                        } else {
-                            panic!("Expected brackets after if")
-                        }
-                    } else {
-                        None
-                    },
-                },
+                Keyword::If => parse_if(&mut self),
                 Keyword::Else => panic!("Unexpected else"),
                 Keyword::Class => panic!("Unexpected class"),
                 Keyword::Extends => panic!("Unexpected extends"),

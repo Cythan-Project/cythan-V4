@@ -2,8 +2,11 @@
 
 use std::rc::Rc;
 
-use compiler::{asm_interpreter::MemoryState, ClassLoader};
+use compiler::{
+    asm::Context, asm_interpreter::MemoryState, mir::MirState, template::Template, ClassLoader,
+};
 
+use cythan::{Cythan, InterruptedCythan};
 use either::Either;
 
 use crate::{
@@ -359,6 +362,8 @@ fn main() {
     compile_and_run(&mir);
 }
 
+const MIR_MODE: bool = false;
+
 fn compile_and_run(mir: &MirCodeBlock) {
     /* println!(
         "{}",
@@ -377,45 +382,48 @@ fn compile_and_run(mir: &MirCodeBlock) {
             .join("\n"),
     )
     .unwrap();
-    MemoryState::new(2048, 8).execute_block(mir);
-    /* let mut mirstate = MirState::default();
-    mir.to_asm(&mut mirstate);
-    let mut compile_state = Template::default();
-    let mut ctx = Context::default();
-    mirstate
-        .instructions
-        .iter()
-        .for_each(|i| i.compile(&mut compile_state, &mut ctx));
-    let k = compile_state.build();
-    std::fs::write("out.ct", &k).unwrap();
-    let k = cythan_compiler::compile(&k).unwrap();
-    let mut machine = InterruptedCythan::new_stdio(k, 4, 2 * 2_usize.pow(4 /* base */) + 3);
-    'a: loop {
-        for _ in 0..10000 {
-            machine.next();
-        }
+    if MIR_MODE {
+        MemoryState::new(2048, 8).execute_block(mir);
+    } else {
+        let mut mirstate = MirState::default();
+        mir.to_asm(&mut mirstate);
+        let mut compile_state = Template::default();
+        let mut ctx = Context::default();
+        mirstate
+            .instructions
+            .iter()
+            .for_each(|i| i.compile(&mut compile_state, &mut ctx));
+        let k = compile_state.build();
+        std::fs::write("out.ct", &k).unwrap();
+        let k = cythan_compiler::compile(&k).unwrap();
+        let mut machine = InterruptedCythan::new_stdio(k, 4, 2 * 2_usize.pow(4 /* base */) + 3);
+        'a: loop {
+            for _ in 0..10000 {
+                machine.next();
+            }
 
-        std::fs::write(
-            "out.txt",
-            machine
-                .cases
-                .iter()
-                .map(|x| x.to_string())
-                .collect::<Vec<_>>()
-                .join(" "),
-        )
-        .unwrap();
+            std::fs::write(
+                "out.txt",
+                machine
+                    .cases
+                    .iter()
+                    .map(|x| x.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            )
+            .unwrap();
 
-        let o = machine.cases.clone();
+            let o = machine.cases.clone();
 
-        for _ in 0..10 {
-            machine.next();
+            for _ in 0..10 {
+                machine.next();
 
-            if o == machine.cases {
-                break 'a;
+                if o == machine.cases {
+                    break 'a;
+                }
             }
         }
-    } */
+    }
 }
 
 #[test]
