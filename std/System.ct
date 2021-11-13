@@ -1,0 +1,6 @@
+class System {
+
+    setRegister<N>(Val value) {}
+    Val getRegister<N>() {}
+    debug<T>(T t) {}
+}

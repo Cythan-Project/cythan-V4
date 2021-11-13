@@ -97,21 +97,6 @@ pub fn parse(
                         Span::new(file.to_owned(), current, initial_size - char.len()),
                         comment,
                     ));
-                } else if char.front() == Some(&'/') {
-                    if let Some(e) = current_token.take() {
-                        token_map.push_back(validate(e));
-                    }
-                    let mut comment = String::new();
-                    while let Some(c) = char.pop_front() {
-                        if c == '\n' {
-                            break;
-                        }
-                        comment.push(c);
-                    }
-                    token_map.push_back(Token::Comment(
-                        Span::new(file.to_owned(), current, initial_size - char.len()),
-                        comment,
-                    ));
                 }
             }
             '\'' => {
@@ -288,7 +273,7 @@ pub fn parse(
                     .with_code(1)
                     .with_message(format!("Invalid token"))
                     .with_label(
-                        Label::new((span.file.to_owned(), 32..33))
+                        Label::new(span.as_span())
                             .with_message(format!("This is a {} token", e.name().fg(a)))
                             .with_color(a),
                     )
@@ -339,7 +324,7 @@ impl Token {
         span
     }
 
-    pub fn name(&self) -> &'static str {
+    pub fn name(&self) -> String {
         match self {
             Token::Comma(_) => "Comma",
             Token::Dot(_) => "Dot",
@@ -349,12 +334,13 @@ impl Token {
             Token::At(_) => "At",
             Token::SemiColon(_) => "SemiColon",
             Token::Literal(_, _) => "Literal",
-            Token::Keyword(_, _) => "Keyword",
+            Token::Keyword(_, a) => return format!("{:?}", a),
             Token::Number(_, _) => "Number",
             Token::TypeName(_, _) => "TypeName",
             Token::Block(_, _, _) => "Block",
             Token::Comment(_, _) => "Comment",
             Token::BooleanOperator(_, _) => "BooleanOperator",
         }
+        .to_owned()
     }
 }

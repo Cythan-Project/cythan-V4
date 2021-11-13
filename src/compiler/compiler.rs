@@ -1,7 +1,11 @@
+use std::ops::Range;
+
+use ariadne::{Color, ColorGenerator, Fmt, Label, Report, ReportKind};
+
 use crate::{
     compiler::compiler_states::TypedMemory,
     parser::{
-        expression::{BooleanOperator, Expr},
+        expression::{BooleanOperator, Expr, SpannedVector},
         ty::Type,
     },
 };
@@ -11,26 +15,40 @@ use super::{
     mir::{Mir, MirCodeBlock},
 };
 
-pub fn compile_code_block(expr: &[Expr], ls: &mut LocalState, cm: &mut CodeManager) -> OutputData {
-    expr.iter().fold(
-        OutputData::new(MirCodeBlock::new(), None),
-        |mut acc, expr| {
-            let expr = compile(expr, ls, cm);
+pub fn compile_code_block(
+    expr: &SpannedVector<Expr>,
+    ls: &mut LocalState,
+    cm: &mut CodeManager,
+) -> Result<OutputData, Report<(String, Range<usize>)>> {
+    expr.1.iter().fold(
+        Ok(OutputData::new(MirCodeBlock::new(), None)),
+        |acc, expr| {
+            let mut acc = acc?;
+            let expr = compile(expr, ls, cm)?;
             acc.mir.add(expr.mir);
             acc.return_value = expr.return_value;
-            acc
+            Ok(acc)
         },
     )
 }
 
-pub fn compile(expr: &Expr, ls: &mut LocalState, cm: &mut CodeManager) -> OutputData {
+pub fn compile(
+    expr: &Expr,
+    ls: &mut LocalState,
+    cm: &mut CodeManager,
+) -> Result<OutputData, Report<(String, Range<usize>)>> {
     let mut mir = MirCodeBlock::new();
     match expr {
-        Expr::New { class, fields } => {
+        Expr::New {
+            span,
+            class,
+            fields,
+        } => {
             let fields = fields
+                .1
                 .iter()
-                .map(|(a, b)| (a, compile(b, ls, cm)))
-                .collect::<Vec<_>>();
+                .map(|(a, b)| Ok((a, compile(b, ls, cm)?)))
+                .collect::<Result<Vec<_>, _>>()?;
             let view = cm.cl.view(class);
             let instr = view
                 .fields
@@ -50,23 +68,24 @@ pub fn compile(expr: &Expr, ls: &mut LocalState, cm: &mut CodeManager) -> Output
                 })
                 .flatten()
                 .collect();
-            OutputData::new(
+            Ok(OutputData::new(
                 MirCodeBlock::from(fields.into_iter().map(|x| x.1.mir.0).flatten().collect()),
                 Some(TypedMemory::new(class.clone(), instr)),
-            )
+            ))
         }
         Expr::If {
+            span,
             condition,
             then,
             or_else,
         } => {
             //let alloc = ls.cm.alloc
-            let er = compile(condition, ls, cm);
+            let er = compile(condition, ls, cm)?;
             let loc = if let Some(TypedMemory { locations, ty }) = &er.return_value {
                 if locations.len() != 1 {
                     panic!("Condition must return a single value");
                 }
-                if ty.name != "Bool" {
+                if ty.name.1 != "Bool" {
                     panic!("Condition must return a bool");
                 }
                 locations[0]
@@ -75,10 +94,12 @@ pub fn compile(expr: &Expr, ls: &mut LocalState, cm: &mut CodeManager) -> Output
             };
             mir.add(er.mir);
 
-            let then_r = compile_code_block(then, &mut ls.shadow(), cm);
-            let else_r = or_else
-                .as_ref()
-                .map(|x| compile_code_block(x, &mut ls.shadow(), cm));
+            let then_r = compile_code_block(then, &mut ls.shadow(), cm)?;
+            let else_r = if let Some(x) = or_else.as_ref() {
+                Some(compile_code_block(x, &mut ls.shadow(), cm)?)
+            } else {
+                None
+            };
             let (output, tlr, elr) = if let Some(else_r) = else_r {
                 if let Some(b) = then_r.return_value {
                     let a = else_r
@@ -101,9 +122,9 @@ pub fn compile(expr: &Expr, ls: &mut LocalState, cm: &mut CodeManager) -> Output
                 (None, then_r.mir, MirCodeBlock::new())
             };
             mir.add_mir(Mir::If0(loc, tlr, elr));
-            OutputData::new(mir, output)
+            Ok(OutputData::new(mir, output))
         }
-        Expr::Number(a) => {
+        Expr::Number(span, a) => {
             // TODO add more options (type choice automatically)
             let (tn, alc) = if *a < 16 && *a >= 0 {
                 let alc = cm.alloc();
@@ -132,86 +153,83 @@ pub fn compile(expr: &Expr, ls: &mut LocalState, cm: &mut CodeManager) -> Output
             } else {
                 panic!("Number too big {}", a);
             };
-            OutputData::new(
+            Ok(OutputData::new(
                 mir,
-                Some(TypedMemory::new(
-                    Type {
-                        name: tn.to_owned(),
-                        template: None,
-                    },
-                    alc,
-                )),
-            )
+                Some(TypedMemory::new(Type::simple(tn, span.clone()), alc)),
+            ))
         }
-        Expr::Variable(a) => OutputData::new(
+        Expr::Variable(span, a) => Ok(OutputData::new(
             mir,
             Some(ls.get_var(a).expect("Variable not found").clone()),
-        ),
-        Expr::Type(_a) => {
+        )),
+        Expr::Type(span, _a) => {
             panic!("Expected something else than Type in expression")
         }
-        Expr::Field { source, name } => {
-            let out = compile(&*source, ls, cm);
+        Expr::Field { span, source, name } => {
+            let out = compile(&*source, ls, cm)?;
             let rtv = out
                 .return_value
                 .as_ref()
                 .expect("Field source must be a value");
             let (ty, locs) =
                 cm.location_and_type_of_field(&rtv.locations, cm.cl.view(&rtv.ty), name);
-            OutputData::new(out.mir, Some(TypedMemory::new(ty, locs)))
+            Ok(OutputData::new(out.mir, Some(TypedMemory::new(ty, locs))))
         }
         Expr::Method {
+            span,
             source,
             name,
             arguments,
             template,
         } => {
-            if let Expr::Type(a) = &**source {
+            if let Expr::Type(tspan, a) = &**source {
                 let arguments = arguments
+                    .1
                     .iter()
                     .map(|x| {
-                        let k = compile(x, ls, cm);
+                        let k = compile(x, ls, cm)?;
                         mir.add(k.mir);
-                        k.return_value.expect("Argument must be a value")
+                        Ok(k.return_value.expect("Argument must be a value"))
                     })
-                    .collect::<Vec<_>>();
+                    .collect::<Result<Vec<_>, _>>()?;
                 let k = cm
                     .cl
                     .view(a)
-                    .method_view(name, template)
-                    .execute(ls, cm, arguments);
+                    .method_view(&name.1, &template)
+                    .execute(ls, cm, arguments)?;
                 mir.add(k.mir);
-                OutputData::new(mir, k.return_value)
+                Ok(OutputData::new(mir, k.return_value))
             } else {
-                let aj = compile(source, ls, cm);
+                let aj = compile(source, ls, cm)?;
                 mir.add(aj.mir);
                 let ah = aj.return_value.expect("Method source must be a value");
                 let a = &ah.ty;
                 let mut arguments = arguments
+                    .1
                     .iter()
                     .map(|x| {
-                        let k = compile(x, ls, cm);
+                        let k = compile(x, ls, cm)?;
                         mir.add(k.mir);
-                        k.return_value.expect("Argument must be a value")
+                        Ok(k.return_value.expect("Argument must be a value"))
                     })
-                    .collect::<Vec<_>>();
+                    .collect::<Result<Vec<_>, _>>()?;
                 arguments.insert(0, ah.clone());
                 let k = cm
                     .cl
                     .view(a)
-                    .method_view(name, template)
-                    .execute(ls, cm, arguments);
+                    .method_view(&name.1, template)
+                    .execute(ls, cm, arguments)?;
                 mir.add(k.mir);
-                OutputData::new(mir, k.return_value)
+                Ok(OutputData::new(mir, k.return_value))
             }
         }
-        Expr::NamedResource { vtype, name } => {
-            let k = ls.new_var(cm, name, vtype.clone(), &mut mir);
-            OutputData::new(mir, Some(k))
+        Expr::NamedResource { span, vtype, name } => {
+            let k = ls.new_var(cm, &name.1, vtype.clone(), &mut mir);
+            Ok(OutputData::new(mir, Some(k)))
         }
-        Expr::Assignement { target, to } => {
-            let ret = compile(target, ls, cm);
-            let ret1 = compile(to, ls, cm);
+        Expr::Assignement { span, target, to } => {
+            let ret = compile(target, ls, cm)?;
+            let ret1 = compile(to, ls, cm)?;
             let rt = ret
                 .return_value
                 .expect("Assignement target must be a value");
@@ -224,33 +242,61 @@ pub fn compile(expr: &Expr, ls: &mut LocalState, cm: &mut CodeManager) -> Output
             mir.add(ret1.mir);
             mir.add(ret.mir);
             mir.copy_bulk(&rt.locations, &rt1.locations);
-            OutputData::new(mir, None)
+            Ok(OutputData::new(mir, None))
         }
-        Expr::Block(a) => compile_code_block(a, &mut ls.shadow(), cm),
-        Expr::Return(a) => {
+        Expr::Block(span, a) => compile_code_block(a, &mut ls.shadow(), cm),
+        Expr::Return(span, a) => {
             if let Some(e) = a {
-                let ret = compile(e, ls, cm);
+                let ret = compile(e, ls, cm)?;
                 let rl = ls
                     .return_loc
                     .as_ref()
                     .expect("A return value wasn't expected");
                 let rt = ret.return_value.expect("Return value must be a value");
                 if rl.ty != rt.ty {
-                    panic!("Return type must match");
+                    let mut colors = ColorGenerator::new();
+                    let a = colors.next();
+                    let b = colors.next();
+                    let out = Color::Fixed(81);
+                    let span = e.span();
+                    return Err(
+                        Report::build(ReportKind::Error, span.file.to_owned(), span.start)
+                            .with_code(5)
+                            .with_message(format!("Return type doesn't match method return type"))
+                            .with_label(
+                                Label::new(rl.ty.span.as_span())
+                                    .with_message(format!("Type defined here"))
+                                    .with_color(b),
+                            )
+                            .with_label(
+                                Label::new(e.span().as_span())
+                                    .with_message(format!(
+                                        "This expression has type {} expected {}.",
+                                        format!("{:?}", rl.ty).fg(a),
+                                        format!("{:?}", rl.ty).fg(a)
+                                    ))
+                                    .with_color(a),
+                            )
+                            .finish(),
+                    );
                 }
                 mir.add(ret.mir);
                 mir.copy_bulk(&rl.locations, &rt.locations);
                 mir.add_mir(Mir::Skip);
-                OutputData::new(mir, None)
+                Ok(OutputData::new(mir, None))
             } else if ls.return_loc.is_some() {
                 panic!("A return value was expected");
             } else {
                 mir.add_mir(Mir::Skip);
-                OutputData::new(mir, None)
+                Ok(OutputData::new(mir, None))
             }
         }
-        Expr::Cast { source, target } => {
-            let ret = compile(source, ls, cm);
+        Expr::Cast {
+            span,
+            source,
+            target,
+        } => {
+            let ret = compile(source, ls, cm)?;
             mir.add(ret.mir);
             let rt = ret.return_value.expect("Cast source must be a value");
             let source_view = cm.cl.view(&rt.ty);
@@ -258,29 +304,35 @@ pub fn compile(expr: &Expr, ls: &mut LocalState, cm: &mut CodeManager) -> Output
             if source_view.size(&cm.cl) != target_view.size(&cm.cl) {
                 panic!("Type size cast must match, {:?} and {:?}", source, target);
             }
-            OutputData::new(mir, Some(TypedMemory::new(target.clone(), rt.locations)))
+            Ok(OutputData::new(
+                mir,
+                Some(TypedMemory::new(target.clone(), rt.locations)),
+            ))
         }
-        Expr::Loop(a) => {
-            let k = compile_code_block(a, &mut ls.shadow(), cm);
+        Expr::Loop(span, a) => {
+            let k = compile_code_block(a, &mut ls.shadow(), cm)?;
             mir.add_mir(Mir::Loop(k.mir));
-            OutputData::new(mir, None)
+            Ok(OutputData::new(mir, None))
         }
-        Expr::Break => OutputData::new(MirCodeBlock::from(vec![Mir::Break]), None),
-        Expr::Continue => OutputData::new(MirCodeBlock::from(vec![Mir::Continue]), None),
-        Expr::BooleanExpression(a, bo, c) => {
+        Expr::Break(span) => Ok(OutputData::new(MirCodeBlock::from(vec![Mir::Break]), None)),
+        Expr::Continue(span) => Ok(OutputData::new(
+            MirCodeBlock::from(vec![Mir::Continue]),
+            None,
+        )),
+        Expr::BooleanExpression(span, a, bo, c) => {
             let alp = cm.alloc();
-            let a = compile(a, ls, cm);
+            let a = compile(a, ls, cm)?;
             let loca = if let Some(a) = a.return_value {
-                if a.ty.name != "Bool" {
+                if a.ty.name.1 != "Bool" {
                     panic!("Boolean expression must be a bool");
                 }
                 a.locations[0]
             } else {
                 panic!("Boolean expression must return a value");
             };
-            let b = compile(c, ls, cm);
+            let b = compile(c, ls, cm)?;
             let locb = if let Some(b) = b.return_value {
-                if b.ty.name != "Bool" {
+                if b.ty.name.1 != "Bool" {
                     panic!("Boolean expression must be a bool");
                 }
                 b.locations[0]
@@ -307,7 +359,13 @@ pub fn compile(expr: &Expr, ls: &mut LocalState, cm: &mut CodeManager) -> Output
                     cb,
                 ));
             }
-            OutputData::new(mir, Some(TypedMemory::new(Type::simple("Bool"), vec![alp])))
+            Ok(OutputData::new(
+                mir,
+                Some(TypedMemory::new(
+                    Type::simple("Bool", span.clone()),
+                    vec![alp],
+                )),
+            ))
         }
     }
 }

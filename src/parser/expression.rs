@@ -2,9 +2,12 @@ use std::{collections::VecDeque, ops::Range};
 
 use ariadne::{Color, ColorGenerator, Fmt, Label, Report, ReportKind};
 
-use crate::parser::{
-    token_utils::{split_complex, take_until, SplitAction},
-    ClosableType, Keyword, Token, TokenExtracter,
+use crate::{
+    errors::Span,
+    parser::{
+        token_utils::{split_complex, take_until, SplitAction},
+        ClosableType, Keyword, Token, TokenExtracter,
+    },
 };
 
 pub trait TokenProcessor {
@@ -35,46 +38,59 @@ use super::{ty::Type, TokenParser};
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     New {
+        span: Span,
         class: Type,
-        fields: Vec<(String, Expr)>,
+        fields: SpannedVector<(String, Expr)>,
     },
     If {
+        span: Span,
         condition: Box<Expr>,
         then: CodeBlock,
         or_else: Option<CodeBlock>,
     },
     Cast {
+        span: Span,
         source: Box<Expr>,
         target: Type,
     },
-    Number(i32),
-    Variable(String),
-    Type(Type),
+    Number(Span, i32),
+    Variable(Span, String),
+    Type(Span, Type),
     Field {
+        span: Span,
         source: Box<Expr>,
         name: String,
     },
     Method {
+        span: Span,
         source: Box<Expr>,
-        name: String,
-        arguments: Vec<Expr>,
-        template: Option<Vec<Type>>,
+        name: SpannedObject<String>,
+        arguments: SpannedVector<Expr>,
+        template: Option<SpannedVector<Type>>,
     },
     NamedResource {
+        span: Span,
         vtype: Type,
-        name: String,
+        name: SpannedObject<String>,
     },
     Assignement {
+        span: Span,
         target: Box<Expr>,
         to: Box<Expr>,
     },
-    Loop(CodeBlock),
-    Break,
-    Continue,
-    Block(CodeBlock),
-    Return(Option<Box<Expr>>),
-    BooleanExpression(Box<Expr>, BooleanOperator, Box<Expr>),
+    Loop(Span, CodeBlock),
+    Break(Span),
+    Continue(Span),
+    Block(Span, CodeBlock),
+    Return(Span, Option<Box<Expr>>),
+    BooleanExpression(Span, Box<Expr>, BooleanOperator, Box<Expr>),
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SpannedVector<T>(pub Span, pub Vec<T>);
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SpannedObject<T>(pub Span, pub T);
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
 pub enum BooleanOperator {
@@ -88,48 +104,36 @@ fn chain_expression(
 ) -> Result<Expr, Report<(String, Range<usize>)>> {
     let k = match tokens.get_token() {
         None | Some(Token::SemiColon(_)) => return Ok(exp),
-        Some(Token::Equals(_)) => Expr::Assignement {
+        Some(Token::Equals(span)) => Expr::Assignement {
+            span,
             target: Box::new(exp),
             to: Box::new(tokens.drain(0..).collect::<VecDeque<_>>().parse()?),
         },
-        Some(Token::Keyword(_, Keyword::As)) => {
+        Some(Token::Keyword(span, Keyword::As)) => {
             let t = tokens.extract()?;
             Expr::Cast {
+                span,
                 source: Box::new(exp),
                 target: t,
             }
         }
-        Some(Token::BooleanOperator(_, e)) => Expr::BooleanExpression(
+        Some(Token::BooleanOperator(span, e)) => Expr::BooleanExpression(
+            span,
             box exp,
             e,
             Box::new(tokens.drain(0..).collect::<VecDeque<_>>().parse()?),
         ),
         Some(Token::Dot(_)) => {
-            if let Some(Token::Literal(_, name)) = tokens.get_token() {
+            if let Some(Token::Literal(name_span, name)) = tokens.get_token() {
                 match tokens.get_token() {
-                    Some(Token::Block(_, ClosableType::Parenthesis, arguments)) => Expr::Method {
-                        source: box exp,
-                        name,
-                        arguments: split_complex(arguments, |a| {
-                            if matches!(a, Token::Comma(_)) {
-                                SplitAction::SplitConsume
-                            } else {
-                                SplitAction::None
-                            }
-                        })
-                        .into_iter()
-                        .map(|a| a.parse())
-                        .collect::<Result<_, _>>()?,
-                        template: None,
-                    },
-                    Some(Token::Block(_, ClosableType::Type, template)) => {
-                        if let Some(Token::Block(_, ClosableType::Parenthesis, arguments)) =
-                            tokens.get_token()
-                        {
-                            Expr::Method {
-                                source: box exp,
-                                name,
-                                arguments: split_complex(arguments, |a| {
+                    Some(Token::Block(arguments_span, ClosableType::Parenthesis, arguments)) => {
+                        Expr::Method {
+                            name: SpannedObject(name_span, name),
+                            span: exp.span().merge(&arguments_span),
+                            source: box exp,
+                            arguments: SpannedVector(
+                                arguments_span,
+                                split_complex(arguments, |a| {
                                     if matches!(a, Token::Comma(_)) {
                                         SplitAction::SplitConsume
                                     } else {
@@ -139,7 +143,35 @@ fn chain_expression(
                                 .into_iter()
                                 .map(|a| a.parse())
                                 .collect::<Result<_, _>>()?,
-                                template: Some(template.parse()?),
+                            ),
+                            template: None,
+                        }
+                    }
+                    Some(Token::Block(template_span, ClosableType::Type, template)) => {
+                        if let Some(Token::Block(
+                            arguments_span,
+                            ClosableType::Parenthesis,
+                            arguments,
+                        )) = tokens.get_token()
+                        {
+                            Expr::Method {
+                                span: exp.span().merge(&arguments_span),
+                                source: box exp,
+                                name: SpannedObject(name_span, name),
+                                arguments: SpannedVector(
+                                    arguments_span,
+                                    split_complex(arguments, |a| {
+                                        if matches!(a, Token::Comma(_)) {
+                                            SplitAction::SplitConsume
+                                        } else {
+                                            SplitAction::None
+                                        }
+                                    })
+                                    .into_iter()
+                                    .map(|a| a.parse())
+                                    .collect::<Result<_, _>>()?,
+                                ),
+                                template: Some(SpannedVector(template_span, template.parse()?)),
                             }
                         } else {
                             panic!("Expected brackets after method call")
@@ -152,6 +184,7 @@ fn chain_expression(
                         Expr::Field {
                             source: Box::new(exp),
                             name,
+                            span: name_span,
                         }
                     }
                 }
@@ -162,53 +195,116 @@ fn chain_expression(
         Some(e) => {
             let mut colors = ColorGenerator::new();
             let a = colors.next();
+            let b = colors.next();
             let out = Color::Fixed(81);
             let span = e.span();
-            return Err(Report::build(ReportKind::Error, span.file.to_owned(), 0)
-                .with_code(1)
-                .with_message(format!("Invalid token"))
-                .with_label(
-                    Label::new((span.file.to_owned(), 32..33))
-                        .with_message(format!("This is a {} token", e.name().fg(a)))
-                        .with_color(a),
-                )
-                .with_note(format!(
-                    "Expected {}, {}, {}, {} or {}",
-                    "BooleanOperator".fg(out),
-                    "SemiColon".fg(out),
-                    "Equals".fg(out),
-                    "As".fg(out),
-                    "Dot".fg(out)
-                ))
-                .finish());
+            return Err(
+                Report::build(ReportKind::Error, span.file.to_owned(), span.start)
+                    .with_code(2)
+                    .with_message(format!("Invalid token after expression"))
+                    .with_label(
+                        Label::new(exp.span().as_span())
+                            .with_message(format!(
+                                "Did you forget a {} at the end of this expression.",
+                                ";".fg(b),
+                            ))
+                            .with_color(b),
+                    )
+                    .with_label(
+                        Label::new(span.as_span())
+                            .with_message(format!(
+                                "This {} token was expected after expression",
+                                e.name().fg(a)
+                            ))
+                            .with_color(a),
+                    )
+                    .with_note(format!(
+                        "Expected {}, {}, {}, {}, {} or {}",
+                        ";".fg(out),
+                        "||".fg(out),
+                        "&&".fg(out),
+                        "=".fg(out),
+                        ".".fg(out),
+                        "as".fg(out)
+                    ))
+                    .finish(),
+            );
         }
     };
     chain_expression(tokens, k)
 }
 
-fn parse_if(tokens: &mut VecDeque<Token>) -> Result<Expr, Report<(String, Range<usize>)>> {
+fn parse_if(
+    tokens: &mut VecDeque<Token>,
+    if_token_span: Span,
+) -> Result<Expr, Report<(String, Range<usize>)>> {
+    let k = box take_until(tokens, |e| {
+        matches!(e, Token::Block(_, ClosableType::Bracket, _))
+    })
+    .parse()?;
+    let if_b = match tokens.get_token() {
+        Some(Token::Block(span, ClosableType::Bracket, e)) => SpannedVector(span, e.parse()?),
+        Some(e) => {
+            let mut colors = ColorGenerator::new();
+            let a = colors.next();
+            let out = Color::Fixed(81);
+            return Err(
+                Report::build(ReportKind::Error, e.span().file.to_owned(), 0)
+                    .with_code(4)
+                    .with_message(format!("Invalid token after if"))
+                    .with_label(
+                        Label::new(e.span().as_span())
+                            .with_message(format!("This is a {} token", e.name().fg(a)))
+                            .with_color(a),
+                    )
+                    .with_note(format!(
+                        "Expected {}, {} or {}",
+                        "Literal".fg(out),
+                        "TypeName".fg(out),
+                        "Number".fg(out)
+                    ))
+                    .finish(),
+            );
+        }
+        None => {
+            let mut colors = ColorGenerator::new();
+            let a = colors.next();
+            let out = Color::Fixed(81);
+            return Err(
+                Report::build(ReportKind::Error, if_token_span.file.to_owned(), 0)
+                    .with_code(5)
+                    .with_message(format!("Expected token after if"))
+                    .with_label(Label::new(if_token_span.as_span()).with_color(a))
+                    .with_note(format!(
+                        "Expected {}, {} or {}",
+                        "Literal".fg(out),
+                        "TypeName".fg(out),
+                        "Number".fg(out)
+                    ))
+                    .finish(),
+            );
+        }
+    };
+    let else_b = if matches!(tokens.front(), Some(Token::Keyword(_, Keyword::Else))) {
+        tokens.remove(0);
+        match tokens.get_token() {
+            Some(Token::Block(span, ClosableType::Bracket, e)) => {
+                Some(SpannedVector(span, e.parse()?))
+            }
+            Some(Token::Keyword(span, Keyword::If)) => {
+                let ifb = parse_if(tokens, span)?;
+                Some(SpannedVector(ifb.span().clone(), vec![ifb]))
+            }
+            _ => panic!("Expected brackets after else"),
+        }
+    } else {
+        None
+    };
     Ok(Expr::If {
-        condition: box take_until(tokens, |e| {
-            matches!(e, Token::Block(_, ClosableType::Bracket, _))
-        })
-        .parse()?,
-        then: {
-            if let Some(Token::Block(_, ClosableType::Bracket, e)) = tokens.get_token() {
-                e.parse()?
-            } else {
-                panic!("Expected brackets after if")
-            }
-        },
-        or_else: if matches!(tokens.front(), Some(Token::Keyword(_, Keyword::Else))) {
-            tokens.remove(0);
-            match tokens.get_token() {
-                Some(Token::Block(_, ClosableType::Bracket, e)) => Some(e.parse()?),
-                Some(Token::Keyword(_, Keyword::If)) => Some(vec![parse_if(tokens)?]),
-                _ => panic!("Expected brackets after else"),
-            }
-        } else {
-            None
-        },
+        condition: k,
+        span: if_token_span.merge(else_b.as_ref().map(|e| &e.0).unwrap_or_else(|| &if_b.0)),
+        then: if_b,
+        or_else: else_b,
     })
 }
 
@@ -230,31 +326,39 @@ impl TokenParser<Expr> for VecDeque<Token> {
                 println!("{:?}", self);
                 panic!("Unexpected equals")
             }
-            Token::Literal(_, a) => Expr::Variable(a),
-            Token::Keyword(_, a) => match a {
-                Keyword::Return => return Ok(Expr::Return(Some(box self.parse()?))),
-                Keyword::If => parse_if(&mut self)?,
+            Token::Literal(span, a) => Expr::Variable(span, a),
+            Token::Keyword(span, a) => match a {
+                Keyword::Return => {
+                    let out: Expr = self.parse()?;
+                    return Ok(Expr::Return(span.merge(out.span()), Some(box out)));
+                }
+                Keyword::If => parse_if(&mut self, span)?,
                 Keyword::Else => panic!("Unexpected else"),
                 Keyword::Class => panic!("Unexpected class"),
                 Keyword::Extends => panic!("Unexpected extends"),
                 Keyword::As => panic!("Unexpected as"),
-                Keyword::Loop => Expr::Loop(
-                    if let Some(Token::Block(_, ClosableType::Bracket, e)) = self.get_token() {
-                        e.parse()?
+                Keyword::Loop => {
+                    let cb = if let Some(Token::Block(span, ClosableType::Bracket, e)) =
+                        self.get_token()
+                    {
+                        SpannedVector(span, e.parse()?)
                     } else {
                         panic!("Expected brackets after loop")
-                    },
-                ),
-                Keyword::Continue => Expr::Continue,
-                Keyword::Break => Expr::Break,
+                    };
+                    Expr::Loop(span.merge(&cb.0), cb)
+                }
+                Keyword::Continue => Expr::Continue(span),
+                Keyword::Break => Expr::Break(span),
                 Keyword::While => panic!("Not yet implemented"),
                 Keyword::For => panic!("Not yet implemented"),
                 Keyword::In => panic!("Unexpected in"),
             },
-            Token::Number(_, a) => Expr::Number(a),
-            Token::TypeName(_, a) => {
+            Token::Number(span, a) => Expr::Number(span, a),
+            Token::TypeName(span, a) => {
                 let template = match self.get_token() {
-                    Some(Token::Block(_, ClosableType::Type, e)) => Some(e.parse()?),
+                    Some(Token::Block(tspan, ClosableType::Type, e)) => {
+                        Some(SpannedVector(tspan, e.parse()?))
+                    }
                     Some(e) => {
                         self.push_front(e);
                         None
@@ -262,46 +366,57 @@ impl TokenParser<Expr> for VecDeque<Token> {
                     None => None,
                 };
                 match self.get_token() {
-                    Some(Token::Block(_, ClosableType::Bracket, inside)) => Expr::New {
-                        class: Type { name: a, template },
-                        fields: split_complex(inside, |a| {
-                            if matches!(a, Token::Comma(_)) {
-                                SplitAction::SplitConsume
-                            } else {
-                                SplitAction::None
-                            }
-                        })
-                        .into_iter()
-                        .map(|mut a| {
-                            let name = if let Some(Token::Literal(_, name)) = a.get_token() {
-                                name
-                            } else {
-                                panic!("Expected argument name");
-                            };
-                            if !matches!(a.get_token(), Some(Token::Equals(_))) {
-                                panic!("Expected equals");
-                            };
-                            let value = a.parse()?;
-                            Ok((name, value))
-                        })
-                        .collect::<Result<_, _>>()?,
+                    Some(Token::Block(span_block, ClosableType::Bracket, inside)) => Expr::New {
+                        span: span.merge(&span_block),
+                        class: Type::new(&a, template, span),
+                        fields: SpannedVector(
+                            span_block,
+                            split_complex(inside, |a| {
+                                if matches!(a, Token::Comma(_)) {
+                                    SplitAction::SplitConsume
+                                } else {
+                                    SplitAction::None
+                                }
+                            })
+                            .into_iter()
+                            .map(|mut a| {
+                                let name = if let Some(Token::Literal(_, name)) = a.get_token() {
+                                    name
+                                } else {
+                                    panic!("Expected argument name");
+                                };
+                                if !matches!(a.get_token(), Some(Token::Equals(_))) {
+                                    panic!("Expected equals");
+                                };
+                                let value = a.parse()?;
+                                Ok((name, value))
+                            })
+                            .collect::<Result<_, _>>()?,
+                        ),
                     },
-                    Some(Token::Literal(_, literal)) => Expr::NamedResource {
-                        vtype: Type { name: a, template },
-                        name: literal.to_owned(),
+                    Some(Token::Literal(lspan, literal)) => Expr::NamedResource {
+                        span: span.merge(&lspan),
+                        vtype: Type::new(&a, template, span),
+                        name: SpannedObject(lspan, literal.to_owned()),
                     },
                     Some(e) => {
                         self.push_front(e);
-                        Expr::Type(Type { name: a, template })
+                        let ty = Type::new(&a, template, span);
+                        Expr::Type(ty.span.clone(), ty)
                     }
-                    None => Expr::Type(Type { name: a, template }),
+                    None => {
+                        let ty = Type::new(&a, template, span);
+                        Expr::Type(ty.span.clone(), ty)
+                    }
                 }
             }
-            Token::Block(_, ClosableType::Bracket, b) => Expr::Block(b.parse()?),
+            Token::Block(span, ClosableType::Bracket, b) => {
+                Expr::Block(span.clone(), SpannedVector(span, b.parse()?))
+            }
             Token::Block(_, ClosableType::Parenthesis, b) => b.parse()?,
             Token::Block(_, ClosableType::Type, _) => panic!("Unexpected template"),
-            Token::Char(_, a) => {
-                Expr::Number(a.chars().fold(0, |acc, c| acc * 255 + c as u8 as i32))
+            Token::Char(span, a) => {
+                Expr::Number(span, a.chars().fold(0, |acc, c| acc * 255 + c as u8 as i32))
             }
             Token::Comment(_, _) => return self.parse(),
         };
@@ -309,7 +424,7 @@ impl TokenParser<Expr> for VecDeque<Token> {
     }
 }
 
-pub type CodeBlock = Vec<Expr>;
+pub type CodeBlock = SpannedVector<Expr>;
 
 impl TokenParser<Vec<Expr>> for VecDeque<Token> {
     fn parse(self) -> Result<Vec<Expr>, Report<(String, Range<usize>)>> {
@@ -324,5 +439,27 @@ impl TokenParser<Vec<Expr>> for VecDeque<Token> {
         .filter(|a| a.length() != 0)
         .map(|a| a.parse())
         .collect::<Result<_, _>>()
+    }
+}
+impl Expr {
+    pub fn span(&self) -> &Span {
+        match self {
+            Expr::New { span, .. }
+            | Expr::If { span, .. }
+            | Expr::Cast { span, .. }
+            | Expr::Number(span, _)
+            | Expr::Variable(span, _)
+            | Expr::Type(span, _)
+            | Expr::Field { span, .. }
+            | Expr::Method { span, .. }
+            | Expr::NamedResource { span, .. }
+            | Expr::Assignement { span, .. }
+            | Expr::Loop(span, _)
+            | Expr::Break(span)
+            | Expr::Continue(span)
+            | Expr::Block(span, _)
+            | Expr::Return(span, _)
+            | Expr::BooleanExpression(span, _, _, _) => span,
+        }
     }
 }

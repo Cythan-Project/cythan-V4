@@ -3,15 +3,33 @@ use std::{collections::VecDeque, fmt::Debug, ops::Range};
 use ariadne::Report;
 
 use super::{
-    expression::TokenProcessor, token_utils::split_complex, ClosableType, Token, TokenExtracter,
-    TokenParser,
+    expression::{SpannedObject, SpannedVector, TokenProcessor},
+    token_utils::split_complex,
+    ClosableType, Token, TokenExtracter, TokenParser,
 };
-use crate::parser::token_utils::{split_simple, SplitAction};
+use crate::{errors::Span, parser::token_utils::SplitAction};
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Eq, Hash)]
 pub struct Type {
-    pub name: String,
-    pub template: Option<Vec<Type>>,
+    pub span: Span,
+    pub name: SpannedObject<String>,
+    pub template: Option<SpannedVector<Type>>,
+}
+
+impl PartialOrd for Type {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        match self.name.partial_cmp(&other.name) {
+            Some(core::cmp::Ordering::Equal) => {}
+            ord => return ord,
+        }
+        self.template.partial_cmp(&other.template)
+    }
+}
+
+impl PartialEq for Type {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && self.template == other.template
+    }
 }
 
 impl Debug for Type {
@@ -20,29 +38,35 @@ impl Debug for Type {
             write!(
                 f,
                 "{}<{}>",
-                self.name,
-                a.iter()
+                self.name.1,
+                a.1.iter()
                     .map(|t| format!("{:?}", t))
                     .collect::<Vec<_>>()
                     .join(",")
             )
         } else {
-            write!(f, "{}", self.name)
+            write!(f, "{}", self.name.1)
         }
     }
 }
 
 impl Type {
-    pub fn new(name: &str, template: Option<Vec<Type>>) -> Self {
+    pub fn new(name: &str, template: Option<SpannedVector<Type>>, name_span: Span) -> Self {
         Self {
-            name: name.to_owned(),
+            name: SpannedObject(name_span.clone(), name.to_owned()),
+            span: if let Some(template) = &template {
+                name_span.merge(&template.0)
+            } else {
+                name_span
+            },
             template,
         }
     }
-    pub fn simple(name: &str) -> Self {
+    pub fn simple(name: &str, span: Span) -> Self {
         Self {
-            name: name.to_owned(),
+            name: SpannedObject(span.clone(), name.to_owned()),
             template: None,
+            span,
         }
     }
 }
@@ -88,16 +112,18 @@ impl TokenParser<Vec<Type>> for VecDeque<Token> {
 }
 impl TokenExtracter<Type> for VecDeque<Token> {
     fn extract(&mut self) -> Result<Type, Report<(String, Range<usize>)>> {
-        if let Some(Token::TypeName(_, name)) = self.get_token() {
+        if let Some(Token::TypeName(name_span, name)) = self.get_token() {
             let template = match self.get_token() {
-                Some(Token::Block(_, ClosableType::Type, inside)) => Some(inside.parse()?),
+                Some(Token::Block(span, ClosableType::Type, inside)) => {
+                    Some(SpannedVector(span, inside.parse()?))
+                }
                 Some(e) => {
                     self.push_front(e);
                     None
                 }
                 None => None,
             };
-            Ok(Type { name, template })
+            Ok(Type::new(&name, template, name_span))
         } else {
             panic!("Expected type");
         }

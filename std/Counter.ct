@@ -23,8 +23,7 @@ class Counter {
         array.setDyn(1, 'd');
         array.getDyn(2).print(); */
         Morpion morpion = Morpion.new();
-        morpion.play()
-        // test
+        morpion.play();
         return 0;
         /*a*/
     }

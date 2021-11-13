@@ -23,7 +23,9 @@ use crate::{
     },
 };
 
-use super::{annotation::Annotation, class::TemplateFixer, ty::TemplateDefinition};
+use super::{
+    annotation::Annotation, class::TemplateFixer, expression::SpannedVector, ty::TemplateDefinition,
+};
 use crate::parser::expression::CodeBlock;
 
 #[derive(Clone)]
@@ -60,7 +62,7 @@ pub struct MethodView {
     pub name: String,
     pub return_type: Option<Type>,
     pub arguments: Vec<(Type, String)>,
-    pub template: Option<Vec<Type>>,
+    pub template: Option<SpannedVector<Type>>,
     pub code: Either<
         CodeBlock,
         Rc<Box<dyn Fn(&mut LocalState, &mut CodeManager, &MethodView) -> OutputData>>,
@@ -68,16 +70,16 @@ pub struct MethodView {
 }
 
 impl MethodView {
-    pub fn new(method: &Method, template: &Option<Vec<Type>>) -> Self {
+    pub fn new(method: &Method, template: &Option<SpannedVector<Type>>) -> Self {
         if method.template.as_ref().map(|x| x.0.len()).unwrap_or(0)
-            != template.as_ref().map(|x| x.len()).unwrap_or(0)
+            != template.as_ref().map(|x| x.1.len()).unwrap_or(0)
         {
             panic!("Invalid type template for method {}", method.name);
         }
         let tmp_map = if let (Some(a), Some(b)) = (&method.template, template) {
             TemplateFixer::new(
                 a.0.iter()
-                    .zip(b.iter())
+                    .zip(b.1.iter())
                     .map(|(x, y)| (x.clone(), y.clone()))
                     .collect::<HashMap<_, _>>(),
             )
@@ -95,9 +97,10 @@ impl MethodView {
                 .map(|(x, y)| (tmp_map.ty(x.clone()), y.clone()))
                 .collect(),
             code: match &method.code {
-                Either::Left(a) => {
-                    Either::Left(a.iter().map(|x| tmp_map.expr(x.clone())).collect())
-                }
+                Either::Left(a) => Either::Left(SpannedVector(
+                    a.0.clone(),
+                    a.1.iter().map(|x| tmp_map.expr(x.clone())).collect(),
+                )),
                 Either::Right(a) => Either::Right(a.clone()),
             },
         }
@@ -108,7 +111,7 @@ impl MethodView {
         ls: &mut LocalState,
         cm: &mut CodeManager,
         arguments: Vec<TypedMemory>,
-    ) -> OutputData {
+    ) -> Result<OutputData, Report<(String, Range<usize>)>> {
         let return_loc = self
             .return_type
             .as_ref()
@@ -129,7 +132,7 @@ impl MethodView {
             });
 
         let (k, return_value) = match &self.code {
-            Either::Left(a) => (compile_code_block(&a, &mut ls, cm), return_loc),
+            Either::Left(a) => (compile_code_block(&a, &mut ls, cm)?, return_loc),
             Either::Right(a) => {
                 let jk = a(&mut ls, cm, self);
                 let lc = jk.return_value.clone();
@@ -142,10 +145,10 @@ impl MethodView {
             remove_skips(k.mir.0, false)
         };
         // Maybe later add tail auto return
-        OutputData {
+        Ok(OutputData {
             return_value,
             mir: MirCodeBlock(mir),
-        }
+        })
     }
 }
 
@@ -193,8 +196,9 @@ impl TokenParser<Method> for VecDeque<Token> {
             } else {
                 panic!("Expected brackets after method name");
             };
-        let code = if let Some(Token::Block(_, ClosableType::Bracket, inside)) = self.get_token() {
-            Either::Left(inside.parse()?)
+        let code = if let Some(Token::Block(span, ClosableType::Bracket, inside)) = self.get_token()
+        {
+            Either::Left(SpannedVector(span, inside.parse()?))
         } else {
             panic!("Expected braces after method arguments");
         };

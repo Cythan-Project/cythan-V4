@@ -2,16 +2,6 @@ use std::collections::VecDeque;
 
 use super::{expression::TokenProcessor, Token};
 
-pub fn split_simple(tokens: VecDeque<Token>, token: &Token) -> Vec<VecDeque<Token>> {
-    split_complex(tokens, |t| {
-        if t == token {
-            SplitAction::SplitConsume
-        } else {
-            SplitAction::None
-        }
-    })
-}
-
 pub enum SplitAction {
     None,
     Split,

@@ -7,7 +7,7 @@ use crate::parser::{
     method::Method,
     parse,
     ty::Type,
-    TokenParser,
+    Token, TokenParser,
 };
 
 pub mod asm;
@@ -29,21 +29,20 @@ impl ClassLoader {
         }
     }
 
-    pub fn load_string(&mut self, class: &str, filename: &str) {
-        if let Err(e) = try {
-            let mut vdc = VecDeque::new();
-            parse(
-                &mut vdc,
-                &mut class.chars().collect(),
-                class.chars().count(),
-                filename,
-            )?;
-            self.load(vdc.parse()?);
-        } {
-            let e: Report<(String, Range<usize>)> = e;
-            e.eprint((filename.to_owned(), Source::from(class)))
-                .unwrap();
-        };
+    pub fn load_string(
+        &mut self,
+        class: &str,
+        filename: &str,
+    ) -> Result<(), Report<(String, Range<usize>)>> {
+        let mut vdc = VecDeque::new();
+        let mut k: VecDeque<char> = class.chars().filter(|x| *x != '\r').collect();
+        let kl = k.len();
+        parse(&mut vdc, &mut k, kl, filename)?;
+        /* for i in &vdc {
+            display(i, class);
+        } */
+        self.load(vdc.parse()?);
+        Ok(())
     }
 
     pub fn load(&mut self, class: Class) {
@@ -56,10 +55,10 @@ impl ClassLoader {
 
     pub fn view(&self, ty: &Type) -> ClassView {
         ClassView::new(
-            if let Some(e) = self.get(&ty.name) {
+            if let Some(e) = self.get(&ty.name.1) {
                 e
             } else {
-                panic!("Class not found: {}", ty.name)
+                panic!("Class not found: {}", ty.name.1)
             },
             ty,
         )
@@ -72,5 +71,20 @@ impl ClassLoader {
             .unwrap()
             .methods
             .push(method);
+    }
+
+    pub fn get_class_mut(&mut self, arg: &str) -> &mut Class {
+        self.classes.iter_mut().find(|x| x.name == arg).unwrap()
+    }
+}
+
+fn display(i: &Token, class: &str) {
+    match i {
+        Token::Block(_, _, c) => {
+            c.iter().for_each(|i| display(i, class));
+        }
+        e => {
+            println!("{:?} {}", e, &class[e.span().start..e.span().end]);
+        }
     }
 }

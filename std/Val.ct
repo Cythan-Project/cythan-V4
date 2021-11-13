@@ -40,4 +40,7 @@ class Val {
         System.setRegister<N2>(self);
         System.setRegister<N0>(1);
     }
+
+    inc(Val self) {}
+    dec(Val self) {}
 }

@@ -17,7 +17,7 @@ use crate::{
 
 use super::{
     annotation::Annotation,
-    expression::Expr,
+    expression::{Expr, SpannedVector},
     field::Field,
     method::{Method, MethodView},
     ty::{TemplateDefinition, Type},
@@ -34,6 +34,12 @@ pub struct Class {
     pub superclass: Option<Type>,
 }
 
+impl Class {
+    pub fn get_method_mut(&mut self, method: &str) -> &mut Method {
+        self.methods.iter_mut().find(|x| x.name == method).unwrap()
+    }
+}
+
 pub struct ClassView {
     pub ty: Type,
     pub name: String,
@@ -45,14 +51,14 @@ pub struct ClassView {
 impl ClassView {
     pub fn new(class: &Class, classtype: &Type) -> Self {
         if class.template.as_ref().map(|x| x.0.len()).unwrap_or(0)
-            != classtype.template.as_ref().map(|x| x.len()).unwrap_or(0)
+            != classtype.template.as_ref().map(|x| x.1.len()).unwrap_or(0)
         {
             panic!("Invalid type template for class {}", class.name);
         }
         let tmp_map = if let (Some(a), Some(b)) = (&class.template, &classtype.template) {
             TemplateFixer::new(
                 a.0.iter()
-                    .zip(b.iter())
+                    .zip(b.1.iter())
                     .map(|(x, y)| (x.clone(), y.clone()))
                     .collect::<HashMap<_, _>>(),
             )
@@ -79,7 +85,7 @@ impl ClassView {
         }
     }
 
-    pub fn method_view(&self, name: &str, template: &Option<Vec<Type>>) -> MethodView {
+    pub fn method_view(&self, name: &str, template: &Option<SpannedVector<Type>>) -> MethodView {
         if let Some(e) = self
             .methods
             .iter()
@@ -102,8 +108,8 @@ impl ClassView {
                 .template
                 .as_ref()
                 .map(|x| {
-                    let item_size = cl.view(&x[0]).size(cl);
-                    let number = x[1].name[1..].parse::<u32>().unwrap();
+                    let item_size = cl.view(&x.1[0]).size(cl);
+                    let number = x.1[1].name.1[1..].parse::<u32>().unwrap();
                     item_size * number
                 })
                 .unwrap_or(0) as u32;
@@ -111,10 +117,10 @@ impl ClassView {
         self.fields
             .iter()
             .map(|x| {
-                if let Some(e) = cl.get(x.ty.name.as_str()) {
+                if let Some(e) = cl.get(x.ty.name.1.as_str()) {
                     ClassView::new(e, &x.ty).size(cl)
                 } else {
-                    panic!("Unknown type {}", x.ty.name);
+                    panic!("Unknown type {}", x.ty.name.1);
                 }
             })
             .sum::<u32>()
@@ -141,7 +147,10 @@ impl TemplateFixer {
             annotations: m.annotations,
             template: m.template.clone(),
             code: match m.code {
-                Either::Left(x) => Either::Left(x.into_iter().map(|x| self.expr(x)).collect()),
+                Either::Left(x) => Either::Left(SpannedVector(
+                    x.0,
+                    x.1.into_iter().map(|x| self.expr(x)).collect(),
+                )),
                 Either::Right(x) => Either::Right(x),
             },
         }
@@ -154,69 +163,105 @@ impl TemplateFixer {
         }
     }
     pub fn ty(&self, ty: Type) -> Type {
-        if let Some(e) = self.template.get(&ty.name) {
+        if let Some(e) = self.template.get(&ty.name.1) {
             self.ty(e.clone())
         } else {
             Type {
+                span: ty.span,
                 name: ty.name,
                 template: ty
                     .template
-                    .map(|x| x.into_iter().map(|x| self.ty(x)).collect()),
+                    .map(|x| SpannedVector(x.0, x.1.into_iter().map(|x| self.ty(x)).collect())),
             }
         }
     }
     pub fn expr(&self, expr: Expr) -> Expr {
         match expr {
-            Expr::New { class, fields } => Expr::New {
+            Expr::New {
+                span,
+                class,
+                fields,
+            } => Expr::New {
+                span,
                 class: self.ty(class),
-                fields: fields.into_iter().map(|x| (x.0, self.expr(x.1))).collect(),
+                fields: SpannedVector(
+                    fields.0,
+                    fields
+                        .1
+                        .into_iter()
+                        .map(|x| (x.0, self.expr(x.1)))
+                        .collect(),
+                ),
             },
             Expr::If {
+                span,
                 condition,
                 then,
                 or_else,
             } => Expr::If {
+                span,
                 condition: box self.expr(*condition),
-                then: then.into_iter().map(|x| self.expr(x)).collect(),
-                or_else: or_else.map(|x| x.into_iter().map(|x| self.expr(x)).collect()),
+                then: SpannedVector(then.0, then.1.into_iter().map(|x| self.expr(x)).collect()),
+                or_else: or_else
+                    .map(|x| SpannedVector(x.0, x.1.into_iter().map(|x| self.expr(x)).collect())),
             },
-            Expr::Number(a) => Expr::Number(a),
-            Expr::Variable(a) => Expr::Variable(a),
-            Expr::Type(a) => Expr::Type(self.ty(a)),
-            Expr::Field { source, name } => Expr::Field {
+            Expr::Number(span, a) => Expr::Number(span, a),
+            Expr::Variable(span, a) => Expr::Variable(span, a),
+            Expr::Type(span, a) => Expr::Type(span, self.ty(a)),
+            Expr::Field { span, source, name } => Expr::Field {
+                span,
                 source: box self.expr(*source),
                 name,
             },
             Expr::Method {
+                span,
                 source,
                 name,
                 arguments,
                 template,
             } => Expr::Method {
+                span,
                 source: box self.expr(*source),
                 name,
-                arguments: arguments.into_iter().map(|x| self.expr(x)).collect(),
-                template: template.map(|x| x.into_iter().map(|x| self.ty(x)).collect()),
+                arguments: SpannedVector(
+                    arguments.0,
+                    arguments.1.into_iter().map(|x| self.expr(x)).collect(),
+                ),
+                template: template
+                    .map(|x| SpannedVector(x.0, x.1.into_iter().map(|x| self.ty(x)).collect())),
             },
-            Expr::Block(a) => Expr::Block(a.into_iter().map(|x| self.expr(x)).collect()),
-            Expr::Return(a) => Expr::Return(a.map(|x| box self.expr(*x))),
-            Expr::NamedResource { vtype, name } => Expr::NamedResource {
+            Expr::Block(span, a) => Expr::Block(
+                span,
+                SpannedVector(a.0, a.1.into_iter().map(|x| self.expr(x)).collect()),
+            ),
+            Expr::Return(span, a) => Expr::Return(span, a.map(|x| box self.expr(*x))),
+            Expr::NamedResource { span, vtype, name } => Expr::NamedResource {
+                span,
                 vtype: self.ty(vtype),
                 name,
             },
-            Expr::Assignement { target, to } => Expr::Assignement {
+            Expr::Assignement { span, target, to } => Expr::Assignement {
+                span,
                 target: box self.expr(*target),
                 to: box self.expr(*to),
             },
-            Expr::Cast { source, target } => Expr::Cast {
+            Expr::Cast {
+                span,
+                source,
+                target,
+            } => Expr::Cast {
+                span,
                 source: box self.expr(*source),
                 target: self.ty(target),
             },
-            Expr::Loop(a) => Expr::Loop(a.into_iter().map(|x| self.expr(x)).collect()),
-            Expr::Break => Expr::Break,
-            Expr::Continue => Expr::Continue,
-            Expr::BooleanExpression(a, b, c) => {
-                Expr::BooleanExpression(box self.expr(*a), b, box self.expr(*c))
+            Expr::Loop(span, a) => Expr::Loop(
+                span,
+                SpannedVector(a.0, a.1.into_iter().map(|x| self.expr(x)).collect()),
+            ),
+            Expr::Break(span) => Expr::Break(span),
+            Expr::Continue(span) => Expr::Continue(span),
+            Expr::BooleanExpression(span, a, b, c) => {
+                Expr::BooleanExpression(span, box self.expr(*a), b, box self.expr(*c))
             }
         }
     }

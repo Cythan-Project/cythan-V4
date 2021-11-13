@@ -1,0 +1,8 @@
+class Array<T,E> {
+
+    set<N>(Array<T,E> self, T value) {}
+    setDyn(Array<T,E> self, Val index, T value) {}
+    get<N>(Array<T,E> self) {}
+    getDyn(Array<T,E> self, Val index) {}
+    
+}
