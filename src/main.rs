@@ -17,11 +17,7 @@ use crate::{
         mir::{Mir, MirCodeBlock},
     },
     errors::Span,
-    parser::{
-        class::Class,
-        method::Method,
-        ty::{TemplateDefinition, Type},
-    },
+    parser::ty::Type,
 };
 
 mod compiler;
@@ -43,7 +39,7 @@ fn main() {
                     .to_str()
                     .unwrap()
                     .to_owned(),
-            );
+            )?;
         }
         cl.get_class_mut("Val").get_method_mut("dec").code =
             Either::Right(Rc::new(Box::new(|ls, _cm, _mv| {
@@ -253,13 +249,13 @@ fn main() {
 }
 
 pub struct MirrorReport<S: ariadne::Span = Range<usize>> {
-    kind: ReportKind,
-    code: Option<u32>,
-    msg: Option<String>,
-    note: Option<String>,
+    _kind: ReportKind,
+    _code: Option<u32>,
+    _msg: Option<String>,
+    _note: Option<String>,
     location: (<S::SourceId as ToOwned>::Owned, usize),
-    labels: Vec<Label<S>>,
-    config: Config,
+    _labels: Vec<Label<S>>,
+    _config: Config,
 }
 
 impl<S: ariadne::Span> MirrorReport<S> {
@@ -293,6 +289,7 @@ fn compile_and_run(mir: &MirCodeBlock) {
     } else {
         let mut mirstate = MirState::default();
         mir.to_asm(&mut mirstate);
+        mirstate.opt_asm();
         let mut compile_state = Template::default();
         let mut ctx = Context::default();
         mirstate

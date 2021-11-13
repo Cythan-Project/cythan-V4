@@ -118,9 +118,7 @@ pub struct Label(pub usize, pub LabelType);
 pub enum LabelType {
     LoopStart,
     LoopEnd,
-    FunctionEnd,
     IfStart,
-    ElseStart,
     IfEnd,
     BlockEnd,
 }
@@ -133,9 +131,7 @@ impl Display for LabelType {
             match self {
                 LabelType::LoopStart => 'A',
                 LabelType::LoopEnd => 'B',
-                LabelType::FunctionEnd => 'C',
                 LabelType::IfStart => 'D',
-                LabelType::ElseStart => 'E',
                 LabelType::IfEnd => 'F',
                 LabelType::BlockEnd => 'G',
             }
@@ -197,9 +193,6 @@ impl Display for Var {
 pub struct Number(pub u8);
 
 impl Label {
-    pub fn new(count: usize, t: LabelType) -> Self {
-        Self(count, t)
-    }
     pub fn alloc(state: &mut MirState, t: LabelType) -> Self {
         Self(state.count(), t)
     }

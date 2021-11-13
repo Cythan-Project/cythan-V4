@@ -1,6 +1,6 @@
 use std::{cmp::Ordering, ops::Range};
 
-#[derive(Debug, Clone, Ord, Eq, Hash)]
+#[derive(Debug, Clone, Eq)]
 pub struct Span {
     pub file: String,
     pub start: usize,

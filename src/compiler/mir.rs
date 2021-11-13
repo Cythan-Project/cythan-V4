@@ -4,9 +4,10 @@ use either::Either;
 
 use crate::compiler::asm::{AsmValue, LabelType};
 
-use super::asm::{CompilableInstruction, Label, Number, Var};
+use super::asm::{opt_asm, CompilableInstruction, Label, Number, Var};
 
 #[derive(PartialEq, Clone, Hash, Debug)]
+#[allow(dead_code)]
 pub enum Mir {
     Set(u32, u8),
     Copy(u32, u32),                       // to, from - from isn't mutated
@@ -85,9 +86,6 @@ impl Display for Mir {
 pub struct MirCodeBlock(pub Vec<Mir>);
 
 impl MirCodeBlock {
-    pub fn push(&mut self, mir: Mir) {
-        self.0.push(mir);
-    }
     pub fn to_asm(&self, state: &mut MirState) -> SkipStatus {
         for i in &self.0 {
             match i.to_asm(state) {
@@ -108,6 +106,9 @@ pub struct MirState {
 }
 
 impl MirState {
+    pub fn opt_asm(&mut self) {
+        self.instructions = opt_asm(self.instructions.clone());
+    }
     pub fn count(&mut self) -> usize {
         self.count += 1;
         self.count
@@ -178,25 +179,22 @@ impl Mir {
                 if a == b {
                     return SkipStatus::None;
                 }
-                state.copy(
-                    Var(a.clone() as usize),
-                    AsmValue::Var(Var(b.clone() as usize)),
-                )
+                state.copy(Var(*a as usize), AsmValue::Var(Var(*b as usize)))
             }
-            Mir::Increment(a) => state.inc(Var(a.clone() as usize)),
-            Mir::Decrement(a) => state.dec(Var(a.clone() as usize)),
+            Mir::Increment(a) => state.inc(Var(*a as usize)),
+            Mir::Decrement(a) => state.dec(Var(*a as usize)),
             Mir::If0(a, b, c) => {
                 if b == c {
                     return b.to_asm(state);
                 }
                 let end = Label::alloc(state, crate::compiler::asm::LabelType::IfEnd);
                 if b.0.is_empty() {
-                    state.if0(Var(a.clone() as usize), end.clone());
+                    state.if0(Var(*a as usize), end.clone());
                     b.to_asm(state);
                     state.label(end);
                 } else {
                     let start = end.derive(LabelType::IfStart);
-                    state.if0(Var(a.clone() as usize), start.clone());
+                    state.if0(Var(*a as usize), start.clone());
                     let if1 = c.to_asm(state);
                     state.jump(end.clone());
                     state.label(start);
@@ -237,15 +235,15 @@ impl Mir {
                 state.stop();
                 return SkipStatus::Stoped;
             }
-            Mir::ReadRegister(a, b) => state.get_reg(Var(a.clone() as usize), Number(b.clone())),
+            Mir::ReadRegister(a, b) => state.get_reg(Var(*a as usize), Number(*b)),
             Mir::WriteRegister(a, b) => state.set_reg(
-                Number(a.clone()),
+                Number(*a),
                 match b {
                     Either::Left(a) => AsmValue::Number(Number(*a)),
                     Either::Right(a) => AsmValue::Var(Var(*a as usize)),
                 },
             ),
-            Mir::Set(a, b) => state.copy(Var(a.clone() as usize), AsmValue::Number(Number(*b))),
+            Mir::Set(a, b) => state.copy(Var(*a as usize), AsmValue::Number(Number(*b))),
             Mir::Skip => {
                 state.jump(state.blocks.last().unwrap().derive(LabelType::BlockEnd));
                 return SkipStatus::Skipped;

@@ -90,7 +90,7 @@ impl ClassView {
             .methods
             .iter()
             .find(|x| x.name == name)
-            .map(|x| MethodView::new(x, &template))
+            .map(|x| MethodView::new(x, template))
         {
             e
         } else {

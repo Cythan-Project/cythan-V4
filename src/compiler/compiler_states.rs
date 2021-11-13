@@ -65,6 +65,7 @@ impl MirCodeBlock {
         self
     }
 
+    #[allow(dead_code)]
     pub fn set(&mut self, to: u32, value: u8) -> &mut Self {
         self.0.push(Mir::Set(to, value));
         self
@@ -95,6 +96,7 @@ impl LocalState {
         self.vars.get(name)
     }
 
+    #[allow(dead_code)]
     pub fn set_var(&mut self, name: &str, value: TypedMemory, code: &mut MirCodeBlock) {
         if let Some(e) = self.vars.get(name) {
             code.copy_bulk(&e.locations, &value.locations);

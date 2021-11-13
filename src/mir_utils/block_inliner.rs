@@ -44,13 +44,10 @@ pub fn need_block(mir: &[Mir]) -> bool {
             }
         }
         if first_layer {
-            match mir.last().unwrap() {
-                Mir::If0(_, a, b) => {
-                    if inner(&a.0, first_layer) || inner(&b.0, first_layer) {
-                        return true;
-                    }
+            if let Mir::If0(_, a, b) = mir.last().unwrap() {
+                if inner(&a.0, first_layer) || inner(&b.0, first_layer) {
+                    return true;
                 }
-                _ => (),
             }
             false
         } else {

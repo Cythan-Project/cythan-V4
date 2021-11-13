@@ -40,15 +40,11 @@ pub fn split_complex(
 
 pub fn take_until(tokens: &mut VecDeque<Token>, until: impl Fn(&Token) -> bool) -> VecDeque<Token> {
     let mut i = VecDeque::new();
-    loop {
-        if let Some(e) = tokens.get_token() {
-            if !until(&e) {
-                i.push_back(e);
-            } else {
-                tokens.push_front(e);
-                break;
-            }
+    while let Some(e) = tokens.get_token() {
+        if !until(&e) {
+            i.push_back(e);
         } else {
+            tokens.push_front(e);
             break;
         }
     }

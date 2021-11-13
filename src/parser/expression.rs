@@ -23,7 +23,7 @@ impl TokenProcessor for VecDeque<Token> {
             }
             return Some(e);
         }
-        return None;
+        None
     }
 
     fn length(&self) -> usize {
@@ -86,10 +86,10 @@ pub enum Expr {
     BooleanExpression(Span, Box<Expr>, BooleanOperator, Box<Expr>),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd)]
 pub struct SpannedVector<T>(pub Span, pub Vec<T>);
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd)]
 pub struct SpannedObject<T>(pub Span, pub T);
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
@@ -201,7 +201,7 @@ fn chain_expression(
             return Err(
                 Report::build(ReportKind::Error, span.file.to_owned(), span.start)
                     .with_code(2)
-                    .with_message(format!("Invalid token after expression"))
+                    .with_message("Invalid token after expression")
                     .with_label(
                         Label::new(exp.span().as_span())
                             .with_message(format!(
@@ -251,7 +251,7 @@ fn parse_if(
             return Err(
                 Report::build(ReportKind::Error, e.span().file.to_owned(), 0)
                     .with_code(4)
-                    .with_message(format!("Invalid token after if"))
+                    .with_message("Invalid token after if")
                     .with_label(
                         Label::new(e.span().as_span())
                             .with_message(format!("This is a {} token", e.name().fg(a)))
@@ -273,7 +273,7 @@ fn parse_if(
             return Err(
                 Report::build(ReportKind::Error, if_token_span.file.to_owned(), 0)
                     .with_code(5)
-                    .with_message(format!("Expected token after if"))
+                    .with_message("Expected token after if")
                     .with_label(Label::new(if_token_span.as_span()).with_color(a))
                     .with_note(format!(
                         "Expected {}, {} or {}",
@@ -397,7 +397,7 @@ impl TokenParser<Expr> for VecDeque<Token> {
                     Some(Token::Literal(lspan, literal)) => Expr::NamedResource {
                         span: span.merge(&lspan),
                         vtype: Type::new(&a, template, span),
-                        name: SpannedObject(lspan, literal.to_owned()),
+                        name: SpannedObject(lspan, literal),
                     },
                     Some(e) => {
                         self.push_front(e);

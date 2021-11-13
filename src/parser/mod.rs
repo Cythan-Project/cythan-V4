@@ -22,7 +22,7 @@ pub trait TokenParser<T> {
     fn parse(self) -> Result<T, Report<(String, Range<usize>)>>;
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Clone)]
 pub enum Token {
     Comma(Span),
     Dot(Span),
@@ -271,7 +271,7 @@ pub fn parse(
                 let span = e.span();
                 return Err(Report::build(ReportKind::Error, span.file.to_owned(), 0)
                     .with_code(1)
-                    .with_message(format!("Invalid token"))
+                    .with_message("Invalid token")
                     .with_label(
                         Label::new(span.as_span())
                             .with_message(format!("This is a {} token", e.name().fg(a)))

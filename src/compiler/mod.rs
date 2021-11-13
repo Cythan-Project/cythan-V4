@@ -1,13 +1,13 @@
 use std::{collections::VecDeque, ops::Range};
 
-use ariadne::{Report, Source};
+use ariadne::Report;
 
 use crate::parser::{
     class::{Class, ClassView},
     method::Method,
     parse,
     ty::Type,
-    Token, TokenParser,
+    TokenParser,
 };
 
 pub mod asm;
@@ -64,6 +64,7 @@ impl ClassLoader {
         )
     }
 
+    #[allow(dead_code)]
     pub fn inject_method(&mut self, arg: &str, method: Method) {
         self.classes
             .iter_mut()
@@ -75,16 +76,5 @@ impl ClassLoader {
 
     pub fn get_class_mut(&mut self, arg: &str) -> &mut Class {
         self.classes.iter_mut().find(|x| x.name == arg).unwrap()
-    }
-}
-
-fn display(i: &Token, class: &str) {
-    match i {
-        Token::Block(_, _, c) => {
-            c.iter().for_each(|i| display(i, class));
-        }
-        e => {
-            println!("{:?} {}", e, &class[e.span().start..e.span().end]);
-        }
     }
 }

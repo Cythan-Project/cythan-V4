@@ -40,7 +40,7 @@ pub fn compile(
     let mut mir = MirCodeBlock::new();
     match expr {
         Expr::New {
-            span,
+            span: _,
             class,
             fields,
         } => {
@@ -74,7 +74,7 @@ pub fn compile(
             ))
         }
         Expr::If {
-            span,
+            span: _,
             condition,
             then,
             or_else,
@@ -114,7 +114,7 @@ pub fn compile(
                     let mut er = else_r.mir;
                     er.copy_bulk(&alc, &a.locations);
 
-                    (Some(TypedMemory::new(a.ty.clone(), alc)), tr, er)
+                    (Some(TypedMemory::new(a.ty, alc)), tr, er)
                 } else {
                     (None, then_r.mir, else_r.mir)
                 }
@@ -158,14 +158,18 @@ pub fn compile(
                 Some(TypedMemory::new(Type::simple(tn, span.clone()), alc)),
             ))
         }
-        Expr::Variable(span, a) => Ok(OutputData::new(
+        Expr::Variable(_span, a) => Ok(OutputData::new(
             mir,
             Some(ls.get_var(a).expect("Variable not found").clone()),
         )),
-        Expr::Type(span, _a) => {
+        Expr::Type(_span, _a) => {
             panic!("Expected something else than Type in expression")
         }
-        Expr::Field { span, source, name } => {
+        Expr::Field {
+            span: _,
+            source,
+            name,
+        } => {
             let out = compile(&*source, ls, cm)?;
             let rtv = out
                 .return_value
@@ -176,13 +180,13 @@ pub fn compile(
             Ok(OutputData::new(out.mir, Some(TypedMemory::new(ty, locs))))
         }
         Expr::Method {
-            span,
+            span: _,
             source,
             name,
             arguments,
             template,
         } => {
-            if let Expr::Type(tspan, a) = &**source {
+            if let Expr::Type(_tspan, a) = &**source {
                 let arguments = arguments
                     .1
                     .iter()
@@ -195,7 +199,7 @@ pub fn compile(
                 let k = cm
                     .cl
                     .view(a)
-                    .method_view(&name.1, &template)
+                    .method_view(&name.1, template)
                     .execute(ls, cm, arguments)?;
                 mir.add(k.mir);
                 Ok(OutputData::new(mir, k.return_value))
@@ -223,11 +227,19 @@ pub fn compile(
                 Ok(OutputData::new(mir, k.return_value))
             }
         }
-        Expr::NamedResource { span, vtype, name } => {
+        Expr::NamedResource {
+            span: _,
+            vtype,
+            name,
+        } => {
             let k = ls.new_var(cm, &name.1, vtype.clone(), &mut mir);
             Ok(OutputData::new(mir, Some(k)))
         }
-        Expr::Assignement { span, target, to } => {
+        Expr::Assignement {
+            span: _,
+            target,
+            to,
+        } => {
             let ret = compile(target, ls, cm)?;
             let ret1 = compile(to, ls, cm)?;
             let rt = ret
@@ -244,8 +256,8 @@ pub fn compile(
             mir.copy_bulk(&rt.locations, &rt1.locations);
             Ok(OutputData::new(mir, None))
         }
-        Expr::Block(span, a) => compile_code_block(a, &mut ls.shadow(), cm),
-        Expr::Return(span, a) => {
+        Expr::Block(_span, a) => compile_code_block(a, &mut ls.shadow(), cm),
+        Expr::Return(_span, a) => {
             if let Some(e) = a {
                 let ret = compile(e, ls, cm)?;
                 let rl = ls
@@ -257,15 +269,15 @@ pub fn compile(
                     let mut colors = ColorGenerator::new();
                     let a = colors.next();
                     let b = colors.next();
-                    let out = Color::Fixed(81);
+                    let _out = Color::Fixed(81);
                     let span = e.span();
                     return Err(
                         Report::build(ReportKind::Error, span.file.to_owned(), span.start)
                             .with_code(5)
-                            .with_message(format!("Return type doesn't match method return type"))
+                            .with_message("Return type doesn't match method return type")
                             .with_label(
                                 Label::new(rl.ty.span.as_span())
-                                    .with_message(format!("Type defined here"))
+                                    .with_message("Type defined here")
                                     .with_color(b),
                             )
                             .with_label(
@@ -292,7 +304,7 @@ pub fn compile(
             }
         }
         Expr::Cast {
-            span,
+            span: _,
             source,
             target,
         } => {
@@ -300,7 +312,7 @@ pub fn compile(
             mir.add(ret.mir);
             let rt = ret.return_value.expect("Cast source must be a value");
             let source_view = cm.cl.view(&rt.ty);
-            let target_view = cm.cl.view(&target);
+            let target_view = cm.cl.view(target);
             if source_view.size(&cm.cl) != target_view.size(&cm.cl) {
                 panic!("Type size cast must match, {:?} and {:?}", source, target);
             }
@@ -309,13 +321,13 @@ pub fn compile(
                 Some(TypedMemory::new(target.clone(), rt.locations)),
             ))
         }
-        Expr::Loop(span, a) => {
+        Expr::Loop(_span, a) => {
             let k = compile_code_block(a, &mut ls.shadow(), cm)?;
             mir.add_mir(Mir::Loop(k.mir));
             Ok(OutputData::new(mir, None))
         }
-        Expr::Break(span) => Ok(OutputData::new(MirCodeBlock::from(vec![Mir::Break]), None)),
-        Expr::Continue(span) => Ok(OutputData::new(
+        Expr::Break(_span) => Ok(OutputData::new(MirCodeBlock::from(vec![Mir::Break]), None)),
+        Expr::Continue(_span) => Ok(OutputData::new(
             MirCodeBlock::from(vec![Mir::Continue]),
             None,
         )),
@@ -339,7 +351,8 @@ pub fn compile(
             } else {
                 panic!("Boolean expression must return a value");
             };
-            mir.add(a.mir);
+            /*
+
             if bo == &BooleanOperator::And {
                 let mut cb = MirCodeBlock::new();
                 cb.add(b.mir);
@@ -353,6 +366,24 @@ pub fn compile(
                 let mut cb = MirCodeBlock::new();
                 cb.add(b.mir);
                 cb.copy(alp, locb);
+                mir.add_mir(Mir::If0(
+                    loca,
+                    MirCodeBlock::from(vec![Mir::Set(alp, 0)]),
+                    cb,
+                ));
+            }
+            */
+            mir.add(a.mir);
+            let mut cb = MirCodeBlock::new();
+            cb.add(b.mir);
+            cb.copy(alp, locb);
+            if bo == &BooleanOperator::And {
+                mir.add_mir(Mir::If0(
+                    loca,
+                    cb,
+                    MirCodeBlock::from(vec![Mir::Set(alp, 1)]),
+                ));
+            } else {
                 mir.add_mir(Mir::If0(
                     loca,
                     MirCodeBlock::from(vec![Mir::Set(alp, 0)]),

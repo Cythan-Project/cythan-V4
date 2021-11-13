@@ -35,10 +35,7 @@ pub struct Method {
     pub return_type: Option<Type>,
     pub arguments: Vec<(Type, String)>,
     pub template: Option<TemplateDefinition>,
-    pub code: Either<
-        CodeBlock,
-        Rc<Box<dyn Fn(&mut LocalState, &mut CodeManager, &MethodView) -> OutputData>>,
-    >,
+    pub code: Either<CodeBlock, NativeMethod>,
 }
 
 impl Debug for Method {
@@ -63,11 +60,11 @@ pub struct MethodView {
     pub return_type: Option<Type>,
     pub arguments: Vec<(Type, String)>,
     pub template: Option<SpannedVector<Type>>,
-    pub code: Either<
-        CodeBlock,
-        Rc<Box<dyn Fn(&mut LocalState, &mut CodeManager, &MethodView) -> OutputData>>,
-    >,
+    pub code: Either<CodeBlock, NativeMethod>,
 }
+
+pub type NativeMethod =
+    Rc<Box<dyn Fn(&mut LocalState, &mut CodeManager, &MethodView) -> OutputData>>;
 
 impl MethodView {
     pub fn new(method: &Method, template: &Option<SpannedVector<Type>>) -> Self {
@@ -122,7 +119,7 @@ impl MethodView {
             .iter()
             .zip(arguments.iter())
             .for_each(|(x, y)| {
-                if &x.0 != &y.ty {
+                if x.0 != y.ty {
                     panic!(
                         "Invalid argument type for method {}: expected {:?}, got {:?}",
                         self.name, x.0, y.ty
@@ -132,7 +129,7 @@ impl MethodView {
             });
 
         let (k, return_value) = match &self.code {
-            Either::Left(a) => (compile_code_block(&a, &mut ls, cm)?, return_loc),
+            Either::Left(a) => (compile_code_block(a, &mut ls, cm)?, return_loc),
             Either::Right(a) => {
                 let jk = a(&mut ls, cm, self);
                 let lc = jk.return_value.clone();

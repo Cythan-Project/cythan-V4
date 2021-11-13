@@ -9,7 +9,7 @@ use super::{
 };
 use crate::{errors::Span, parser::token_utils::SplitAction};
 
-#[derive(Clone, Eq, Hash)]
+#[derive(Clone, Eq)]
 pub struct Type {
     pub span: Span,
     pub name: SpannedObject<String>,

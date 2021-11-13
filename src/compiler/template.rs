@@ -31,32 +31,6 @@ impl<'a> Template<'a> {
         }
     }
 
-    pub fn section_contains(&self, section: &str, needle: &str) -> bool {
-        if let Some(e) = self.get_section(section) {
-            e.iter().any(|x| x.contains(needle))
-        } else {
-            false
-        }
-    }
-
-    pub fn get_section(&self, section: &'a str) -> Option<&Vec<Cow<'a, str>>> {
-        for i in self.pieces.iter() {
-            match i {
-                TemplatePiece::Section(_) => (),
-                TemplatePiece::NamedSection(a, b) => {
-                    if a == section {
-                        return Some(b);
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    pub fn set_code_section(&mut self, section: Cow<'a, str>) {
-        self.current_code_section = section;
-    }
-
     pub fn add_code(&mut self, string: Cow<'a, str>) {
         for i in self.pieces.iter_mut() {
             match i {
@@ -93,10 +67,6 @@ impl<'a> Template<'a> {
             })
             .collect::<Vec<_>>()
             .join("\n")
-    }
-
-    pub fn apply(&mut self, a: &impl Instruction) {
-        a.apply(self)
     }
 }
 
