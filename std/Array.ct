@@ -4,5 +4,28 @@ class Array<T,E> {
     setDyn(Array<T,E> self, Val index, T value) {}
     get<N>(Array<T,E> self) {}
     getDyn(Array<T,E> self, Val index) {}
-    
+    Val len(Array<T,E> self) {}
+    print(Array<Byte, E> self) {
+        Val index = 0;
+        loop {
+            if self.len().greater(index) {
+                self.getDyn(index).print();
+                index.inc();
+            } else {
+                break;
+            };
+        };
+    }
+    println(Array<Byte, E> self) {
+        Val index = 0;
+        loop {
+            if self.len().greater(index) {
+                self.getDyn(index).print();
+                index.inc();
+            } else {
+                break;
+            };
+        };
+        '\n'.print();
+    }
 }

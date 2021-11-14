@@ -205,7 +205,7 @@ impl TemplateFixer {
                 or_else: or_else
                     .map(|x| SpannedVector(x.0, x.1.into_iter().map(|x| self.expr(x)).collect())),
             },
-            Expr::Number(span, a) => Expr::Number(span, a),
+            Expr::Number(span, a, t) => Expr::Number(span, a, t),
             Expr::Variable(span, a) => Expr::Variable(span, a),
             Expr::Type(span, a) => Expr::Type(span, self.ty(a)),
             Expr::Field { span, source, name } => Expr::Field {

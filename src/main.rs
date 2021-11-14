@@ -94,6 +94,21 @@ fn main() {
                 None,
             )
         })));
+        cl.get_class_mut("Array").get_method_mut("len").code =
+            Either::Right(Rc::new(Box::new(|ls, cm, mv| {
+                let len: usize = mv.arguments[0].0.template.as_ref().unwrap().1[1].name.1[1..]
+                    .parse()
+                    .unwrap();
+                let alloc = cm.alloc();
+
+                OutputData::new(
+                    MirCodeBlock(vec![Mir::Set(alloc, len as u8)]),
+                    Some(TypedMemory::new(
+                        Type::simple("Val", Span::default()),
+                        vec![alloc],
+                    )),
+                )
+            })));
         cl.get_class_mut("Array").get_method_mut("setDyn").code =
             Either::Right(Rc::new(Box::new(|ls, cm, mv| {
                 //let position: u32 = mv.template.as_ref().unwrap()[0].name[1..].parse().unwrap();
@@ -185,6 +200,7 @@ fn main() {
 
                 OutputData::new(mircb, Some(TypedMemory::new(ty.clone(), to)))
             })));
+
         cl.get_class_mut("Array").get_method_mut("set").code =
             Either::Right(Rc::new(Box::new(|ls, cm, mv| {
                 let position: u32 = mv.template.as_ref().unwrap().1[0].name.1[1..]

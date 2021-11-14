@@ -4,7 +4,8 @@ class Counter {
     Array<String, N2> array;
 
     Val main() {
-        /* Array<Byte, N3> array = ['a', 'b', 'c'];
+        /* Array<Byte, N3> array = "abc";
+        array.print();
         array.get<N1>().print();
         array.setDyn(1, 'd');
         array.getDyn(2).print(); */

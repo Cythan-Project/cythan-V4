@@ -7,6 +7,7 @@ use crate::{
     parser::{
         expression::{BooleanOperator, Expr, SpannedVector},
         ty::Type,
+        NumberType,
     },
 };
 
@@ -124,19 +125,23 @@ pub fn compile(
             mir.add_mir(Mir::If0(loc, tlr, elr));
             Ok(OutputData::new(mir, output))
         }
-        Expr::Number(span, a) => {
+        Expr::Number(span, a, t) => {
             // TODO add more options (type choice automatically)
-            let (tn, alc) = if *a < 16 && *a >= 0 {
+            let (tn, alc) = if t == &NumberType::Val
+                || (t == &NumberType::Auto && *a < 16 && *a >= 0)
+            {
                 let alc = cm.alloc();
                 mir.add_mir(Mir::Set(alc, *a as u8));
                 ("Val", vec![alc])
-            } else if *a < 16 * 16 && *a > 0 {
+            } else if t == &NumberType::Byte || (t == &NumberType::Auto && *a < 16 * 16 && *a > 0) {
                 let alc = cm.alloc();
                 let alc1 = cm.alloc();
                 mir.add_mir(Mir::Set(alc, *a as u8 % 16));
                 mir.add_mir(Mir::Set(alc1, *a as u8 / 16));
                 ("Byte", vec![alc, alc1])
-            } else if *a < 16 * 16 * 16 * 16 && *a > 0 {
+            } else if t == &NumberType::Short
+                || (t == &NumberType::Auto && *a < 16 * 16 * 16 * 16 && *a > 0)
+            {
                 let alc = cm.alloc();
                 let alc1 = cm.alloc();
                 let alc2 = cm.alloc();

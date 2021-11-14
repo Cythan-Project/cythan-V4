@@ -25,6 +25,7 @@ pub trait TokenParser<T> {
 #[derive(Debug, PartialEq, Eq, PartialOrd, Clone)]
 pub enum Token {
     Comma(Span),
+    String(Span, String),
     Dot(Span),
     Char(Span, String),
     DoubleDot(Span),
@@ -33,11 +34,19 @@ pub enum Token {
     SemiColon(Span),
     Literal(Span, String),
     Keyword(Span, Keyword),
-    Number(Span, i32),
+    Number(Span, i32, NumberType),
     TypeName(Span, String),
     Block(Span, ClosableType, VecDeque<Token>),
     Comment(Span, String),
     BooleanOperator(Span, BooleanOperator),
+}
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Clone)]
+pub enum NumberType {
+    Val,
+    Byte,
+    Auto,
+    Short,
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
@@ -100,12 +109,62 @@ pub fn parse(
                     ));
                 }
             }
+            '"' => {
+                if let Some(e) = current_token.take() {
+                    token_map.push_back(validate(e));
+                }
+                let mut literal = String::new();
+                let mut was_backslash = false;
+                while let Some(c) = char.pop_front() {
+                    if was_backslash {
+                        literal.push(match c {
+                            'n' => '\n',
+                            't' => '\t',
+                            'r' => '\r',
+                            '\\' => '\\',
+                            '"' => '"',
+                            _ => c,
+                        });
+                        was_backslash = false;
+                        continue;
+                    }
+                    if c == '\\' {
+                        was_backslash = true;
+                        continue;
+                    }
+                    if c == '"' {
+                        break;
+                    }
+                    literal.push(c);
+                }
+                token_map.push_back(Token::String(
+                    Span::new(file.to_owned(), current, initial_size - char.len()),
+                    literal,
+                ));
+            }
             '\'' => {
                 if let Some(e) = current_token.take() {
                     token_map.push_back(validate(e));
                 }
                 let mut literal = String::new();
+                let mut was_backslash = false;
                 while let Some(c) = char.pop_front() {
+                    if was_backslash {
+                        literal.push(match c {
+                            'n' => '\n',
+                            't' => '\t',
+                            'r' => '\r',
+                            '\\' => '\\',
+                            '\'' => '\'',
+                            _ => c,
+                        });
+                        was_backslash = false;
+                        continue;
+                    }
+                    if c == '\\' {
+                        was_backslash = true;
+                        continue;
+                    }
                     if c == '\'' {
                         break;
                     }
@@ -245,6 +304,7 @@ pub fn parse(
                     current_token = Some(Token::Number(
                         Span::new(file.to_owned(), current, initial_size - char.len()),
                         c.to_digit(10).unwrap() as i32,
+                        NumberType::Auto,
                     ));
                 }
                 _ => (),
@@ -265,10 +325,46 @@ pub fn parse(
                     a,
                 ));
             }
-            Some(Token::Number(span, a)) if matches!(c, '0'..='9') => {
+            Some(Token::Number(span, a, t)) if matches!(c, '0'..='9') => {
                 current_token = Some(Token::Number(
                     Span::new(file.to_owned(), current, initial_size - char.len()).merge(&span),
                     a * 10 + c.to_digit(10).unwrap() as i32,
+                    t,
+                ));
+            }
+            Some(Token::Number(span, a, t)) if c == '_' => {
+                current_token = Some(Token::Number(
+                    Span::new(file.to_owned(), current, initial_size - char.len()).merge(&span),
+                    a,
+                    t,
+                ));
+            }
+            Some(Token::Number(span, a, t)) if c == 'v' => {
+                current_token = Some(Token::Number(
+                    Span::new(file.to_owned(), current, initial_size - char.len()).merge(&span),
+                    a,
+                    NumberType::Val,
+                ));
+            }
+            Some(Token::Number(span, a, t)) if c == 'b' => {
+                current_token = Some(Token::Number(
+                    Span::new(file.to_owned(), current, initial_size - char.len()).merge(&span),
+                    a,
+                    NumberType::Byte,
+                ));
+            }
+            Some(Token::Number(span, a, t)) if c == 'a' => {
+                current_token = Some(Token::Number(
+                    Span::new(file.to_owned(), current, initial_size - char.len()).merge(&span),
+                    a,
+                    NumberType::Auto,
+                ));
+            }
+            Some(Token::Number(span, a, t)) if c == 's' => {
+                current_token = Some(Token::Number(
+                    Span::new(file.to_owned(), current, initial_size - char.len()).merge(&span),
+                    a,
+                    NumberType::Short,
                 ));
             }
             Some(e) => {
@@ -323,6 +419,7 @@ impl Token {
         | Self::Dot(span, ..)
         | Self::DoubleDot(span, ..)
         | Self::Equals(span, ..)
+        | Self::String(span, ..)
         | Self::Keyword(span, ..)
         | Self::Literal(span, ..)
         | Self::Number(span, ..)
@@ -342,10 +439,11 @@ impl Token {
             Token::SemiColon(_) => "SemiColon",
             Token::Literal(_, _) => "Literal",
             Token::Keyword(_, a) => return format!("{:?}", a),
-            Token::Number(_, _) => "Number",
+            Token::Number(_, _, _) => "Number",
             Token::TypeName(_, _) => "TypeName",
             Token::Block(_, _, _) => "Block",
             Token::Comment(_, _) => "Comment",
+            Token::String(_, _) => "String",
             Token::BooleanOperator(_, _) => "BooleanOperator",
         }
         .to_owned()

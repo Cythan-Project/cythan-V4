@@ -33,7 +33,7 @@ impl TokenProcessor for VecDeque<Token> {
     }
 }
 
-use super::{ty::Type, TokenParser};
+use super::{ty::Type, NumberType, TokenParser};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
@@ -53,7 +53,7 @@ pub enum Expr {
         source: Box<Expr>,
         target: Type,
     },
-    Number(Span, i32),
+    Number(Span, i32, NumberType),
     Variable(Span, String),
     Type(Span, Type),
     ArrayDefinition(Span, SpannedVector<Expr>),
@@ -354,7 +354,7 @@ impl TokenParser<Expr> for VecDeque<Token> {
                 Keyword::For => panic!("Not yet implemented"),
                 Keyword::In => panic!("Unexpected in"),
             },
-            Token::Number(span, a) => Expr::Number(span, a),
+            Token::Number(span, a, t) => Expr::Number(span, a, t),
             Token::TypeName(span, a) => {
                 let template = match self.get_token() {
                     Some(Token::Block(tspan, ClosableType::Type, e)) => {
@@ -416,10 +416,32 @@ impl TokenParser<Expr> for VecDeque<Token> {
             }
             Token::Block(_, ClosableType::Parenthesis, b) => b.parse()?,
             Token::Block(_, ClosableType::Type, _) => panic!("Unexpected template"),
-            Token::Char(span, a) => {
-                Expr::Number(span, a.chars().fold(0, |acc, c| acc * 255 + c as u8 as i32))
-            }
+            Token::Char(span, a) => Expr::Number(
+                span,
+                a.chars().fold(0, |acc, c| acc * 255 + c as u8 as i32),
+                NumberType::Byte,
+            ),
             Token::Comment(_, _) => return self.parse(),
+            Token::String(a, b) => Expr::ArrayDefinition(
+                a.clone(),
+                SpannedVector(
+                    a.clone(),
+                    b.chars()
+                        .enumerate()
+                        .map(|(i, x)| {
+                            Expr::Number(
+                                Span {
+                                    file: a.file.clone(),
+                                    start: a.start + i,
+                                    end: a.start + i + 1,
+                                },
+                                x as i32,
+                                NumberType::Byte,
+                            )
+                        })
+                        .collect(),
+                ),
+            ),
             Token::Block(b, ClosableType::Bracket, inside) => Expr::ArrayDefinition(
                 b.clone(),
                 SpannedVector(
@@ -464,7 +486,7 @@ impl Expr {
             Expr::New { span, .. }
             | Expr::If { span, .. }
             | Expr::Cast { span, .. }
-            | Expr::Number(span, _)
+            | Expr::Number(span, ..)
             | Expr::Variable(span, _)
             | Expr::Type(span, _)
             | Expr::Field { span, .. }

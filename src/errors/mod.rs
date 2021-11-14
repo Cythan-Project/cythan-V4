@@ -7,6 +7,16 @@ pub struct Span {
     pub end: usize,
 }
 
+impl Default for Span {
+    fn default() -> Self {
+        Span {
+            file: "<native>".to_owned(),
+            start: 0,
+            end: 0,
+        }
+    }
+}
+
 impl PartialOrd for Span {
     fn partial_cmp(&self, _: &Self) -> Option<std::cmp::Ordering> {
         Some(Ordering::Equal)
