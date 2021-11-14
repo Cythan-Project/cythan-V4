@@ -56,6 +56,7 @@ pub enum Expr {
     Number(Span, i32),
     Variable(Span, String),
     Type(Span, Type),
+    ArrayDefinition(Span, SpannedVector<Expr>),
     Field {
         span: Span,
         source: Box<Expr>,
@@ -239,11 +240,11 @@ fn parse_if(
     if_token_span: Span,
 ) -> Result<Expr, Report<(String, Range<usize>)>> {
     let k = box take_until(tokens, |e| {
-        matches!(e, Token::Block(_, ClosableType::Bracket, _))
+        matches!(e, Token::Block(_, ClosableType::Brace, _))
     })
     .parse()?;
     let if_b = match tokens.get_token() {
-        Some(Token::Block(span, ClosableType::Bracket, e)) => SpannedVector(span, e.parse()?),
+        Some(Token::Block(span, ClosableType::Brace, e)) => SpannedVector(span, e.parse()?),
         Some(e) => {
             let mut colors = ColorGenerator::new();
             let a = colors.next();
@@ -288,7 +289,7 @@ fn parse_if(
     let else_b = if matches!(tokens.front(), Some(Token::Keyword(_, Keyword::Else))) {
         tokens.remove(0);
         match tokens.get_token() {
-            Some(Token::Block(span, ClosableType::Bracket, e)) => {
+            Some(Token::Block(span, ClosableType::Brace, e)) => {
                 Some(SpannedVector(span, e.parse()?))
             }
             Some(Token::Keyword(span, Keyword::If)) => {
@@ -338,7 +339,7 @@ impl TokenParser<Expr> for VecDeque<Token> {
                 Keyword::Extends => panic!("Unexpected extends"),
                 Keyword::As => panic!("Unexpected as"),
                 Keyword::Loop => {
-                    let cb = if let Some(Token::Block(span, ClosableType::Bracket, e)) =
+                    let cb = if let Some(Token::Block(span, ClosableType::Brace, e)) =
                         self.get_token()
                     {
                         SpannedVector(span, e.parse()?)
@@ -366,7 +367,7 @@ impl TokenParser<Expr> for VecDeque<Token> {
                     None => None,
                 };
                 match self.get_token() {
-                    Some(Token::Block(span_block, ClosableType::Bracket, inside)) => Expr::New {
+                    Some(Token::Block(span_block, ClosableType::Brace, inside)) => Expr::New {
                         span: span.merge(&span_block),
                         class: Type::new(&a, template, span),
                         fields: SpannedVector(
@@ -410,7 +411,7 @@ impl TokenParser<Expr> for VecDeque<Token> {
                     }
                 }
             }
-            Token::Block(span, ClosableType::Bracket, b) => {
+            Token::Block(span, ClosableType::Brace, b) => {
                 Expr::Block(span.clone(), SpannedVector(span, b.parse()?))
             }
             Token::Block(_, ClosableType::Parenthesis, b) => b.parse()?,
@@ -419,6 +420,22 @@ impl TokenParser<Expr> for VecDeque<Token> {
                 Expr::Number(span, a.chars().fold(0, |acc, c| acc * 255 + c as u8 as i32))
             }
             Token::Comment(_, _) => return self.parse(),
+            Token::Block(b, ClosableType::Bracket, inside) => Expr::ArrayDefinition(
+                b.clone(),
+                SpannedVector(
+                    b,
+                    split_complex(inside, |a| {
+                        if matches!(a, Token::Comma(_)) {
+                            SplitAction::SplitConsume
+                        } else {
+                            SplitAction::None
+                        }
+                    })
+                    .into_iter()
+                    .map(|x| x.parse())
+                    .collect::<Result<_, _>>()?,
+                ),
+            ),
         };
         chain_expression(&mut self, j)
     }
@@ -459,6 +476,7 @@ impl Expr {
             | Expr::Continue(span)
             | Expr::Block(span, _)
             | Expr::Return(span, _)
+            | Expr::ArrayDefinition(span, _)
             | Expr::BooleanExpression(span, _, _, _) => span,
         }
     }

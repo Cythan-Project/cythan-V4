@@ -263,6 +263,10 @@ impl TemplateFixer {
             Expr::BooleanExpression(span, a, b, c) => {
                 Expr::BooleanExpression(span, box self.expr(*a), b, box self.expr(*c))
             }
+            Expr::ArrayDefinition(a, b) => Expr::ArrayDefinition(
+                a,
+                SpannedVector(b.0, b.1.into_iter().map(|x| self.expr(x)).collect()),
+            ),
         }
     }
 }
@@ -300,11 +304,11 @@ impl TokenParser<Class> for VecDeque<Token> {
             superclass,
             template,
         };
-        if let Some(Token::Block(_, ClosableType::Bracket, inside)) = self.get_token() {
+        if let Some(Token::Block(_, ClosableType::Brace, inside)) = self.get_token() {
             split_complex(inside, |t| {
                 if matches!(t, &Token::SemiColon(_)) {
                     SplitAction::SplitConsume
-                } else if matches!(t, Token::Block(_, ClosableType::Bracket, _)) {
+                } else if matches!(t, Token::Block(_, ClosableType::Brace, _)) {
                     SplitAction::Split
                 } else {
                     SplitAction::None
@@ -312,7 +316,7 @@ impl TokenParser<Class> for VecDeque<Token> {
             })
             .into_iter()
             .map(|mut x| {
-                if matches!(x.back(), Some(Token::Block(_, ClosableType::Bracket, _))) {
+                if matches!(x.back(), Some(Token::Block(_, ClosableType::Brace, _))) {
                     class.methods.push(x.parse()?);
                 } else {
                     let annotations: Vec<Annotation> = self.extract()?;

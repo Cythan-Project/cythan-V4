@@ -398,5 +398,46 @@ pub fn compile(
                 )),
             ))
         }
+        Expr::ArrayDefinition(a, b) => {
+            let out1 =
+                b.1.iter()
+                    .map(|x| compile(x, ls, cm))
+                    .collect::<Result<Vec<_>, _>>()?;
+            let fe = out1.first().expect("Array must have at least one element");
+            let rv = fe
+                .return_value
+                .as_ref()
+                .expect("Array must have at least one element")
+                .ty
+                .clone();
+            let mut alloc_block = Vec::new();
+            let m = out1.len();
+            for i in out1 {
+                let mut rv1 = i
+                    .return_value
+                    .expect("Array must have at least one element");
+                if rv1.ty != rv {
+                    panic!("Array elements must be the same type");
+                }
+                mir.add(i.mir);
+                alloc_block.append(&mut rv1.locations);
+            }
+            let az = cm.alloc_block(alloc_block.len());
+            mir.copy_bulk(&az, &alloc_block);
+            Ok(OutputData::new(
+                mir,
+                Some(TypedMemory::new(
+                    Type::new(
+                        "Array",
+                        Some(SpannedVector(
+                            a.clone(),
+                            vec![rv.clone(), Type::simple(&format!("N{}", m), a.clone())],
+                        )),
+                        a.clone(),
+                    ),
+                    az,
+                )),
+            ))
+        }
     }
 }

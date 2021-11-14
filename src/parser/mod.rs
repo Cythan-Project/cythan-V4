@@ -43,8 +43,9 @@ pub enum Token {
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
 pub enum ClosableType {
     Parenthesis,
-    Bracket,
+    Brace,
     Type,
+    Bracket,
 }
 
 fn validate(current_token: Token) -> Token {
@@ -115,7 +116,7 @@ pub fn parse(
                     literal,
                 ));
             }
-            '{' | '(' | '<' => {
+            '{' | '(' | '<' | '[' => {
                 if let Some(e) = current_token.take() {
                     token_map.push_back(validate(e));
                 }
@@ -131,13 +132,19 @@ pub fn parse(
                 if let Some(e) = current_token.take() {
                     token_map.push_back(validate(e));
                 }
-                return Ok(Some(ClosableType::Bracket));
+                return Ok(Some(ClosableType::Brace));
             }
             ')' => {
                 if let Some(e) = current_token.take() {
                     token_map.push_back(validate(e));
                 }
                 return Ok(Some(ClosableType::Parenthesis));
+            }
+            ']' => {
+                if let Some(e) = current_token.take() {
+                    token_map.push_back(validate(e));
+                }
+                return Ok(Some(ClosableType::Bracket));
             }
             '&' => {
                 if char.front() == Some(&'&') {

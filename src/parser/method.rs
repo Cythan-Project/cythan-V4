@@ -193,8 +193,7 @@ impl TokenParser<Method> for VecDeque<Token> {
             } else {
                 panic!("Expected brackets after method name");
             };
-        let code = if let Some(Token::Block(span, ClosableType::Bracket, inside)) = self.get_token()
-        {
+        let code = if let Some(Token::Block(span, ClosableType::Brace, inside)) = self.get_token() {
             Either::Left(SpannedVector(span, inside.parse()?))
         } else {
             panic!("Expected braces after method arguments");
