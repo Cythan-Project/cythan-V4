@@ -8,6 +8,7 @@ use either::Either;
 
 use crate::{
     compiler::class_loader::ClassLoader,
+    errors::report_similar,
     parser::{
         expression::TokenProcessor,
         token_utils::{split_complex, SplitAction},
@@ -18,7 +19,7 @@ use crate::{
 
 use super::{
     annotation::Annotation,
-    expression::{Expr, SpannedVector},
+    expression::{Expr, SpannedObject, SpannedVector},
     field::Field,
     method::{Method, MethodView},
     ty::{TemplateDefinition, Type},
@@ -91,18 +92,29 @@ impl ClassView {
 
     pub fn method_view(
         &self,
-        name: &str,
+        name: &SpannedObject<String>,
         template: &Option<SpannedVector<Type>>,
     ) -> Result<MethodView, Error> {
         if let Some(e) = self
             .methods
             .iter()
-            .find(|x| &x.name.1 == name)
+            .find(|x| &x.name.1 == &name.1)
             .map(|x| MethodView::new(x, template))
         {
             Ok(e)
         } else {
-            panic!("Method {} not found in class {}", name, self.name);
+            Err(report_similar(
+                "method",
+                "methods",
+                &name.0,
+                &name.1,
+                &self
+                    .methods
+                    .iter()
+                    .map(|x| x.name.1.clone())
+                    .collect::<Vec<_>>(),
+                13,
+            ))
         }
     }
 

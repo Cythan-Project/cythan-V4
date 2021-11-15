@@ -202,7 +202,7 @@ pub fn compile(
                 let k = cm
                     .cl
                     .view(a)?
-                    .method_view(&name.1, template)?
+                    .method_view(&name, template)?
                     .execute(ls, cm, arguments)?;
                 mir.add(k.mir);
                 Ok(OutputData::new(
@@ -231,7 +231,7 @@ pub fn compile(
                 let k = cm
                     .cl
                     .view(a)?
-                    .method_view(&name.1, template)?
+                    .method_view(&name, template)?
                     .execute(ls, cm, arguments)?;
                 mir.add(k.mir);
                 Ok(OutputData::new(

@@ -22,7 +22,7 @@ use crate::{
         },
     },
     errors::Span,
-    parser::ty::Type,
+    parser::{expression::SpannedObject, ty::Type},
 };
 
 mod compiler;
@@ -267,7 +267,7 @@ fn run() {
                     end: 0,
                 },
             ))?
-            .method_view("main", &None)?
+            .method_view(&SpannedObject(Span::default(), "main".to_owned()), &None)?
             .execute(&mut LocalState::new(), &mut CodeManager::new(cl), vec![])?;
         let mut mir = rs.mir;
         mir.add_mir(Mir::WriteRegister(1, Either::Left(3u8)));

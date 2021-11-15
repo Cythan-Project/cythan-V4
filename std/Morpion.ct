@@ -46,7 +46,7 @@ class Morpion {
         Val count = 9;
         self.display();
         loop {
-            Va pos = Val.input();
+            Val pos = Val.input();
             pos.dec();
             if pos.greater(8) {
                 continue;
