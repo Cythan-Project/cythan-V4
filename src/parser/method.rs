@@ -5,7 +5,7 @@ use std::{
     rc::Rc,
 };
 
-use ariadne::Report;
+use ariadne::{Color, ColorGenerator, Fmt, Label, Report, ReportKind};
 use either::Either;
 
 use crate::{
@@ -17,6 +17,7 @@ use crate::{
             typed_definition::TypedMemory,
         },
     },
+    errors::report_similar,
     mir_utils::block_inliner::{need_block, remove_skips},
     parser::{
         expression::TokenProcessor,
@@ -130,20 +131,26 @@ impl MethodView {
             )),
             None => None,
         };
-        let mut ls = ls.shadow();
-        ls.return_loc = return_loc.clone();
-        self.arguments
-            .iter()
-            .zip(arguments.iter())
-            .for_each(|(x, y)| {
-                if x.0 != y.ty {
-                    panic!(
-                        "Invalid argument type for method {}: expected {:?}, got {:?}",
-                        self.name.1, x.0, y.ty
+        let mut ls = ls.shadow_method(return_loc.clone());
+        for (x, y) in self.arguments.iter().zip(arguments.iter()) {
+            if x.0 != y.ty {
+                let span = &y.span;
+                let er = Report::build(ReportKind::Error, span.file.to_owned(), span.start)
+                    .with_code(16)
+                    .with_message("Invalid argument type")
+                    .with_label(
+                        Label::new(span.as_span())
+                            .with_message(format!(
+                                "Expected {} found {}",
+                                format!("{:?}", x.0).fg(Color::Green),
+                                format!("{:?}", y.ty).fg(Color::Green),
+                            ))
+                            .with_color(Color::Green),
                     );
-                }
-                ls.vars.insert(x.1.clone(), y.clone());
-            });
+                return Err(er.finish());
+            }
+            ls.vars.insert(x.1.clone(), y.clone());
+        }
 
         let (k, return_value) = match &self.code {
             Either::Left(a) => (compile_code_block(a, &mut ls, cm, a.0.clone())?, return_loc),

@@ -31,6 +31,13 @@ impl LocalState {
         }
     }
 
+    pub fn shadow_method(&mut self, return_loc: Option<TypedMemory>) -> LocalState {
+        Self {
+            vars: HashMap::new(),
+            return_loc,
+        }
+    }
+
     pub fn get_var_native(
         &self,
         name: &str,

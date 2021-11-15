@@ -338,8 +338,8 @@ impl TokenParser<Class> for VecDeque<Token> {
                 } else {
                     let annotations: Vec<Annotation> = self.extract()?;
                     let ty: Type = x.extract()?;
-                    let name = if let Some(Token::Literal(_, name)) = x.get_token() {
-                        name
+                    let name = if let Some(Token::Literal(span, name)) = x.get_token() {
+                        SpannedObject(span, name)
                     } else {
                         panic!("Expected field name");
                     };

@@ -1,6 +1,7 @@
 use crate::{
     compiler::class_loader::ClassLoader,
-    parser::{class::ClassView, ty::Type},
+    errors::report_similar,
+    parser::{class::ClassView, expression::SpannedObject, ty::Type},
     Error,
 };
 
@@ -29,11 +30,11 @@ impl CodeManager {
         &self,
         locations: &[u32],
         view: ClassView,
-        name: &str,
+        name: &SpannedObject<String>,
     ) -> Result<(Type, Vec<u32>), Error> {
         let mut offset = 0;
         for f in &view.fields {
-            if f.name == name {
+            if f.name.1 == name.1 {
                 return Ok((
                     f.ty.clone(),
                     locations
@@ -46,6 +47,17 @@ impl CodeManager {
             }
             offset += self.cl.view(&f.ty)?.size(&self.cl)? as usize;
         }
-        panic!("Field {} not found", name);
+        return Err(report_similar(
+            "field",
+            "fields",
+            &name.0,
+            &name.1,
+            &view
+                .fields
+                .iter()
+                .map(|x| x.name.1.clone())
+                .collect::<Vec<_>>(),
+            14,
+        ));
     }
 }

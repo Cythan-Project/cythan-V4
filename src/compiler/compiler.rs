@@ -4,7 +4,7 @@ use ariadne::{Color, ColorGenerator, Fmt, Label, Report, ReportKind};
 
 use crate::{
     compiler::state::typed_definition::{CheckAgainst, TypedMemory},
-    errors::Span,
+    errors::{report_similar, Span},
     parser::{
         expression::{BooleanOperator, Expr, SpannedObject, SpannedVector},
         ty::Type,
@@ -53,22 +53,38 @@ pub fn compile(
                 .map(|(a, b)| Ok((a, compile(b, ls, cm)?)))
                 .collect::<Result<Vec<_>, _>>()?;
             let view = cm.cl.view(class)?;
+            // get_field
+
             let instr = view
                 .fields
                 .iter()
                 .map(|x| {
-                    let field = fields
-                        .iter()
-                        .find(|(a, _)| *a == &x.name)
-                        .expect("Can't find field");
-                    field
+                    let field = if let Some(e) = fields.iter().find(|(a, _)| *a == &x.name.1) {
+                        e
+                    } else {
+                        return Err(report_similar(
+                            "field",
+                            "fields",
+                            span,
+                            &x.name.1,
+                            &view
+                                .fields
+                                .iter()
+                                .map(|x| x.name.1.clone())
+                                .collect::<Vec<_>>(),
+                            14,
+                        ));
+                    };
+                    Ok(field
                         .1
                         .return_value
                         .as_ref()
                         .expect("Argument is not a value")
                         .locations
-                        .clone()
+                        .clone())
                 })
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
                 .flatten()
                 .collect();
             Ok(OutputData::new(
@@ -174,8 +190,11 @@ pub fn compile(
                 .return_value
                 .as_ref()
                 .expect("Field source must be a value");
-            let (ty, locs) =
-                cm.location_and_type_of_field(&rtv.locations, cm.cl.view(&rtv.ty)?, name)?;
+            let (ty, locs) = cm.location_and_type_of_field(
+                &rtv.locations,
+                cm.cl.view(&rtv.ty)?,
+                &SpannedObject(span.clone(), name.clone()),
+            )?;
             Ok(OutputData::new(
                 out.mir,
                 span.clone(),
