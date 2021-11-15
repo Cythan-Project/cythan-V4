@@ -12,3 +12,4 @@ either = "*"
 cythan-compiler = { git = "https://github.com/Cythan-Project/cythan-compiler" }
 cythan = { path = "Cythan-V2" }
 ariadne = "0.1.3"
+strsim = "0.10.0"

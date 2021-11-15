@@ -11,8 +11,11 @@ use either::Either;
 use crate::{
     compiler::{
         compiler::compile_code_block,
-        compiler_states::{CodeManager, LocalState, OutputData, TypedMemory},
         mir::{Mir, MirCodeBlock},
+        state::{
+            code_manager::CodeManager, local_state::LocalState, output_data::OutputData,
+            typed_definition::TypedMemory,
+        },
     },
     mir_utils::block_inliner::{need_block, remove_skips},
     parser::{
@@ -24,13 +27,16 @@ use crate::{
 };
 
 use super::{
-    annotation::Annotation, class::TemplateFixer, expression::SpannedVector, ty::TemplateDefinition,
+    annotation::Annotation,
+    class::TemplateFixer,
+    expression::{SpannedObject, SpannedVector},
+    ty::TemplateDefinition,
 };
 use crate::parser::expression::CodeBlock;
 
 #[derive(Clone)]
 pub struct Method {
-    pub name: String,
+    pub name: SpannedObject<String>,
     pub annotations: Vec<Annotation>,
     pub return_type: Option<Type>,
     pub arguments: Vec<(Type, String)>,
@@ -56,22 +62,29 @@ impl Debug for Method {
 }
 
 pub struct MethodView {
-    pub name: String,
+    pub name: SpannedObject<String>,
     pub return_type: Option<Type>,
     pub arguments: Vec<(Type, String)>,
     pub template: Option<SpannedVector<Type>>,
     pub code: Either<CodeBlock, NativeMethod>,
 }
 
-pub type NativeMethod =
-    Rc<Box<dyn Fn(&mut LocalState, &mut CodeManager, &MethodView) -> OutputData>>;
+pub type NativeMethod = Rc<
+    Box<
+        dyn Fn(
+            &mut LocalState,
+            &mut CodeManager,
+            &MethodView,
+        ) -> Result<OutputData, Report<(String, Range<usize>)>>,
+    >,
+>;
 
 impl MethodView {
     pub fn new(method: &Method, template: &Option<SpannedVector<Type>>) -> Self {
         if method.template.as_ref().map(|x| x.0.len()).unwrap_or(0)
             != template.as_ref().map(|x| x.1.len()).unwrap_or(0)
         {
-            panic!("Invalid type template for method {}", method.name);
+            panic!("Invalid type template for method {}", method.name.1);
         }
         let tmp_map = if let (Some(a), Some(b)) = (&method.template, template) {
             TemplateFixer::new(
@@ -109,10 +122,14 @@ impl MethodView {
         cm: &mut CodeManager,
         arguments: Vec<TypedMemory>,
     ) -> Result<OutputData, Report<(String, Range<usize>)>> {
-        let return_loc = self
-            .return_type
-            .as_ref()
-            .map(|x| TypedMemory::new(x.clone(), cm.alloc_type(x).unwrap()));
+        let return_loc = match self.return_type.as_ref() {
+            Some(x) => Some(TypedMemory::new(
+                x.clone(),
+                cm.alloc_type(x)?,
+                self.name.0.clone(),
+            )),
+            None => None,
+        };
         let mut ls = ls.shadow();
         ls.return_loc = return_loc.clone();
         self.arguments
@@ -122,16 +139,16 @@ impl MethodView {
                 if x.0 != y.ty {
                     panic!(
                         "Invalid argument type for method {}: expected {:?}, got {:?}",
-                        self.name, x.0, y.ty
+                        self.name.1, x.0, y.ty
                     );
                 }
                 ls.vars.insert(x.1.clone(), y.clone());
             });
 
         let (k, return_value) = match &self.code {
-            Either::Left(a) => (compile_code_block(a, &mut ls, cm)?, return_loc),
+            Either::Left(a) => (compile_code_block(a, &mut ls, cm, a.0.clone())?, return_loc),
             Either::Right(a) => {
-                let jk = a(&mut ls, cm, self);
+                let jk = a(&mut ls, cm, self)?;
                 let lc = jk.return_value.clone();
                 (jk, lc)
             }
@@ -144,6 +161,11 @@ impl MethodView {
         // Maybe later add tail auto return
         Ok(OutputData {
             return_value,
+            span: self
+                .return_type
+                .as_ref()
+                .map(|x| x.span.clone())
+                .unwrap_or_else(|| self.name.0.clone()),
             mir: MirCodeBlock(mir),
         })
     }
@@ -157,8 +179,8 @@ impl TokenParser<Method> for VecDeque<Token> {
         } else {
             None
         };
-        let name = if let Some(Token::Literal(_, name)) = self.get_token() {
-            name
+        let name = if let Some(Token::Literal(span, name)) = self.get_token() {
+            SpannedObject(span, name)
         } else {
             panic!("Expected method name");
         };

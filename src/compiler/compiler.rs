@@ -3,26 +3,28 @@ use std::ops::Range;
 use ariadne::{Color, ColorGenerator, Fmt, Label, Report, ReportKind};
 
 use crate::{
-    compiler::compiler_states::TypedMemory,
+    compiler::state::typed_definition::{CheckAgainst, TypedMemory},
+    errors::Span,
     parser::{
-        expression::{BooleanOperator, Expr, SpannedVector},
+        expression::{BooleanOperator, Expr, SpannedObject, SpannedVector},
         ty::Type,
         NumberType,
     },
 };
 
 use super::{
-    compiler_states::{CodeManager, LocalState, OutputData},
     mir::{Mir, MirCodeBlock},
+    state::{code_manager::CodeManager, local_state::LocalState, output_data::OutputData},
 };
 
 pub fn compile_code_block(
     expr: &SpannedVector<Expr>,
     ls: &mut LocalState,
     cm: &mut CodeManager,
+    span: Span,
 ) -> Result<OutputData, Report<(String, Range<usize>)>> {
     expr.1.iter().fold(
-        Ok(OutputData::new(MirCodeBlock::new(), None)),
+        Ok(OutputData::new(MirCodeBlock::new(), span, None)),
         |acc, expr| {
             let mut acc = acc?;
             let expr = compile(expr, ls, cm)?;
@@ -41,7 +43,7 @@ pub fn compile(
     let mut mir = MirCodeBlock::new();
     match expr {
         Expr::New {
-            span: _,
+            span,
             class,
             fields,
         } => {
@@ -50,7 +52,7 @@ pub fn compile(
                 .iter()
                 .map(|(a, b)| Ok((a, compile(b, ls, cm)?)))
                 .collect::<Result<Vec<_>, _>>()?;
-            let view = cm.cl.view(class);
+            let view = cm.cl.view(class)?;
             let instr = view
                 .fields
                 .iter()
@@ -71,33 +73,23 @@ pub fn compile(
                 .collect();
             Ok(OutputData::new(
                 MirCodeBlock::from(fields.into_iter().map(|x| x.1.mir.0).flatten().collect()),
-                Some(TypedMemory::new(class.clone(), instr)),
+                span.clone(),
+                Some(TypedMemory::new(class.clone(), instr, span.clone())),
             ))
         }
         Expr::If {
-            span: _,
+            span,
             condition,
             then,
             or_else,
         } => {
-            //let alloc = ls.cm.alloc
             let er = compile(condition, ls, cm)?;
-            let loc = if let Some(TypedMemory { locations, ty }) = &er.return_value {
-                if locations.len() != 1 {
-                    panic!("Condition must return a single value");
-                }
-                if ty.name.1 != "Bool" {
-                    panic!("Condition must return a bool");
-                }
-                locations[0]
-            } else {
-                panic!("Condition must return a single value");
-            };
+            let loc = er.check_against(&Type::native_simple("Bool"))?[0];
             mir.add(er.mir);
 
-            let then_r = compile_code_block(then, &mut ls.shadow(), cm)?;
+            let then_r = compile_code_block(then, &mut ls.shadow(), cm, span.clone())?;
             let else_r = if let Some(x) = or_else.as_ref() {
-                Some(compile_code_block(x, &mut ls.shadow(), cm)?)
+                Some(compile_code_block(x, &mut ls.shadow(), cm, span.clone())?)
             } else {
                 None
             };
@@ -109,13 +101,13 @@ pub fn compile(
                     if a.ty != b.ty {
                         panic!("If branches must have the same type");
                     }
-                    let alc = cm.alloc_type(&a.ty).unwrap();
+                    let alc = cm.alloc_type(&a.ty)?;
                     let mut tr = then_r.mir;
                     tr.copy_bulk(&alc, &b.locations);
                     let mut er = else_r.mir;
                     er.copy_bulk(&alc, &a.locations);
 
-                    (Some(TypedMemory::new(a.ty, alc)), tr, er)
+                    (Some(TypedMemory::new(a.ty, alc, span.clone())), tr, er)
                 } else {
                     (None, then_r.mir, else_r.mir)
                 }
@@ -123,7 +115,7 @@ pub fn compile(
                 (None, then_r.mir, MirCodeBlock::new())
             };
             mir.add_mir(Mir::If0(loc, tlr, elr));
-            Ok(OutputData::new(mir, output))
+            Ok(OutputData::new(mir, span.clone(), output))
         }
         Expr::Number(span, a, t) => {
             // TODO add more options (type choice automatically)
@@ -160,32 +152,38 @@ pub fn compile(
             };
             Ok(OutputData::new(
                 mir,
-                Some(TypedMemory::new(Type::simple(tn, span.clone()), alc)),
+                span.clone(),
+                Some(TypedMemory::new(
+                    Type::simple(tn, span.clone()),
+                    alc,
+                    span.clone(),
+                )),
             ))
         }
-        Expr::Variable(_span, a) => Ok(OutputData::new(
+        Expr::Variable(span, a) => Ok(OutputData::new(
             mir,
-            Some(ls.get_var(a).expect("Variable not found").clone()),
+            span.clone(),
+            Some(ls.get_var(&SpannedObject(span.clone(), a.clone()))?.clone()),
         )),
         Expr::Type(_span, _a) => {
             panic!("Expected something else than Type in expression")
         }
-        Expr::Field {
-            span: _,
-            source,
-            name,
-        } => {
+        Expr::Field { span, source, name } => {
             let out = compile(&*source, ls, cm)?;
             let rtv = out
                 .return_value
                 .as_ref()
                 .expect("Field source must be a value");
             let (ty, locs) =
-                cm.location_and_type_of_field(&rtv.locations, cm.cl.view(&rtv.ty), name);
-            Ok(OutputData::new(out.mir, Some(TypedMemory::new(ty, locs))))
+                cm.location_and_type_of_field(&rtv.locations, cm.cl.view(&rtv.ty)?, name)?;
+            Ok(OutputData::new(
+                out.mir,
+                span.clone(),
+                Some(TypedMemory::new(ty, locs, span.clone())),
+            ))
         }
         Expr::Method {
-            span: _,
+            span,
             source,
             name,
             arguments,
@@ -203,11 +201,18 @@ pub fn compile(
                     .collect::<Result<Vec<_>, _>>()?;
                 let k = cm
                     .cl
-                    .view(a)
-                    .method_view(&name.1, template)
+                    .view(a)?
+                    .method_view(&name.1, template)?
                     .execute(ls, cm, arguments)?;
                 mir.add(k.mir);
-                Ok(OutputData::new(mir, k.return_value))
+                Ok(OutputData::new(
+                    mir,
+                    span.clone(),
+                    k.return_value.map(|mut x| {
+                        x.span = span.clone();
+                        x
+                    }),
+                ))
             } else {
                 let aj = compile(source, ls, cm)?;
                 mir.add(aj.mir);
@@ -225,26 +230,25 @@ pub fn compile(
                 arguments.insert(0, ah.clone());
                 let k = cm
                     .cl
-                    .view(a)
-                    .method_view(&name.1, template)
+                    .view(a)?
+                    .method_view(&name.1, template)?
                     .execute(ls, cm, arguments)?;
                 mir.add(k.mir);
-                Ok(OutputData::new(mir, k.return_value))
+                Ok(OutputData::new(
+                    mir,
+                    span.clone(),
+                    k.return_value.map(|mut x| {
+                        x.span = span.clone();
+                        x
+                    }),
+                ))
             }
         }
-        Expr::NamedResource {
-            span: _,
-            vtype,
-            name,
-        } => {
-            let k = ls.new_var(cm, &name.1, vtype.clone(), &mut mir);
-            Ok(OutputData::new(mir, Some(k)))
+        Expr::NamedResource { span, vtype, name } => {
+            let k = ls.new_var(cm, &name.1, vtype.clone(), &mut mir, span.clone())?;
+            Ok(OutputData::new(mir, span.clone(), Some(k)))
         }
-        Expr::Assignement {
-            span: _,
-            target,
-            to,
-        } => {
+        Expr::Assignement { span, target, to } => {
             let ret = compile(target, ls, cm)?;
             let ret1 = compile(to, ls, cm)?;
             let rt = ret
@@ -259,10 +263,10 @@ pub fn compile(
             mir.add(ret1.mir);
             mir.add(ret.mir);
             mir.copy_bulk(&rt.locations, &rt1.locations);
-            Ok(OutputData::new(mir, None))
+            Ok(OutputData::new(mir, span.clone(), None))
         }
-        Expr::Block(_span, a) => compile_code_block(a, &mut ls.shadow(), cm),
-        Expr::Return(_span, a) => {
+        Expr::Block(span, a) => compile_code_block(a, &mut ls.shadow(), cm, span.clone()),
+        Expr::Return(span, a) => {
             if let Some(e) = a {
                 let ret = compile(e, ls, cm)?;
                 let rl = ls
@@ -300,40 +304,46 @@ pub fn compile(
                 mir.add(ret.mir);
                 mir.copy_bulk(&rl.locations, &rt.locations);
                 mir.add_mir(Mir::Skip);
-                Ok(OutputData::new(mir, None))
+                Ok(OutputData::new(mir, span.clone(), None))
             } else if ls.return_loc.is_some() {
                 panic!("A return value was expected");
             } else {
                 mir.add_mir(Mir::Skip);
-                Ok(OutputData::new(mir, None))
+                Ok(OutputData::new(mir, span.clone(), None))
             }
         }
         Expr::Cast {
-            span: _,
+            span,
             source,
             target,
         } => {
             let ret = compile(source, ls, cm)?;
             mir.add(ret.mir);
             let rt = ret.return_value.expect("Cast source must be a value");
-            let source_view = cm.cl.view(&rt.ty);
-            let target_view = cm.cl.view(target);
-            if source_view.size(&cm.cl) != target_view.size(&cm.cl) {
+            let source_view = cm.cl.view(&rt.ty)?;
+            let target_view = cm.cl.view(target)?;
+            if source_view.size(&cm.cl)? != target_view.size(&cm.cl)? {
                 panic!("Type size cast must match, {:?} and {:?}", source, target);
             }
             Ok(OutputData::new(
                 mir,
-                Some(TypedMemory::new(target.clone(), rt.locations)),
+                span.clone(),
+                Some(TypedMemory::new(target.clone(), rt.locations, span.clone())),
             ))
         }
-        Expr::Loop(_span, a) => {
-            let k = compile_code_block(a, &mut ls.shadow(), cm)?;
+        Expr::Loop(span, a) => {
+            let k = compile_code_block(a, &mut ls.shadow(), cm, span.clone())?;
             mir.add_mir(Mir::Loop(k.mir));
-            Ok(OutputData::new(mir, None))
+            Ok(OutputData::new(mir, span.clone(), None))
         }
-        Expr::Break(_span) => Ok(OutputData::new(MirCodeBlock::from(vec![Mir::Break]), None)),
-        Expr::Continue(_span) => Ok(OutputData::new(
+        Expr::Break(span) => Ok(OutputData::new(
+            MirCodeBlock::from(vec![Mir::Break]),
+            span.clone(),
+            None,
+        )),
+        Expr::Continue(span) => Ok(OutputData::new(
             MirCodeBlock::from(vec![Mir::Continue]),
+            span.clone(),
             None,
         )),
         Expr::BooleanExpression(span, a, bo, c) => {
@@ -356,28 +366,6 @@ pub fn compile(
             } else {
                 panic!("Boolean expression must return a value");
             };
-            /*
-
-            if bo == &BooleanOperator::And {
-                let mut cb = MirCodeBlock::new();
-                cb.add(b.mir);
-                cb.copy(alp, locb);
-                mir.add_mir(Mir::If0(
-                    loca,
-                    cb,
-                    MirCodeBlock::from(vec![Mir::Set(alp, 1)]),
-                ));
-            } else {
-                let mut cb = MirCodeBlock::new();
-                cb.add(b.mir);
-                cb.copy(alp, locb);
-                mir.add_mir(Mir::If0(
-                    loca,
-                    MirCodeBlock::from(vec![Mir::Set(alp, 0)]),
-                    cb,
-                ));
-            }
-            */
             mir.add(a.mir);
             let mut cb = MirCodeBlock::new();
             cb.add(b.mir);
@@ -397,9 +385,11 @@ pub fn compile(
             }
             Ok(OutputData::new(
                 mir,
+                span.clone(),
                 Some(TypedMemory::new(
                     Type::simple("Bool", span.clone()),
                     vec![alp],
+                    span.clone(),
                 )),
             ))
         }
@@ -431,6 +421,7 @@ pub fn compile(
             mir.copy_bulk(&az, &alloc_block);
             Ok(OutputData::new(
                 mir,
+                a.clone(),
                 Some(TypedMemory::new(
                     Type::new(
                         "Array",
@@ -441,6 +432,7 @@ pub fn compile(
                         a.clone(),
                     ),
                     az,
+                    a.clone(),
                 )),
             ))
         }

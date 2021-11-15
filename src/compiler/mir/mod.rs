@@ -4,7 +4,7 @@ use either::Either;
 
 use crate::compiler::asm::{AsmValue, LabelType};
 
-use super::asm::{opt_asm, CompilableInstruction, Label, Number, Var};
+use super::asm::{optimizer::opt_asm, CompilableInstruction, Label, Number, Var};
 
 #[derive(PartialEq, Clone, Hash, Debug)]
 #[allow(dead_code)]
@@ -94,6 +94,56 @@ impl MirCodeBlock {
             }
         }
         SkipStatus::None
+    }
+}
+
+impl MirCodeBlock {
+    pub fn from(mir: Vec<Mir>) -> Self {
+        Self(mir)
+    }
+    pub fn new() -> Self {
+        Self(Vec::new())
+    }
+
+    pub fn add(&mut self, mut mir: MirCodeBlock) -> &mut Self {
+        self.0.append(&mut mir.0);
+        self
+    }
+
+    pub fn add_mir(&mut self, mir: Mir) -> &mut Self {
+        self.0.push(mir);
+        self
+    }
+
+    pub fn copy(&mut self, to: u32, from: u32) -> &mut Self {
+        self.0.push(Mir::Copy(to, from));
+        self
+    }
+
+    pub fn copy_bulk(&mut self, to: &[u32], from: &[u32]) -> &mut Self {
+        if to.len() != from.len() {
+            panic!("Invalid copy operation");
+        }
+        to.iter().zip(from.iter()).for_each(|(to, from)| {
+            self.0.push(Mir::Copy(*to, *from));
+        });
+        self
+    }
+
+    pub fn set_bulk(&mut self, to: &[u32], from: &[u8]) -> &mut Self {
+        if to.len() != from.len() {
+            panic!("Invalid set operation");
+        }
+        to.iter().zip(from.iter()).for_each(|(to, from)| {
+            self.0.push(Mir::Set(*to, *from));
+        });
+        self
+    }
+
+    #[allow(dead_code)]
+    pub fn set(&mut self, to: u32, value: u8) -> &mut Self {
+        self.0.push(Mir::Set(to, value));
+        self
     }
 }
 

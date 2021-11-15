@@ -62,12 +62,14 @@ impl Type {
             template,
         }
     }
+    pub fn native(name: &str, template: Option<SpannedVector<Type>>) -> Self {
+        Self::new(name, template, Span::default())
+    }
+    pub fn native_simple(name: &str) -> Self {
+        Self::simple(name, Span::default())
+    }
     pub fn simple(name: &str, span: Span) -> Self {
-        Self {
-            name: SpannedObject(span.clone(), name.to_owned()),
-            template: None,
-            span,
-        }
+        Self::new(name, None, span)
     }
 }
 

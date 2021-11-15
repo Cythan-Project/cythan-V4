@@ -2,7 +2,7 @@ use std::io::Write;
 
 use either::Either;
 
-use super::mir::{Mir, MirCodeBlock};
+use crate::compiler::mir::{Mir, MirCodeBlock};
 
 pub struct MemoryState {
     pub memory: Vec<u8>,

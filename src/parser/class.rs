@@ -7,12 +7,13 @@ use ariadne::Report;
 use either::Either;
 
 use crate::{
-    compiler::ClassLoader,
+    compiler::class_loader::ClassLoader,
     parser::{
         expression::TokenProcessor,
         token_utils::{split_complex, SplitAction},
         ClosableType, Keyword, TokenExtracter,
     },
+    Error,
 };
 
 use super::{
@@ -36,7 +37,10 @@ pub struct Class {
 
 impl Class {
     pub fn get_method_mut(&mut self, method: &str) -> &mut Method {
-        self.methods.iter_mut().find(|x| x.name == method).unwrap()
+        self.methods
+            .iter_mut()
+            .find(|x| &x.name.1 == method)
+            .unwrap()
     }
 }
 
@@ -85,45 +89,46 @@ impl ClassView {
         }
     }
 
-    pub fn method_view(&self, name: &str, template: &Option<SpannedVector<Type>>) -> MethodView {
+    pub fn method_view(
+        &self,
+        name: &str,
+        template: &Option<SpannedVector<Type>>,
+    ) -> Result<MethodView, Error> {
         if let Some(e) = self
             .methods
             .iter()
-            .find(|x| x.name == name)
+            .find(|x| &x.name.1 == name)
             .map(|x| MethodView::new(x, template))
         {
-            e
+            Ok(e)
         } else {
             panic!("Method {} not found in class {}", name, self.name);
         }
     }
 
-    pub fn size(&self, cl: &ClassLoader) -> u32 {
+    pub fn size(&self, cl: &ClassLoader) -> Result<u32, Error> {
         if self.name == "Val" {
-            return 1;
+            return Ok(1);
         }
         if self.name == "Array" {
-            return self
-                .ty
-                .template
-                .as_ref()
-                .map(|x| {
-                    let item_size = cl.view(&x.1[0]).size(cl);
-                    let number = x.1[1].name.1[1..].parse::<u32>().unwrap();
-                    item_size * number
-                })
-                .unwrap_or(0) as u32;
-        }
-        self.fields
-            .iter()
-            .map(|x| {
-                if let Some(e) = cl.get(x.ty.name.1.as_str()) {
-                    ClassView::new(e, &x.ty).size(cl)
-                } else {
-                    panic!("Unknown type {}", x.ty.name.1);
+            return Ok({
+                match self.ty.template.as_ref() {
+                    Some(x) => {
+                        let item_size = cl.view(&x.1[0])?.size(cl)?;
+                        let number = x.1[1].name.1[1..].parse::<u32>().unwrap();
+                        item_size * number
+                    }
+                    None => 0,
                 }
-            })
-            .sum::<u32>()
+            });
+        }
+        Ok(self
+            .fields
+            .iter()
+            .map(|x| ClassView::new(cl.get(&x.ty.name)?, &x.ty).size(cl))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .sum::<u32>())
     }
 }
 

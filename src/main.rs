@@ -5,7 +5,8 @@ use std::{ops::Range, rc::Rc};
 
 use ariadne::{Config, Label, Report, ReportKind, Source};
 use compiler::{
-    asm::Context, asm_interpreter::MemoryState, mir::MirState, template::Template, ClassLoader,
+    asm::{interpreter::MemoryState, template::Template, Context},
+    mir::MirState,
 };
 
 use cythan::{Cythan, InterruptedCythan};
@@ -13,8 +14,12 @@ use either::Either;
 
 use crate::{
     compiler::{
-        compiler_states::{CodeManager, LocalState, OutputData, TypedMemory},
+        class_loader::ClassLoader,
         mir::{Mir, MirCodeBlock},
+        state::{
+            code_manager::CodeManager, local_state::LocalState, output_data::OutputData,
+            typed_definition::TypedMemory,
+        },
     },
     errors::Span,
     parser::ty::Type,
@@ -25,7 +30,22 @@ mod errors;
 mod mir_utils;
 mod parser;
 
+pub type Error = Report<(String, Range<usize>)>;
+
+const STACK_SIZE: usize = 4 * 1024 * 1024;
+
 fn main() {
+    // Spawn thread with explicit stack size
+    let child = std::thread::Builder::new()
+        .stack_size(STACK_SIZE)
+        .spawn(run)
+        .unwrap();
+
+    // Wait for thread to join
+    child.join().unwrap();
+}
+
+fn run() {
     let r: Result<(), Report<(String, Range<usize>)>> = try {
         let mut cl = ClassLoader::new();
         for file in std::fs::read_dir("std").unwrap() {
@@ -44,55 +64,55 @@ fn main() {
         cl.get_class_mut("Val").get_method_mut("dec").code =
             Either::Right(Rc::new(Box::new(|ls, _cm, _mv| {
                 let mut mir = MirCodeBlock::new();
-                let loc = ls.get_var("self").unwrap().locations[0];
+                let loc = ls.get_var_native("self")?.locations[0];
                 mir.add_mir(Mir::Decrement(loc));
-                OutputData::new(mir, None)
+                Ok(OutputData::native(mir, None))
             })));
         cl.get_class_mut("Val").get_method_mut("inc").code =
             Either::Right(Rc::new(Box::new(|ls, _cm, _mv| {
                 let mut mir = MirCodeBlock::new();
-                let loc = ls.get_var("self").unwrap().locations[0];
+                let loc = ls.get_var_native("self")?.locations[0];
                 mir.add_mir(Mir::Increment(loc));
-                OutputData::new(mir, None)
+                Ok(OutputData::native(mir, None))
             })));
         cl.get_class_mut("System").get_method_mut("debug").code =
             Either::Right(Rc::new(Box::new(|ls, _cm, _mv| {
-                let k = ls.get_var("a").unwrap();
+                let k = ls.get_var_native("a")?;
                 println!("----DEBUGING----");
                 println!("Type: {:?}", k.ty);
                 println!("Locations: {:?}", k.locations);
                 println!("----------------");
-                OutputData::new(MirCodeBlock::new(), None)
+                Ok(OutputData::native(MirCodeBlock::new(), None))
             })));
         cl.get_class_mut("System")
             .get_method_mut("getRegister")
             .code = Either::Right(Rc::new(Box::new(|_ls, cm, mv| {
             let asp = cm.alloc();
-            OutputData::new(
+            Ok(OutputData::native(
                 MirCodeBlock(vec![Mir::ReadRegister(
                     asp,
                     mv.template.as_ref().unwrap().1[0].name.1[1..]
                         .parse()
                         .unwrap(),
                 )]),
-                Some(TypedMemory::new(
+                Some(TypedMemory::native(
                     mv.return_type.as_ref().unwrap().clone(),
                     vec![asp],
                 )),
-            )
+            ))
         })));
         cl.get_class_mut("System")
             .get_method_mut("setRegister")
             .code = Either::Right(Rc::new(Box::new(|ls, _cm, mv| {
-            OutputData::new(
+            Ok(OutputData::native(
                 MirCodeBlock(vec![Mir::WriteRegister(
                     mv.template.as_ref().unwrap().1[0].name.1[1..]
                         .parse()
                         .unwrap(),
-                    Either::Right(ls.get_var("value").unwrap().locations[0]),
+                    Either::Right(ls.get_var_native("value")?.locations[0]),
                 )]),
                 None,
-            )
+            ))
         })));
         cl.get_class_mut("Array").get_method_mut("len").code =
             Either::Right(Rc::new(Box::new(|ls, cm, mv| {
@@ -101,13 +121,13 @@ fn main() {
                     .unwrap();
                 let alloc = cm.alloc();
 
-                OutputData::new(
+                Ok(OutputData::native(
                     MirCodeBlock(vec![Mir::Set(alloc, len as u8)]),
-                    Some(TypedMemory::new(
+                    Some(TypedMemory::native(
                         Type::simple("Val", Span::default()),
                         vec![alloc],
                     )),
-                )
+                ))
             })));
         cl.get_class_mut("Array").get_method_mut("setDyn").code =
             Either::Right(Rc::new(Box::new(|ls, cm, mv| {
@@ -116,16 +136,15 @@ fn main() {
                     .parse()
                     .unwrap();
                 let ty = &mv.arguments[0].0.template.as_ref().unwrap().1[0];
-                let unit_size = cm.cl.view(ty).size(&cm.cl);
+                let unit_size = cm.cl.view(ty)?.size(&cm.cl)?;
                 let mpos = cm.alloc();
                 let mut mircb = MirCodeBlock::new();
-                mircb.copy(mpos, ls.get_var("index").unwrap().locations[0]);
-                let from = ls.get_var("value").unwrap().locations.clone();
+                mircb.copy(mpos, ls.get_var_native("index")?.locations[0]);
+                let from = ls.get_var_native("value")?.locations.clone();
                 let mut mir = MirCodeBlock::new();
                 for position in (0..size).rev() {
                     let to = ls
-                        .get_var("self")
-                        .unwrap()
+                        .get_var_native("self")?
                         .locations
                         .iter()
                         .skip((unit_size * position) as usize)
@@ -139,7 +158,7 @@ fn main() {
                 }
                 mircb.add(mir);
 
-                OutputData::new(mircb, None)
+                Ok(OutputData::native(mircb, None))
             })));
         cl.get_class_mut("Array").get_method_mut("get").code =
             Either::Right(Rc::new(Box::new(|ls, cm, mv| {
@@ -154,9 +173,9 @@ fn main() {
                 }
 
                 let ty = &mv.arguments[0].0.template.as_ref().unwrap().1[0];
-                let unit_size = cm.cl.view(ty).size(&cm.cl);
+                let unit_size = cm.cl.view(ty)?.size(&cm.cl)?;
 
-                let data_loc = ls.get_var("self").unwrap();
+                let data_loc = ls.get_var_native("self")?;
 
                 let ps = data_loc
                     .locations
@@ -166,7 +185,10 @@ fn main() {
                     .copied()
                     .collect::<Vec<_>>();
 
-                OutputData::new(MirCodeBlock::new(), Some(TypedMemory::new(ty.clone(), ps)))
+                Ok(OutputData::native(
+                    MirCodeBlock::new(),
+                    Some(TypedMemory::native(ty.clone(), ps)),
+                ))
             })));
         cl.get_class_mut("Array").get_method_mut("getDyn").code =
             Either::Right(Rc::new(Box::new(|ls, cm, mv| {
@@ -175,16 +197,15 @@ fn main() {
                     .parse()
                     .unwrap();
                 let ty = &mv.arguments[0].0.template.as_ref().unwrap().1[0];
-                let unit_size = cm.cl.view(ty).size(&cm.cl);
+                let unit_size = cm.cl.view(ty)?.size(&cm.cl)?;
                 let mpos = cm.alloc();
                 let mut mircb = MirCodeBlock::new();
-                mircb.copy(mpos, ls.get_var("index").unwrap().locations[0]);
+                mircb.copy(mpos, ls.get_var_native("index")?.locations[0]);
                 let to = cm.alloc_block(unit_size as usize);
                 let mut mir = MirCodeBlock::new();
                 for position in (0..size).rev() {
                     let from = ls
-                        .get_var("self")
-                        .unwrap()
+                        .get_var_native("self")?
                         .locations
                         .iter()
                         .skip((unit_size * position) as usize)
@@ -198,7 +219,10 @@ fn main() {
                 }
                 mircb.add(mir);
 
-                OutputData::new(mircb, Some(TypedMemory::new(ty.clone(), to)))
+                Ok(OutputData::native(
+                    mircb,
+                    Some(TypedMemory::native(ty.clone(), to)),
+                ))
             })));
 
         cl.get_class_mut("Array").get_method_mut("set").code =
@@ -214,9 +238,9 @@ fn main() {
                 }
 
                 let ty = &mv.arguments[0].0.template.as_ref().unwrap().1[0];
-                let unit_size = cm.cl.view(ty).size(&cm.cl);
+                let unit_size = cm.cl.view(ty)?.size(&cm.cl)?;
 
-                let data_loc = ls.get_var("self").unwrap();
+                let data_loc = ls.get_var_native("self")?;
 
                 let mut mir = MirCodeBlock::new();
 
@@ -228,22 +252,22 @@ fn main() {
                     .copied()
                     .collect::<Vec<_>>();
 
-                let from = &ls.get_var("value").unwrap().locations;
+                let from = &ls.get_var_native("value")?.locations;
 
                 mir.copy_bulk(&to, from);
 
-                OutputData::new(mir, None)
+                Ok(OutputData::native(mir, None))
             })));
         let rs = cl
             .view(&Type::simple(
                 "Counter",
                 Span {
-                    file: "<empty>".to_owned(),
+                    file: "<internal>".to_owned(),
                     start: 0,
                     end: 0,
                 },
-            ))
-            .method_view("main", &None)
+            ))?
+            .method_view("main", &None)?
             .execute(&mut LocalState::new(), &mut CodeManager::new(cl), vec![])?;
         let mut mir = rs.mir;
         mir.add_mir(Mir::WriteRegister(1, Either::Left(3u8)));

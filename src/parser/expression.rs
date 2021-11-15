@@ -480,6 +480,7 @@ impl TokenParser<Vec<Expr>> for VecDeque<Token> {
         .collect::<Result<_, _>>()
     }
 }
+
 impl Expr {
     pub fn span(&self) -> &Span {
         match self {

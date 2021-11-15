@@ -43,16 +43,22 @@ class Morpion {
 
     play(Morpion self) {
         Val currentPlayer = 1;
+        Val count = 9;
         self.display();
         loop {
-            Val pos = Val.input();
+            Va pos = Val.input();
             pos.dec();
             if pos.greater(8) {
                 continue;
             };
             if self.getDyn(pos).equalsZero() {
                 self.set(pos, currentPlayer);
+                count.dec();
                 self.display();
+                if count.equalsZero() {
+                    "Equality!".println();
+                    break;
+                };
                 if self.winner(currentPlayer) {
                     if currentPlayer.equals(1) {
                         'O'

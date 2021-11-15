@@ -20,16 +20,9 @@ class Bool {
 
     print(Bool self) {
         if self {
-            't'.print();
-            'r'.print();
-            'u'.print();
-            'e'.print();
+            "true"
         } else {
-            'f'.print();
-            'a'.print();
-            'l'.print();
-            's'.print();
-            'e'.print();
-        };
+            "false"
+        }.print();
     }
 }
