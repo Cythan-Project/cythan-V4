@@ -1,0 +1,100 @@
+class DynArray<T, N> {
+
+    Array<T, N> array;
+    Val length;
+
+    DynArray<T, N> new() {
+        return DynArray<T, N> {
+            array = Array<T, N> tmp,
+            length = 0
+        };
+    }
+    
+    DynArray<T, N> from<Number>(Array<T, Number> input) {
+        DynArray<T, N> dyn = DynArray<T, N>.new();
+        dyn.addAll<Number>(input);
+        return dyn;
+    }
+
+    add(DynArray<T, N> self, T t) {
+        self.array.setDyn(self.length, t);
+        self.length.inc();
+    }
+
+    addAll<Ng>(DynArray<T, N> self, Array<T, Ng> arr) {
+        Val l = arr.len();
+        Val c = 0;
+        loop {
+            if l.equalsZero() {
+                break;
+            };
+            self.add(arr.getDyn(c));
+            c.inc();
+            l.dec();
+        };
+    }
+
+    T pop(DynArray<T, N> self) {
+        self.length.dec();
+        return self.getDyn(self.length);
+    }
+
+    Array<T, N> raw(DynArray<T, N> self) {
+        return self.array;
+    }
+
+    Val len(DynArray<T, N> self) {
+        return self.length;
+    }
+
+    Val capacity(DynArray<T, N> self) {
+        return self.array.len();
+    }
+
+    last(DynArray<T, N> self, Val pos) {
+        Val k = self.len();
+        k.dec();
+        return self.getDyn(k);
+    }
+
+    setDyn(DynArray<T, N> self, Val pos, T t) {
+        self.setDyn(pos,t);
+    }
+
+    set<Number>(DynArray<T, N> self,T t) {
+        self.set<Number>(t);
+    }
+
+    T getDyn(DynArray<T, N> self, Val pos) {
+        return self.array.getDyn(pos);
+    }
+
+    T get<Number>(DynArray<T, N> self) {
+        return self.get<Number>(pos);
+    }
+    
+    print(DynArray<Byte, N> self) {
+        Val index = 0;
+        loop {
+            if self.len().greater(index) {
+                self.getDyn(index).print();
+                index.inc();
+            } else {
+                break;
+            };
+        };
+    }
+    println(DynArray<Byte, N> self) {
+        Val index = 0;
+        loop {
+            if self.len().greater(index) {
+                self.getDyn(index).print();
+                index.inc();
+            } else {
+                break;
+            };
+        };
+        '\n'.print();
+    }
+
+}

@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, VecDeque},
     ops::Range,
+    sync::atomic::AtomicU32,
 };
 
 use ariadne::Report;
@@ -8,7 +9,7 @@ use either::Either;
 
 use crate::{
     compiler::class_loader::ClassLoader,
-    errors::report_similar,
+    errors::{invalid_type_template, report_similar, Span},
     parser::{
         expression::TokenProcessor,
         token_utils::{split_complex, SplitAction},
@@ -28,7 +29,7 @@ use super::{
 
 #[derive(Debug, Clone)]
 pub struct Class {
-    pub name: String,
+    pub name: SpannedObject<String>,
     pub annotations: Vec<Annotation>,
     pub template: Option<TemplateDefinition>,
     pub fields: Vec<Field>,
@@ -47,22 +48,34 @@ impl Class {
 
 pub struct ClassView {
     pub ty: Type,
-    pub name: String,
+    pub name: SpannedObject<String>,
     pub fields: Vec<Field>,
     pub methods: Vec<Method>,
     pub superclass: Option<Type>,
 }
 
 impl ClassView {
-    pub fn new(class: &Class, classtype: &Type) -> Self {
-        if class.template.as_ref().map(|x| x.0.len()).unwrap_or(0)
+    pub fn new(class: &Class, classtype: &Type) -> Result<Self, Error> {
+        if class.template.as_ref().map(|x| x.0 .1.len()).unwrap_or(0)
             != classtype.template.as_ref().map(|x| x.1.len()).unwrap_or(0)
         {
-            panic!("Invalid type template for class {}", class.name);
+            return Err(invalid_type_template(
+                class
+                    .template
+                    .as_ref()
+                    .map(|x| &x.0 .0)
+                    .unwrap_or_else(|| &class.name.0),
+                classtype
+                    .template
+                    .as_ref()
+                    .map(|x| &x.0)
+                    .unwrap_or_else(|| &classtype.span),
+            ));
         }
         let tmp_map = if let (Some(a), Some(b)) = (&class.template, &classtype.template) {
             TemplateFixer::new(
-                a.0.iter()
+                a.0 .1
+                    .iter()
                     .zip(b.1.iter())
                     .map(|(x, y)| (x.clone(), y.clone()))
                     .collect::<HashMap<_, _>>(),
@@ -71,7 +84,7 @@ impl ClassView {
             TemplateFixer::new(HashMap::new())
         };
 
-        Self {
+        Ok(Self {
             ty: classtype.clone(),
             fields: class
                 .fields
@@ -87,7 +100,7 @@ impl ClassView {
                 .collect(),
             superclass: class.superclass.clone().map(|x| tmp_map.ty(x)),
             name: class.name.clone(),
-        }
+        })
     }
 
     pub fn method_view(
@@ -99,9 +112,9 @@ impl ClassView {
             .methods
             .iter()
             .find(|x| &x.name.1 == &name.1)
-            .map(|x| MethodView::new(x, template))
+            .map(|x| MethodView::new(x, &name.0, template))
         {
-            Ok(e)
+            e
         } else {
             Err(report_similar(
                 "method",
@@ -119,10 +132,10 @@ impl ClassView {
     }
 
     pub fn size(&self, cl: &ClassLoader) -> Result<u32, Error> {
-        if self.name == "Val" {
+        if self.name.1 == "Val" {
             return Ok(1);
         }
-        if self.name == "Array" {
+        if self.name.1 == "Array" {
             return Ok({
                 match self.ty.template.as_ref() {
                     Some(x) => {
@@ -137,7 +150,7 @@ impl ClassView {
         Ok(self
             .fields
             .iter()
-            .map(|x| ClassView::new(cl.get(&x.ty.name)?, &x.ty).size(cl))
+            .map(|x| ClassView::new(cl.get(&x.ty.name)?, &x.ty)?.size(cl))
             .collect::<Result<Vec<_>, _>>()?
             .into_iter()
             .sum::<u32>())
@@ -294,8 +307,8 @@ impl TokenParser<Class> for VecDeque<Token> {
         if !matches!(self.get_token(), Some(Token::Keyword(_, Keyword::Class))) {
             panic!("Expected keyword class");
         }
-        let name = if let Some(Token::TypeName(_, name)) = self.get_token() {
-            name
+        let name = if let Some(Token::TypeName(span, name)) = self.get_token() {
+            SpannedObject(span, name)
         } else {
             panic!("Expected class name");
         };

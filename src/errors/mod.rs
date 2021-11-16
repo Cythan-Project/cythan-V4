@@ -2,7 +2,7 @@ use std::{cmp::Ordering, ops::Range};
 
 use ariadne::{Color, ColorGenerator, Fmt, Label, Report, ReportKind};
 
-use crate::Error;
+use crate::{parser::ty::Type, Error};
 
 #[derive(Debug, Clone, Eq)]
 pub struct Span {
@@ -53,6 +53,25 @@ impl Span {
         let end = self.end.max(other.end);
         Self::new(self.file.clone(), start, end)
     }
+}
+
+pub fn invalid_type_template(template_def: &Span, span: &Span) -> Error {
+    let mut colors = ColorGenerator::new();
+    let b = colors.next();
+    let er = Report::build(ReportKind::Error, span.file.to_owned(), span.start)
+        .with_code(15)
+        .with_message("Invalid template")
+        .with_label(
+            Label::new(span.as_span())
+                .with_message("This doesn't match the type template")
+                .with_color(b),
+        )
+        .with_label(
+            Label::new(template_def.as_span())
+                .with_message("Should match this template")
+                .with_color(b),
+        );
+    er.finish()
 }
 
 pub fn report_similar(

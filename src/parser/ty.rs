@@ -73,12 +73,20 @@ impl Type {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-pub struct TemplateDefinition(pub Vec<String>);
+#[derive(Debug, Clone, PartialEq)]
+pub struct TemplateDefinition(pub SpannedVector<String>);
 
 impl TokenParser<TemplateDefinition> for VecDeque<Token> {
     fn parse(self) -> Result<TemplateDefinition, Report<(String, Range<usize>)>> {
-        Ok(TemplateDefinition(
+        Ok(TemplateDefinition(SpannedVector(
+            self.iter()
+                .fold(None, |a: Option<Span>, b| {
+                    Some(
+                        a.map(|x| x.merge(b.span()))
+                            .unwrap_or_else(|| b.span().clone()),
+                    )
+                })
+                .unwrap(),
             split_complex(self, |a| {
                 if matches!(a, Token::Comma(_)) {
                     SplitAction::SplitConsume
@@ -95,7 +103,7 @@ impl TokenParser<TemplateDefinition> for VecDeque<Token> {
                 }
             }) // TODO : Add error if The vec as more than 1 element.
             .collect(),
-        ))
+        )))
     }
 }
 impl TokenParser<Vec<Type>> for VecDeque<Token> {

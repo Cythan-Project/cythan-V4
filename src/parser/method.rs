@@ -17,7 +17,7 @@ use crate::{
             typed_definition::TypedMemory,
         },
     },
-    errors::report_similar,
+    errors::{invalid_type_template, report_similar, Span},
     mir_utils::block_inliner::{need_block, remove_skips},
     parser::{
         expression::TokenProcessor,
@@ -25,6 +25,7 @@ use crate::{
         ty::Type,
         ClosableType, Token, TokenExtracter, TokenParser,
     },
+    Error,
 };
 
 use super::{
@@ -81,15 +82,27 @@ pub type NativeMethod = Rc<
 >;
 
 impl MethodView {
-    pub fn new(method: &Method, template: &Option<SpannedVector<Type>>) -> Self {
-        if method.template.as_ref().map(|x| x.0.len()).unwrap_or(0)
+    pub fn new(
+        method: &Method,
+        namerefspan: &Span,
+        template: &Option<SpannedVector<Type>>,
+    ) -> Result<Self, Error> {
+        if method.template.as_ref().map(|x| x.0 .1.len()).unwrap_or(0)
             != template.as_ref().map(|x| x.1.len()).unwrap_or(0)
         {
-            panic!("Invalid type template for method {}", method.name.1);
+            return Err(invalid_type_template(
+                method
+                    .template
+                    .as_ref()
+                    .map(|x| &x.0 .0)
+                    .unwrap_or_else(|| &method.name.0),
+                template.as_ref().map(|x| &x.0).unwrap_or(namerefspan),
+            ));
         }
         let tmp_map = if let (Some(a), Some(b)) = (&method.template, template) {
             TemplateFixer::new(
-                a.0.iter()
+                a.0 .1
+                    .iter()
                     .zip(b.1.iter())
                     .map(|(x, y)| (x.clone(), y.clone()))
                     .collect::<HashMap<_, _>>(),
@@ -98,7 +111,7 @@ impl MethodView {
             TemplateFixer::new(HashMap::new())
         };
 
-        Self {
+        Ok(Self {
             template: template.clone(),
             name: method.name.clone(),
             return_type: method.return_type.as_ref().map(|x| tmp_map.ty(x.clone())),
@@ -114,7 +127,7 @@ impl MethodView {
                 )),
                 Either::Right(a) => Either::Right(a.clone()),
             },
-        }
+        })
     }
 
     pub fn execute(

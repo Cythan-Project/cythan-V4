@@ -32,7 +32,7 @@ mod parser;
 
 pub type Error = Report<(String, Range<usize>)>;
 
-const STACK_SIZE: usize = 4 * 1024 * 1024;
+const STACK_SIZE: usize = 100 * 1024 * 1024;
 
 fn main() {
     // Spawn thread with explicit stack size

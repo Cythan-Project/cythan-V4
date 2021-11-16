@@ -4,9 +4,10 @@ class Counter {
     Array<String, N2> array;
 
     Val main() {
-        /* Array<Byte, N3> array = "abc";
+        DynArray<Byte, N10> array = DynArray<Byte, N10>.from<N4>("caca");
+        array.addAll<N3>("abc");
         array.print();
-        array.get<N1>().print();
+        /* array.get<N1>().print();
         array.setDyn(1, 'd');
         array.getDyn(2).print(); */
         Morpion morpion = Morpion.new();

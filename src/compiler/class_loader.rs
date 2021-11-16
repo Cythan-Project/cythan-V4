@@ -50,7 +50,7 @@ impl ClassLoader {
     pub fn get(&self, name: &SpannedObject<String>) -> Result<&Class, Error> {
         self.classes
             .iter()
-            .find(|c| c.name == name.1)
+            .find(|c| c.name.1 == name.1)
             .ok_or_else(|| {
                 report_similar(
                     "class",
@@ -60,7 +60,7 @@ impl ClassLoader {
                     &self
                         .classes
                         .iter()
-                        .map(|c| c.name.clone())
+                        .map(|c| c.name.1.clone())
                         .collect::<Vec<_>>(),
                     11,
                 )
@@ -68,20 +68,20 @@ impl ClassLoader {
     }
 
     pub fn view(&self, ty: &Type) -> Result<ClassView, Error> {
-        Ok(ClassView::new(self.get(&ty.name)?, ty))
+        ClassView::new(self.get(&ty.name)?, ty)
     }
 
     #[allow(dead_code)]
     pub fn inject_method(&mut self, arg: &str, method: Method) {
         self.classes
             .iter_mut()
-            .find(|c| c.name == arg)
+            .find(|c| c.name.1 == arg)
             .unwrap()
             .methods
             .push(method);
     }
 
     pub fn get_class_mut(&mut self, arg: &str) -> &mut Class {
-        self.classes.iter_mut().find(|x| x.name == arg).unwrap()
+        self.classes.iter_mut().find(|x| x.name.1 == arg).unwrap()
     }
 }
