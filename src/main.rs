@@ -315,6 +315,7 @@ fn compile_and_run(mir: &MirCodeBlock) {
             .collect::<Vec<_>>()
             .join("\n")
     ); */
+    let mir = mir.optimize();
     std::fs::write(
         "out.mir",
         &mir.0
@@ -325,7 +326,7 @@ fn compile_and_run(mir: &MirCodeBlock) {
     )
     .unwrap();
     if MIR_MODE {
-        MemoryState::new(2048, 8).execute_block(mir);
+        MemoryState::new(2048, 8).execute_block(&mir);
     } else {
         let mut mirstate = MirState::default();
         mir.to_asm(&mut mirstate);

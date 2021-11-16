@@ -1,8 +1,12 @@
+pub mod optimize;
+
 use std::fmt::Display;
 
 use either::Either;
 
 use crate::compiler::asm::{AsmValue, LabelType};
+
+use self::optimize::{get_reads_from_block, keep_block, OptimizerState};
 
 use super::asm::{optimizer::opt_asm, CompilableInstruction, Label, Number, Var};
 
@@ -98,6 +102,10 @@ impl MirCodeBlock {
 }
 
 impl MirCodeBlock {
+    pub fn optimize(&self) -> Self {
+        let opt = optimize::optimize_block(&self, &mut OptimizerState::new());
+        keep_block(&opt, &mut get_reads_from_block(&opt))
+    }
     pub fn from(mir: Vec<Mir>) -> Self {
         Self(mir)
     }
