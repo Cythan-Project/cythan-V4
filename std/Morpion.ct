@@ -55,10 +55,6 @@ class Morpion {
                 self.set(pos, currentPlayer);
                 count.dec();
                 self.display();
-                if count.equalsZero() {
-                    "Equality!".println();
-                    break;
-                };
                 if self.winner(currentPlayer) {
                     if currentPlayer.equals(1) {
                         'O'
@@ -66,6 +62,10 @@ class Morpion {
                         'X'
                     }.print();
                     " won!".println();
+                    break;
+                };
+                if count.equalsZero() {
+                    "Equality!".println();
                     break;
                 };
                 currentPlayer = if currentPlayer.equals(1) {
