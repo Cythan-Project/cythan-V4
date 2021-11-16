@@ -103,8 +103,38 @@ impl MirCodeBlock {
 
 impl MirCodeBlock {
     pub fn optimize(&self) -> Self {
-        let opt = optimize::optimize_block(&self, &mut OptimizerState::new());
-        keep_block(&opt, &mut get_reads_from_block(&opt))
+        let before = self.instr_count();
+        let mut after = self.clone();
+        let mut bf = before;
+        let mut cafter = 0;
+        let mut i = 0;
+        while bf != cafter {
+            bf = cafter;
+            let opt = optimize::optimize_block(&after, &mut OptimizerState::new());
+            after = keep_block(&opt, &mut get_reads_from_block(&opt));
+            cafter = after.instr_count();
+            i += 1;
+        }
+
+        println!(
+            "Optimized from {} to {} ({}%) in {} iter",
+            before,
+            cafter,
+            100 - 100 * cafter / before,
+            i
+        );
+        after
+    }
+
+    pub fn instr_count(&self) -> usize {
+        self.0
+            .iter()
+            .map(|x| match x {
+                Mir::If0(_, a, b) => a.instr_count() + b.instr_count() + 1,
+                Mir::Loop(a) | Mir::Block(a) => 1 + a.instr_count(),
+                _ => 1,
+            })
+            .sum()
     }
     pub fn from(mir: Vec<Mir>) -> Self {
         Self(mir)

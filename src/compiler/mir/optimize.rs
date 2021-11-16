@@ -38,7 +38,26 @@ fn get_reads(mir: &Mir, muts: &mut HashSet<u32>) {
 }
 
 pub fn keep_block(mir: &MirCodeBlock, reads: &mut HashSet<u32>) -> MirCodeBlock {
-    MirCodeBlock(mir.0.iter().flat_map(|x| keep(x, reads)).collect())
+    let mut old1: Option<Mir> = None;
+    let mut out = Vec::new();
+    for i in mir.0.iter().flat_map(|x| keep(x, reads)) {
+        if let Some(old) = old1 {
+            if let Mir::Copy(a, _) | Mir::Set(a, _) = &i {
+                if let Mir::Set(c, _) | Mir::Copy(c, _) = &old {
+                    if c == a {
+                        old1 = Some(i);
+                        continue;
+                    }
+                }
+            }
+            out.push(old);
+        }
+        old1 = Some(i);
+    }
+    if let Some(old) = old1 {
+        out.push(old);
+    }
+    MirCodeBlock(out)
 }
 fn keep(mir: &Mir, reads: &mut HashSet<u32>) -> Option<Mir> {
     match &mir {
