@@ -304,7 +304,7 @@ impl<S: ariadne::Span> MirrorReport<S> {
     }
 }
 
-const MIR_MODE: bool = false;
+const MIR_MODE: bool = true;
 
 fn compile_and_run(mir: &MirCodeBlock) {
     /* println!(
@@ -326,7 +326,9 @@ fn compile_and_run(mir: &MirCodeBlock) {
     )
     .unwrap();
     if MIR_MODE {
-        MemoryState::new(2048, 8).execute_block(&mir);
+        let mut ms = MemoryState::new(2048, 8);
+        ms.execute_block(&mir);
+        println!("Program ran in {} instructions", ms.instr_count);
     } else {
         let mut mirstate = MirState::default();
         mir.to_asm(&mut mirstate);

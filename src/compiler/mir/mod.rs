@@ -4,7 +4,10 @@ use std::fmt::Display;
 
 use either::Either;
 
-use crate::compiler::asm::{AsmValue, LabelType};
+use crate::compiler::{
+    asm::{AsmValue, LabelType},
+    mir::optimize::REMOVE_UNUSED_VARS,
+};
 
 use self::optimize::{get_reads_from_block, keep_block, OptimizerState};
 
@@ -34,21 +37,47 @@ impl Display for Mir {
             Mir::Copy(a, b) => write!(f, "v{} = v{}", *a, *b),
             Mir::Increment(a) => write!(f, "v{}++", *a),
             Mir::Decrement(a) => write!(f, "v{}--", *a),
-            Mir::If0(a, b, c) => write!(
-                f,
-                "if v{} {{\n  {}\n}} else {{\n  {}\n}}",
-                a,
-                b.0.iter()
-                    .map(|x| x.to_string())
-                    .collect::<Vec<_>>()
-                    .join("\n")
-                    .replace("\n", "\n  "),
-                c.0.iter()
-                    .map(|x| x.to_string())
-                    .collect::<Vec<_>>()
-                    .join("\n")
-                    .replace("\n", "\n  ")
-            ),
+            Mir::If0(a, b, c) => {
+                if b.0.is_empty() {
+                    write!(
+                        f,
+                        "if !v{} {{\n  {}\n}}",
+                        a,
+                        c.0.iter()
+                            .map(|x| x.to_string())
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                            .replace("\n", "\n  ")
+                    )
+                } else if c.0.is_empty() {
+                    write!(
+                        f,
+                        "if v{} {{\n  {}\n}}",
+                        a,
+                        b.0.iter()
+                            .map(|x| x.to_string())
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                            .replace("\n", "\n  ")
+                    )
+                } else {
+                    write!(
+                        f,
+                        "if v{} {{\n  {}\n}} else {{\n  {}\n}}",
+                        a,
+                        b.0.iter()
+                            .map(|x| x.to_string())
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                            .replace("\n", "\n  "),
+                        c.0.iter()
+                            .map(|x| x.to_string())
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                            .replace("\n", "\n  ")
+                    )
+                }
+            }
             Mir::Loop(a) => write!(
                 f,
                 "loop {{\n  {}\n}}",
@@ -111,7 +140,11 @@ impl MirCodeBlock {
         while bf != cafter {
             bf = cafter;
             let opt = optimize::optimize_block(&after, &mut OptimizerState::new());
-            after = keep_block(&opt, &mut get_reads_from_block(&opt));
+            after = if REMOVE_UNUSED_VARS {
+                keep_block(&opt, &mut get_reads_from_block(&opt))
+            } else {
+                opt
+            };
             cafter = after.instr_count();
             i += 1;
         }

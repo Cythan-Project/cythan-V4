@@ -4,16 +4,15 @@ class Counter {
     Array<String, N2> array;
 
     Val main() {
-        DynArray<Byte, N10> array = DynArray<Byte, N10>.from<N4>("caca");
+        /* DynArray<Byte, N10> array = DynArray<Byte, N10>.from<N4>("test");
         array.addAll<N3>("abc");
-        array.print();
+        array.print(); */
         /* array.get<N1>().print();
         array.setDyn(1, 'd');
         array.getDyn(2).print(); */
         Morpion morpion = Morpion.new();
         morpion.play();
         return 0;
-        /*a*/
     }
 
     Bool testBlocks(Val v) {

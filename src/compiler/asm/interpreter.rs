@@ -7,6 +7,7 @@ use crate::compiler::mir::{Mir, MirCodeBlock};
 pub struct MemoryState {
     pub memory: Vec<u8>,
     pub registers: Vec<u8>,
+    pub instr_count: usize,
 }
 
 impl MemoryState {
@@ -14,6 +15,7 @@ impl MemoryState {
         MemoryState {
             memory: vec![0; memory_size],
             registers: vec![0; register_size],
+            instr_count: 0,
         }
     }
 
@@ -43,6 +45,7 @@ impl MemoryState {
     }
 
     pub fn execute(&mut self, mir: &Mir) -> SkipStatus {
+        self.instr_count += 1;
         match mir {
             Mir::Set(a, b) => self.set_mem(*a, *b),
             Mir::Copy(a, b) => self.set_mem(*a, self.get_mem(*b)),

@@ -6,6 +6,10 @@ use crate::parser::expression::CodeBlock;
 
 use super::{Mir, MirCodeBlock};
 
+const INLINE_LOOPS: bool = true;
+const INLINE_BLOCKS: bool = true;
+pub const REMOVE_UNUSED_VARS: bool = true;
+
 pub fn get_reads_from_block(mir: &MirCodeBlock) -> HashSet<u32> {
     let mut set = HashSet::new();
     mir.0.iter().for_each(|x| get_reads(x, &mut set));
@@ -187,6 +191,14 @@ pub fn optimize(instruction: &Mir, state: &mut OptimizerState) -> Vec<Mir> {
             return vec![Mir::If0(a, b1, b2)];
         }
         Mir::Loop(a) => {
+            if INLINE_LOOPS {
+                let mut state1 = state.clone();
+                let (c, d) = try_unroll_loop(&mut state1, &a.0);
+                if c {
+                    *state = state1;
+                    return d;
+                }
+            }
             state.remove_vars(&get_muts_from_block(a));
             return vec![Mir::Loop(optimize_block(a, &mut state.clone()))];
         }
@@ -210,11 +222,128 @@ pub fn optimize(instruction: &Mir, state: &mut OptimizerState) -> Vec<Mir> {
         Mir::Skip => (),
         Mir::Block(a) => {
             let k = optimize_block(a, state);
+            if INLINE_BLOCKS {
+                let mut out = vec![];
+                for i in &k.0 {
+                    if does_skip_in_all_cases(&i) {
+                        if let Some(e) = remove_skips(&i) {
+                            out.push(e);
+                        }
+                        return out;
+                    } else if contains_skip(&i) {
+                        break;
+                    } else {
+                        out.push(i.clone());
+                    }
+                }
+            }
             state.remove_vars(&get_muts_from_block(a));
             return vec![Mir::Block(k)];
         }
     };
     vec![instruction.clone()]
+}
+
+fn try_unroll_loop(state: &mut OptimizerState, lp: &[Mir]) -> (bool, Vec<Mir>) {
+    let mut o = vec![];
+    'r: for _ in 0..16 {
+        for i in lp {
+            let opt = optimize(&i, state);
+            for i in opt {
+                if does_break_in_all_cases(&i) {
+                    if let Some(e) = remove_breaks(&i) {
+                        o.push(e);
+                    }
+                    return (true, vec![Mir::Block(MirCodeBlock(o))]);
+                } else if contains_continues(&i) || contains_skip(&i) {
+                    break 'r;
+                } else {
+                    if let Some(e) = remove_breaks(&i) {
+                        o.push(e);
+                    }
+                }
+            }
+        }
+    }
+    (false, vec![Mir::Loop(MirCodeBlock(lp.to_vec()))])
+}
+
+fn remove_skips(mir: &Mir) -> Option<Mir> {
+    match mir {
+        Mir::If0(c, a, b) => Some(Mir::If0(
+            *c,
+            MirCodeBlock(a.0.iter().flat_map(|x| remove_skips(x)).collect()),
+            MirCodeBlock(b.0.iter().flat_map(|x| remove_skips(x)).collect()),
+        )),
+        Mir::Skip => None,
+        Mir::Block(a) => Some(Mir::Block(MirCodeBlock(
+            a.0.iter().flat_map(|x| remove_skips(x)).collect(),
+        ))),
+        e => Some(e.clone()),
+    }
+}
+
+fn remove_breaks(mir: &Mir) -> Option<Mir> {
+    match mir {
+        Mir::If0(c, a, b) => Some(Mir::If0(
+            *c,
+            MirCodeBlock(a.0.iter().flat_map(|x| remove_breaks(x)).collect()),
+            MirCodeBlock(b.0.iter().flat_map(|x| remove_breaks(x)).collect()),
+        )),
+        Mir::Break => Some(Mir::Skip),
+        Mir::Block(a) => Some(Mir::Block(MirCodeBlock(
+            a.0.iter().flat_map(|x| remove_breaks(x)).collect(),
+        ))),
+        e => Some(e.clone()),
+    }
+}
+
+fn contains_skip(mir: &Mir) -> bool {
+    match mir {
+        Mir::If0(_, a, b) => {
+            a.0.iter().any(|x| contains_skip(x)) || b.0.iter().any(|x| contains_skip(x))
+        }
+        Mir::Skip => true,
+        Mir::Loop(a) => a.0.iter().any(|x| contains_skip(x)),
+        _ => false,
+    }
+}
+
+fn contains_continues(mir: &Mir) -> bool {
+    match mir {
+        Mir::If0(_, a, b) => {
+            a.0.iter().any(|x| contains_continues(x)) || b.0.iter().any(|x| contains_continues(x))
+        }
+        Mir::Continue => true,
+        Mir::Block(a) => a.0.iter().any(|x| contains_continues(x)),
+        _ => false,
+    }
+}
+
+fn does_skip_in_all_cases(mir: &Mir) -> bool {
+    match mir {
+        Mir::If0(_, a, b) => {
+            a.0.iter().any(|x| does_skip_in_all_cases(x))
+                && b.0.iter().any(|x| does_skip_in_all_cases(x))
+        }
+        Mir::Continue => true,
+        Mir::Break => true,
+        Mir::Skip => true,
+        Mir::Stop => true,
+        _ => false,
+    }
+}
+
+fn does_break_in_all_cases(mir: &Mir) -> bool {
+    match mir {
+        Mir::If0(_, a, b) => {
+            a.0.iter().any(|x| does_break_in_all_cases(x))
+                && b.0.iter().any(|x| does_break_in_all_cases(x))
+        }
+        Mir::Break => true,
+        Mir::Stop => true,
+        _ => false,
+    }
 }
 
 #[derive(Clone)]
