@@ -8,6 +8,7 @@ use super::{Mir, MirCodeBlock};
 
 const INLINE_LOOPS: bool = true;
 const INLINE_BLOCKS: bool = true;
+const REORGANIZE_IFS: bool = true;
 pub const REMOVE_UNUSED_VARS: bool = true;
 
 pub fn get_reads_from_block(mir: &MirCodeBlock) -> HashSet<u32> {
@@ -122,15 +123,47 @@ fn get_muts(mir: &Mir, muts: &mut HashSet<u32>) {
     }
 }
 
+pub fn improve_code_flow(block: Vec<Mir>) -> Vec<Mir> {
+    if !REORGANIZE_IFS {
+        return block;
+    }
+    let mut out = Vec::new();
+    let mut k = block.into_iter();
+    while let Some(e) = k.next() {
+        match &e {
+            Mir::If0(a, b, c) => {
+                if b.0.iter().any(|x| always_terminate(x)) {
+                    out.push(Mir::If0(
+                        *a,
+                        b.clone(),
+                        MirCodeBlock(improve_code_flow(c.0.iter().cloned().chain(k).collect())),
+                    ));
+                    return out;
+                } else if c.0.iter().any(|x| always_terminate(x)) {
+                    out.push(Mir::If0(
+                        *a,
+                        MirCodeBlock(improve_code_flow(b.0.iter().cloned().chain(k).collect())),
+                        c.clone(),
+                    ));
+                    return out;
+                }
+            }
+            _ => (),
+        }
+        out.push(e);
+    }
+    out
+}
+
 pub fn optimize_block(instruction: &MirCodeBlock, state: &mut OptimizerState) -> MirCodeBlock {
-    MirCodeBlock(
+    MirCodeBlock(improve_code_flow(
         instruction
             .0
             .iter()
             .map(|x| optimize(x, state))
             .flatten()
             .collect(),
-    )
+    ))
 }
 
 pub fn optimize(instruction: &Mir, state: &mut OptimizerState) -> Vec<Mir> {
@@ -138,17 +171,16 @@ pub fn optimize(instruction: &Mir, state: &mut OptimizerState) -> Vec<Mir> {
         Mir::Set(a, b) => {
             state.set_var(*a, VarState::Values(vec![*b]));
         }
-        Mir::Copy(a, b) => {
-            state.set_var(*a, VarState::Ref(*b));
-            match state.get_var_value(*b) {
-                Either::Left(x) => {
-                    return vec![Mir::Set(*a, x)];
-                }
-                Either::Right(x) => {
-                    return vec![Mir::Copy(*a, x)];
-                }
+        Mir::Copy(a, b) => match state.get_var_value(*b) {
+            Either::Left(x) => {
+                state.set_var(*a, VarState::Values(vec![x]));
+                return vec![Mir::Set(*a, x)];
             }
-        }
+            Either::Right(x) => {
+                state.set_var(*a, VarState::Ref(*b));
+                return vec![Mir::Copy(*a, x)];
+            }
+        },
         Mir::Increment(a) => state.set_var(
             *a,
             match state.get_var(*a) {
@@ -196,6 +228,7 @@ pub fn optimize(instruction: &Mir, state: &mut OptimizerState) -> Vec<Mir> {
                 let (c, d) = try_unroll_loop(&mut state1, &a.0);
                 if c {
                     *state = state1;
+                    //state.remove_vars(&get_muts_from_block(a));
                     return d;
                 }
             }
@@ -248,15 +281,14 @@ fn try_unroll_loop(state: &mut OptimizerState, lp: &[Mir]) -> (bool, Vec<Mir>) {
     let mut o = vec![];
     'r: for _ in 0..16 {
         for i in lp {
-            let opt = optimize(&i, state);
-            for i in opt {
-                if does_break_in_all_cases(&i) {
+            for i in optimize(&i, state) {
+                if contains_continues(&i) || contains_skip(&i) {
+                    break 'r;
+                } else if does_break_in_all_cases(&i) {
                     if let Some(e) = remove_breaks(&i) {
                         o.push(e);
                     }
                     return (true, vec![Mir::Block(MirCodeBlock(o))]);
-                } else if contains_continues(&i) || contains_skip(&i) {
-                    break 'r;
                 } else {
                     if let Some(e) = remove_breaks(&i) {
                         o.push(e);
@@ -276,10 +308,20 @@ fn remove_skips(mir: &Mir) -> Option<Mir> {
             MirCodeBlock(b.0.iter().flat_map(|x| remove_skips(x)).collect()),
         )),
         Mir::Skip => None,
-        Mir::Block(a) => Some(Mir::Block(MirCodeBlock(
+        Mir::Loop(a) => Some(Mir::Block(MirCodeBlock(
             a.0.iter().flat_map(|x| remove_skips(x)).collect(),
         ))),
         e => Some(e.clone()),
+    }
+}
+
+fn always_terminate(mir: &Mir) -> bool {
+    match mir {
+        Mir::If0(_, a, b) => {
+            a.0.iter().any(|x| always_terminate(x)) && b.0.iter().any(|x| always_terminate(x))
+        }
+        Mir::Skip | Mir::Continue | Mir::Break | Mir::Stop => true,
+        _ => false,
     }
 }
 
@@ -358,14 +400,14 @@ impl OptimizerState {
         }
     }
 
-    pub fn get_var_raw(&self, id: u32) -> VarState {
+    fn get_var_raw(&self, id: u32) -> VarState {
         self.variables
             .get(&id)
             .unwrap_or(&VarState::Unknown)
             .clone()
     }
 
-    pub fn get_var(&self, id: u32) -> VarState {
+    fn get_var(&self, id: u32) -> VarState {
         match self.get_var_raw(id) {
             VarState::Ref(a) => self.get_var(a),
             e => e,
@@ -403,7 +445,7 @@ impl OptimizerState {
         )
     }
 
-    pub fn set_var(&mut self, id: u32, state: VarState) {
+    fn set_var(&mut self, id: u32, state: VarState) {
         self.variables
             .iter()
             .filter(|(id, x)| match x {

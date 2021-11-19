@@ -2,6 +2,56 @@ class Byte {
     Val lower;
     Val higher;
 
+    Byte new(Byte a) {
+        return Byte {
+            lower = a.lower,
+            higher = a.higher
+        };
+    }
+
+    sub(Byte self, Byte other) {
+        Byte u = other;
+        loop {
+            if u.equalsZero() {
+                break;
+            };
+            self.dec();
+            u.dec();
+        }
+    }
+
+    add(Byte self, Byte other) {
+        Byte u = other;
+        loop {
+            if u.equalsZero() {
+                break;
+            };
+            self.inc();
+            u.dec();
+        }
+    }
+
+    inc(Byte self) {
+        self.lower.inc();
+        if self.lower.equalsZero() {
+            self.higher.inc();
+        }
+    }
+
+    dec(Byte self) {
+        if self.lower.equalsZero() {
+            self.higher.dec();
+        };
+        self.lower.dec();
+    }
+
+    Byte fromValAsNumber(Val a) {
+        return Byte {
+            lower = a,
+            higher = 3
+        };
+    }
+
     Byte fromVal(Val a) {
         return Byte {
             lower = a,
@@ -18,9 +68,13 @@ class Byte {
     }
 
     print(Byte self) {
-        System.setRegister<N1>(self.higher);
         System.setRegister<N2>(self.lower);
+        System.setRegister<N1>(self.higher);
         System.setRegister<N0>(1);
+    }
+
+    Bool equals(Byte self, Byte other) {
+        return self.lower.equals(other.lower) && self.higher.equals(other.higher);
     }
 
     Bool equalsZero(Byte self) {

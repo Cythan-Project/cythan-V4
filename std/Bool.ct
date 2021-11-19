@@ -11,18 +11,18 @@ class Bool {
         return Bool { value = 1 };
     }
     Bool not(Bool self) {
-        return if self.value {
-            1
+        return if self.value as Bool {
+            Bool.false()
         } else {
-            0
+            Bool.true()
         };
     }
 
     print(Bool self) {
         if self {
-            "true"
+            "true".print();
         } else {
-            "false"
-        }.print();
+            "false".print();
+        }
     }
 }

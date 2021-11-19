@@ -115,7 +115,7 @@ pub fn compile(
                         .return_value
                         .expect("Else should have a return value");
                     if a.ty != b.ty {
-                        panic!("If branches must have the same type");
+                        panic!("If branches must have the same type {}", span.file);
                     }
                     let alc = cm.alloc_type(&a.ty)?;
                     let mut tr = then_r.mir;

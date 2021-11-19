@@ -28,4 +28,16 @@ class Array<T,E> {
         };
         '\n'.print();
     }
+    Bool contains(Array<T, E> self, T t) {
+        Val size = self.len();
+        loop {
+            if size.equalsZero() {
+                return Bool.false();
+            };
+            size.dec();
+            if self.getDyn(size).equals(t) {
+                return Bool.true();
+            } 
+        };
+    }
 }

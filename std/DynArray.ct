@@ -58,7 +58,7 @@ class DynArray<T, N> {
     }
 
     setDyn(DynArray<T, N> self, Val pos, T t) {
-        self.setDyn(pos,t);
+        self.array.setDyn(pos,t);
     }
 
     set<Number>(DynArray<T, N> self,T t) {
@@ -70,7 +70,7 @@ class DynArray<T, N> {
     }
 
     T get<Number>(DynArray<T, N> self) {
-        return self.get<Number>(pos);
+        return self.array.get<Number>();
     }
     
     print(DynArray<Byte, N> self) {
@@ -95,6 +95,19 @@ class DynArray<T, N> {
             };
         };
         '\n'.print();
+    }
+
+    Bool contains(DynArray<T, N> self, T t) {
+        Val size = self.len();
+        loop {
+            if size.equalsZero() {
+                return Bool.false();
+            };
+            size.dec();
+            if self.getDyn(size).equals(t) {
+                return Bool.true();
+            } 
+        };
     }
 
 }

@@ -1,7 +1,16 @@
 #![feature(box_syntax)]
 #![feature(try_blocks)]
 
-use std::{ops::Range, rc::Rc};
+use std::{
+    cell::{RefCell, UnsafeCell},
+    collections::{hash_map::DefaultHasher, VecDeque},
+    hash::{Hash, Hasher},
+    io::{Read, Write},
+    ops::Range,
+    process::exit,
+    rc::Rc,
+    sync::Mutex,
+};
 
 use ariadne::{Config, Label, Report, ReportKind, Source};
 use compiler::{
@@ -29,23 +38,30 @@ mod compiler;
 mod errors;
 mod mir_utils;
 mod parser;
+#[cfg(test)]
+mod tests;
 
 pub type Error = Report<(String, Range<usize>)>;
 
-const STACK_SIZE: usize = 100 * 1024 * 1024;
+const STACK_SIZE: usize = 1024 * 1024 * 1024;
 
 fn main() {
-    // Spawn thread with explicit stack size
-    let child = std::thread::Builder::new()
-        .stack_size(STACK_SIZE)
-        .spawn(run)
-        .unwrap();
-
-    // Wait for thread to join
-    child.join().unwrap();
+    run(
+        &compile("UnitTests".to_owned()), /* .optimize() */
+        StdIoContext,
+    );
 }
 
-fn run() {
+pub fn compile(class_name: String) -> MirCodeBlock {
+    let child = std::thread::Builder::new()
+        .stack_size(STACK_SIZE)
+        .spawn(move || generate_mir(&class_name))
+        .unwrap();
+    // Wait for thread to join
+    child.join().unwrap()
+}
+
+fn generate_mir(class_name: &str) -> MirCodeBlock {
     let r: Result<(), Report<(String, Range<usize>)>> = try {
         let mut cl = ClassLoader::new();
         for file in std::fs::read_dir("std").unwrap() {
@@ -260,7 +276,7 @@ fn run() {
             })));
         let rs = cl
             .view(&Type::simple(
-                "Counter",
+                class_name,
                 Span {
                     file: "<internal>".to_owned(),
                     start: 0,
@@ -270,13 +286,14 @@ fn run() {
             .method_view(&SpannedObject(Span::default(), "main".to_owned()), &None)?
             .execute(&mut LocalState::new(), &mut CodeManager::new(cl), vec![])?;
         let mut mir = rs.mir;
-        mir.add_mir(Mir::WriteRegister(1, Either::Left(3u8)));
+        /* mir.add_mir(Mir::WriteRegister(1, Either::Left(3u8)));
         mir.add_mir(Mir::WriteRegister(
             2,
             Either::Right(rs.return_value.unwrap().locations[0]),
         ));
-        mir.add_mir(Mir::WriteRegister(0, Either::Left(1u8)));
-        compile_and_run(&mir);
+        mir.add_mir(Mir::WriteRegister(0, Either::Left(1u8))); */
+        mir.add_mir(Mir::Stop);
+        return mir;
     };
     if let Err(e) = r {
         let file_name = MirrorReport::from(&e).location.0.clone();
@@ -285,7 +302,9 @@ fn run() {
             Source::from(std::fs::read_to_string(&file_name).unwrap()),
         ))
         .unwrap();
-    }
+        exit(0);
+    };
+    panic!();
 }
 
 pub struct MirrorReport<S: ariadne::Span = Range<usize>> {
@@ -304,9 +323,52 @@ impl<S: ariadne::Span> MirrorReport<S> {
     }
 }
 
-const MIR_MODE: bool = true;
+const MIR_MODE: bool = false;
 
-fn compile_and_run(mir: &MirCodeBlock) {
+pub trait RunContext {
+    fn input(&mut self) -> u8;
+    fn print(&mut self, i: char);
+}
+
+pub struct TestContext {
+    pub inputs: VecDeque<u8>,
+    pub print: String,
+}
+
+impl TestContext {
+    pub fn new(inputs: &str) -> Self {
+        Self {
+            inputs: inputs.bytes().collect(),
+            print: String::new(),
+        }
+    }
+}
+impl RunContext for TestContext {
+    fn input(&mut self) -> u8 {
+        self.inputs.pop_front().unwrap()
+    }
+
+    fn print(&mut self, i: char) {
+        self.print.push(i);
+    }
+}
+
+pub struct StdIoContext;
+
+impl RunContext for StdIoContext {
+    fn input(&mut self) -> u8 {
+        let mut string = String::new();
+        std::io::stdin().read_line(&mut string).unwrap();
+        string.bytes().next().unwrap()
+    }
+
+    fn print(&mut self, i: char) {
+        print!("{}", i);
+        std::io::stdout().flush().unwrap();
+    }
+}
+
+pub fn run<T: RunContext + 'static>(mir: &MirCodeBlock, car: T) -> (usize, Rc<Mutex<T>>) {
     /* println!(
         "{}",
         mir.0
@@ -315,7 +377,9 @@ fn compile_and_run(mir: &MirCodeBlock) {
             .collect::<Vec<_>>()
             .join("\n")
     ); */
-    let mir = mir.optimize();
+    let car = Rc::new(Mutex::new(car));
+    let car1 = car.clone();
+    let car2 = car.clone();
     std::fs::write(
         "out.mir",
         &mir.0
@@ -327,8 +391,8 @@ fn compile_and_run(mir: &MirCodeBlock) {
     .unwrap();
     if MIR_MODE {
         let mut ms = MemoryState::new(2048, 8);
-        ms.execute_block(&mir);
-        println!("Program ran in {} instructions", ms.instr_count);
+        ms.execute_block(&mir, &mut *car.lock().unwrap());
+        return (ms.instr_count, car.clone());
     } else {
         let mut mirstate = MirState::default();
         mir.to_asm(&mut mirstate);
@@ -342,40 +406,24 @@ fn compile_and_run(mir: &MirCodeBlock) {
         let k = compile_state.build();
         std::fs::write("out.ct", &k).unwrap();
         let k = cythan_compiler::compile(&k).unwrap();
-        let mut machine = InterruptedCythan::new_stdio(k, 4, 2 * 2_usize.pow(4 /* base */) + 3);
-        'a: loop {
-            for _ in 0..10000 {
-                machine.next();
-            }
-
-            std::fs::write(
-                "out.txt",
-                machine
-                    .cases
-                    .iter()
-                    .map(|x| x.to_string())
-                    .collect::<Vec<_>>()
-                    .join(" "),
-            )
-            .unwrap();
-
-            let o = machine.cases.clone();
-
-            for _ in 0..10 {
-                machine.next();
-
-                if o == machine.cases {
-                    break 'a;
-                }
+        let mut machine = InterruptedCythan::new(
+            k,
+            4,
+            2 * 2_usize.pow(4 /* base */) + 3,
+            move |a| {
+                car.lock().unwrap().print(a as char);
+            },
+            move || car1.lock().unwrap().input(),
+        );
+        let mut k = 0;
+        loop {
+            k += 1;
+            let a = machine.cases.clone();
+            machine.next();
+            if a == machine.cases {
+                break;
             }
         }
+        (k, car2)
     }
-}
-
-#[test]
-fn test() {
-    compile_and_run(&MirCodeBlock(vec![Mir::WriteRegister(
-        0,
-        Either::Left(1u8),
-    )]));
 }

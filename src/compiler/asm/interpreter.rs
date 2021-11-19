@@ -2,7 +2,10 @@ use std::io::Write;
 
 use either::Either;
 
-use crate::compiler::mir::{Mir, MirCodeBlock};
+use crate::{
+    compiler::mir::{Mir, MirCodeBlock},
+    RunContext,
+};
 
 pub struct MemoryState {
     pub memory: Vec<u8>,
@@ -34,9 +37,13 @@ impl MemoryState {
         self.memory.get(index as usize).copied().unwrap_or(0)
     }
 
-    pub fn execute_block(&mut self, block: &MirCodeBlock) -> SkipStatus {
+    pub fn execute_block(
+        &mut self,
+        block: &MirCodeBlock,
+        printer: &mut impl RunContext,
+    ) -> SkipStatus {
         for instruction in block.0.iter() {
-            match self.execute(instruction) {
+            match self.execute(instruction, printer) {
                 SkipStatus::None => continue,
                 e => return e,
             }
@@ -44,7 +51,7 @@ impl MemoryState {
         SkipStatus::None
     }
 
-    pub fn execute(&mut self, mir: &Mir) -> SkipStatus {
+    pub fn execute(&mut self, mir: &Mir, printer: &mut impl RunContext) -> SkipStatus {
         self.instr_count += 1;
         match mir {
             Mir::Set(a, b) => self.set_mem(*a, *b),
@@ -53,13 +60,13 @@ impl MemoryState {
             Mir::Decrement(a) => self.set_mem(*a, self.get_mem(*a).wrapping_sub(1)),
             Mir::If0(a, b, c) => {
                 if self.get_mem(*a) == 0 {
-                    return self.execute_block(b);
+                    return self.execute_block(b, printer);
                 } else {
-                    return self.execute_block(c);
+                    return self.execute_block(c, printer);
                 }
             }
             Mir::Loop(a) => loop {
-                match self.execute_block(a) {
+                match self.execute_block(a, printer) {
                     SkipStatus::None | SkipStatus::Continue => continue,
                     SkipStatus::Break => return SkipStatus::None,
                     e => return e,
@@ -79,12 +86,9 @@ impl MemoryState {
                         let a = self.registers[1];
                         let b = self.registers[2];
                         let char = ((a % 16) * 16) + (b % 16);
-                        print!("{}", char as char);
-                        std::io::stdout().flush().unwrap();
+                        printer.print(char as char);
                     } else if p == 2 {
-                        let mut k = String::new();
-                        std::io::stdin().read_line(&mut k).unwrap();
-                        let o: u8 = k.trim().parse().unwrap();
+                        let o: u8 = printer.input();
                         let a = o % 16u8;
                         let b = o / 16u8;
                         self.registers[1] = b;
@@ -94,7 +98,7 @@ impl MemoryState {
                 self.registers[*a as usize] = p
             }
             Mir::Skip => return SkipStatus::Skip,
-            Mir::Block(a) => match self.execute_block(a) {
+            Mir::Block(a) => match self.execute_block(a, printer) {
                 SkipStatus::Skip => return SkipStatus::None,
                 e => return e,
             },

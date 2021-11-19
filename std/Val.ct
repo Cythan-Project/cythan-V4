@@ -35,6 +35,28 @@ class Val {
         };
     }
 
+    sub(Val self, Val other) {
+        Val g = other;
+        loop {
+            if other.equalsZero() {
+                break;
+            };
+            self.dec();
+            other.dec();
+        }
+    }
+
+    printDec(Val self) {
+        if self.greater(9) {
+            '1'.print();
+            Val k = self;
+            k.sub(10);
+            k.print();
+        } else {
+            self.print();
+        };
+    }
+
     print(Val self) {
         System.setRegister<N1>(3);
         System.setRegister<N2>(self);

@@ -1,0 +1,120 @@
+class Pendu {
+
+    DynArray<Byte, N12> string;
+    DynArray<Byte, N12> currentLetters;
+
+    Pendu new() {
+        return Pendu {
+            string = DynArray<Byte, N12>.from<N9>("grammaire"),
+            currentLetters = DynArray<Byte, N12>.from<N9>("_________")
+        }
+    }
+
+    display(Pendu self, Val life) {
+        Val lifes = life;
+        if lifes.equalsZero() {
+            " |--|".println();
+            " |  O".println();
+            " | /|\\".println();
+            " | / \\".println();
+            "------".println();
+        };
+        lifes.dec();
+        if lifes.equalsZero() {
+            " |--|".println();
+            " |  O".println();
+            " | /|\\".println();
+            " |".println();
+            "------".println();
+        };
+        lifes.dec();
+        if lifes.equalsZero() {
+            " |--|".println();
+            " |  O".println();
+            " | /|".println();
+            " |".println();
+            "------".println();
+        };
+        lifes.dec();
+        if lifes.equalsZero() {
+            " |--|".println();
+            " |  O".println();
+            " |  |".println();
+            " |".println();
+            "------".println();
+        };
+        lifes.dec();
+        if lifes.equalsZero() {
+            " |--".println();
+            " |".println();
+            " |".println();
+            " |".println();
+            "------".println();
+        };
+        lifes.dec();
+        if lifes.equalsZero() {
+            " |".println();
+            " |".println();
+            " |".println();
+            " |".println();
+            "------".println();
+        };
+        lifes.dec();
+        if lifes.equalsZero() {
+            '\n'.print();
+            '\n'.print();
+            '\n'.print();
+            '\n'.print();
+            "------".println();
+        };
+        if lifes.equalsZero() {
+            '\n'.print();
+        };
+        '\n'.print();
+        self.currentLetters.println();
+        '\n'.print();
+    }
+
+    play(Pendu self) {
+        Val looses = 6;
+        loop {
+            self.display(looses);
+            if looses.equalsZero() {
+                "GROSSE MERDE!".println();
+                break;
+            };
+            Byte input = Byte.input();
+            Val slen = self.string.len();
+            Val index = 0;
+            Val foundLetters = 0;
+            loop {
+                if slen.equalsZero() {
+                    break;
+                };
+                Byte kdyn = self.string.getDyn(index);
+                if kdyn.equals(input) {
+                    self.currentLetters.setDyn(index, kdyn);
+                    foundLetters.inc();
+                };
+                slen.dec();
+                index.inc();
+            };
+            if foundLetters.equalsZero() {
+                "Tu n'as pas ".print();
+                "trouvé de".print();
+                " lettre -1 vie".println();
+                looses.dec();
+            } else if self.currentLetters.contains('_').not() {
+                "Vous avez ".print();
+                "gagné!".println();
+                break;
+            };
+        };
+    }
+
+    Val main() {
+        Pendu.new().play(); 
+        
+        return 0;
+    }
+}

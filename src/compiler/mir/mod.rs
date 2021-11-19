@@ -149,13 +149,13 @@ impl MirCodeBlock {
             i += 1;
         }
 
-        println!(
+        /* println!(
             "Optimized from {} to {} ({}%) in {} iter",
             before,
             cafter,
             100 - 100 * cafter / before,
             i
-        );
+        ); */
         after
     }
 

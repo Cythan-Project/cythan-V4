@@ -59,11 +59,11 @@ pub fn opt_asm(input: Vec<CompilableInstruction>) -> Vec<CompilableInstruction> 
             .join("\n"),
     )
     .unwrap();
-    println!(
+    /* println!(
         "Optimized from {} ASM instructions to {} ASM instructions",
         in_count,
         out.len()
-    );
+    ); */
     out
 }
 
