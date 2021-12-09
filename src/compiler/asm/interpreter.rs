@@ -1,10 +1,8 @@
-use std::io::Write;
-
 use either::Either;
 
 use crate::{
+    actions::run_context::RunContext,
     compiler::mir::{Mir, MirCodeBlock},
-    RunContext,
 };
 
 pub struct MemoryState {
@@ -34,7 +32,11 @@ impl MemoryState {
     }
 
     pub fn get_mem(&self, index: u32) -> u8 {
-        self.memory.get(index as usize).copied().unwrap_or(0)
+        if let Some(e) = self.memory.get(index as usize).copied() {
+            e
+        } else {
+            panic!("Variable wasn't found: {}", index);
+        }
     }
 
     pub fn execute_block(

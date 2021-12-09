@@ -1,19 +1,22 @@
-use std::{collections::VecDeque, ops::Range};
+use std::{collections::VecDeque, ops::Range, rc::Rc};
 
-use ariadne::{Color, ColorGenerator, Fmt, Label, Report, ReportKind};
+use ariadne::Report;
+use either::Either;
 
 use crate::{
     errors::report_similar,
     parser::{
         class::{Class, ClassView},
         expression::SpannedObject,
-        method::Method,
+        method::{Method, MethodView},
         parse,
         ty::Type,
         TokenParser,
     },
     Error,
 };
+
+use super::state::{code_manager::CodeManager, local_state::LocalState, output_data::OutputData};
 
 #[derive(Debug)]
 pub struct ClassLoader {
@@ -25,6 +28,21 @@ impl ClassLoader {
         ClassLoader {
             classes: Vec::new(),
         }
+    }
+
+    pub fn implement_native(
+        &mut self,
+        class_name: &str,
+        name: &str,
+        native: impl Fn(
+                &mut LocalState,
+                &mut CodeManager,
+                &MethodView,
+            ) -> Result<OutputData, Report<(String, Range<usize>)>>
+            + 'static,
+    ) {
+        self.get_class_mut(class_name).get_method_mut(name).code =
+            Either::Right(Rc::new(Box::new(native)));
     }
 
     pub fn load_string(

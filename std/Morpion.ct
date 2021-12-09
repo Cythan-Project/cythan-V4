@@ -1,10 +1,10 @@
 class Morpion {
 
-    Array<Val, N9> grid;
+    Array<Val, 9> grid;
 
     Morpion new() {
         return Morpion {
-            grid = Array<Val, N9> tmp
+            grid = Array<Val, 9> tmp
         };
     }
 
@@ -80,27 +80,27 @@ class Morpion {
     }
 
     Bool winner(Morpion self, Val tocheck) {
-        if self.get<N0>().equals(tocheck) {
-            if self.get<N1>().equals(tocheck) && self.get<N2>().equals(tocheck) {
+        if self.get<0>().equals(tocheck) {
+            if self.get<1>().equals(tocheck) && self.get<2>().equals(tocheck) {
                 return Bool.true();
             };
-            if self.get<N3>().equals(tocheck) && self.get<N6>().equals(tocheck) {
+            if self.get<3>().equals(tocheck) && self.get<6>().equals(tocheck) {
                 return Bool.true();
             };
-            if self.get<N4>().equals(tocheck) && self.get<N8>().equals(tocheck) {
+            if self.get<4>().equals(tocheck) && self.get<8>().equals(tocheck) {
                 return Bool.true();
             };
         };
-        if self.get<N1>().equals(tocheck) && self.get<N4>().equals(tocheck) && self.get<N7>().equals(tocheck) {
+        if self.get<1>().equals(tocheck) && self.get<4>().equals(tocheck) && self.get<7>().equals(tocheck) {
             return Bool.true();
         };
-        if self.get<N2>().equals(tocheck) && self.get<N4>().equals(tocheck) && self.get<N6>().equals(tocheck) {
+        if self.get<2>().equals(tocheck) && self.get<4>().equals(tocheck) && self.get<6>().equals(tocheck) {
             return Bool.true();
         };
-        if self.get<N3>().equals(tocheck) && self.get<N4>().equals(tocheck) && self.get<N5>().equals(tocheck) {
+        if self.get<3>().equals(tocheck) && self.get<4>().equals(tocheck) && self.get<5>().equals(tocheck) {
             return Bool.true();
         };
-        if self.get<N6>().equals(tocheck) && self.get<N7>().equals(tocheck) && self.get<N8>().equals(tocheck) {
+        if self.get<6>().equals(tocheck) && self.get<7>().equals(tocheck) && self.get<8>().equals(tocheck) {
             return Bool.true();
         };
         return Bool.false();

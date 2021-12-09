@@ -5,7 +5,7 @@ use std::{
     rc::Rc,
 };
 
-use ariadne::{Color, ColorGenerator, Fmt, Label, Report, ReportKind};
+use ariadne::{Color, Fmt, Label, Report, ReportKind};
 use either::Either;
 
 use crate::{
@@ -17,7 +17,7 @@ use crate::{
             typed_definition::TypedMemory,
         },
     },
-    errors::{invalid_type_template, report_similar, Span},
+    errors::{invalid_type_template, Span},
     mir_utils::block_inliner::{need_block, remove_skips},
     parser::{
         expression::TokenProcessor,

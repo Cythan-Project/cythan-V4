@@ -2,7 +2,10 @@ use std::{cmp::Ordering, ops::Range};
 
 use ariadne::{Color, ColorGenerator, Fmt, Label, Report, ReportKind};
 
-use crate::{parser::ty::Type, Error};
+use crate::Error;
+
+pub mod mirrors;
+pub mod reporting;
 
 #[derive(Debug, Clone, Eq)]
 pub struct Span {

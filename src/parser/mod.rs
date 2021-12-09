@@ -339,28 +339,28 @@ pub fn parse(
                     t,
                 ));
             }
-            Some(Token::Number(span, a, t)) if c == 'v' => {
+            Some(Token::Number(span, a, _t)) if c == 'v' => {
                 current_token = Some(Token::Number(
                     Span::new(file.to_owned(), current, initial_size - char.len()).merge(&span),
                     a,
                     NumberType::Val,
                 ));
             }
-            Some(Token::Number(span, a, t)) if c == 'b' => {
+            Some(Token::Number(span, a, _t)) if c == 'b' => {
                 current_token = Some(Token::Number(
                     Span::new(file.to_owned(), current, initial_size - char.len()).merge(&span),
                     a,
                     NumberType::Byte,
                 ));
             }
-            Some(Token::Number(span, a, t)) if c == 'a' => {
+            Some(Token::Number(span, a, _t)) if c == 'a' => {
                 current_token = Some(Token::Number(
                     Span::new(file.to_owned(), current, initial_size - char.len()).merge(&span),
                     a,
                     NumberType::Auto,
                 ));
             }
-            Some(Token::Number(span, a, t)) if c == 's' => {
+            Some(Token::Number(span, a, _t)) if c == 's' => {
                 current_token = Some(Token::Number(
                     Span::new(file.to_owned(), current, initial_size - char.len()).merge(&span),
                     a,

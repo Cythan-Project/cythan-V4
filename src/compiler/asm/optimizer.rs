@@ -15,7 +15,7 @@ pub fn opt_asm(input: Vec<CompilableInstruction>) -> Vec<CompilableInstruction> 
             .join("\n"),
     )
     .unwrap();
-    let in_count = input.len();
+    let _in_count = input.len();
     let mut out = Vec::new();
     let mut label_map: HashMap<Label, Label> = HashMap::new();
     let mut in_jump = false;

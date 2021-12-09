@@ -1,12 +1,8 @@
 use std::ops::Range;
 
-use ariadne::{Color, ColorGenerator, Fmt, Label, Report, ReportKind};
+use ariadne::{ColorGenerator, Fmt, Label, Report, ReportKind};
 
-use crate::{
-    compiler::class_loader::ClassLoader,
-    errors::Span,
-    parser::{class::Class, ty::Type},
-};
+use crate::{errors::Span, parser::ty::Type};
 
 use super::output_data::OutputData;
 
@@ -84,7 +80,7 @@ impl CheckAgainst for OutputData {
                 .with_message("Invalid type")
                 .with_label(
                     Label::new(span.as_span())
-                        .with_message(format!("This expression doesn't output any value"))
+                        .with_message("This expression doesn't output any value")
                         .with_color(b),
                 );
             let er = if other.span.file == "<internal>" || other.span.file == "<native>" {
@@ -99,7 +95,7 @@ impl CheckAgainst for OutputData {
                         .with_color(b),
                 )
             };
-            return Err(er.finish());
+            Err(er.finish())
         }
     }
 }

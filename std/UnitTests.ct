@@ -1,21 +1,9 @@
 class UnitTests {
 
     Val main() {
-        Byte b = UnitTests.fib(10);
-            b.lower.printDec();
-            ','.print();
-            b.higher.printDec();
-            '\n'.print();
-        /* Byte a = 20b;
-        Byte b = 100b;
-        a.add(b);
-        a.lower.printDec();
-        ','.print();
-        a.higher.printDec(); */
-        /* DynArray<Byte, N3> a = DynArray<Byte, N3>.from<N3>("dbf"); */
-        /* Array<Byte, N3> a = "dbf"; */
-        /* a.get<N1>().print(); */
-        /* 'S'.print(); */
+        Byte b = UnitTests.fib(5);
+        b.printDec();
+        '\n'.print();
     }
 
     Byte fib(Val n) {

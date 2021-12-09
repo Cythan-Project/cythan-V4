@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use crate::{compile, run, TestContext};
+use crate::{actions::test_context::TestContext, compile, run};
 
 #[test]
 fn morpion() {

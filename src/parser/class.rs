@@ -1,7 +1,6 @@
 use std::{
     collections::{HashMap, VecDeque},
     ops::Range,
-    sync::atomic::AtomicU32,
 };
 
 use ariadne::Report;
@@ -9,7 +8,7 @@ use either::Either;
 
 use crate::{
     compiler::class_loader::ClassLoader,
-    errors::{invalid_type_template, report_similar, Span},
+    errors::{invalid_type_template, report_similar},
     parser::{
         expression::TokenProcessor,
         token_utils::{split_complex, SplitAction},
@@ -41,7 +40,7 @@ impl Class {
     pub fn get_method_mut(&mut self, method: &str) -> &mut Method {
         self.methods
             .iter_mut()
-            .find(|x| &x.name.1 == method)
+            .find(|x| x.name.1 == method)
             .unwrap()
     }
 }
@@ -111,7 +110,7 @@ impl ClassView {
         if let Some(e) = self
             .methods
             .iter()
-            .find(|x| &x.name.1 == &name.1)
+            .find(|x| x.name.1 == name.1)
             .map(|x| MethodView::new(x, &name.0, template))
         {
             e
@@ -140,7 +139,7 @@ impl ClassView {
                 match self.ty.template.as_ref() {
                     Some(x) => {
                         let item_size = cl.view(&x.1[0])?.size(cl)?;
-                        let number = x.1[1].name.1[1..].parse::<u32>().unwrap();
+                        let number = x.1[1].name.1.parse::<u32>().unwrap();
                         item_size * number
                     }
                     None => 0,

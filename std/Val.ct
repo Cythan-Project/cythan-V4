@@ -5,8 +5,8 @@ class Val {
     }
 
     Val input() {
-        System.setRegister<N0>(2);
-        return System.getRegister<N2>();
+        System.setRegister<0>(2);
+        return System.getRegister<2>();
     }
 
     Bool equals(Val self, Val other) {
@@ -58,9 +58,9 @@ class Val {
     }
 
     print(Val self) {
-        System.setRegister<N1>(3);
-        System.setRegister<N2>(self);
-        System.setRegister<N0>(1);
+        System.setRegister<1>(3);
+        System.setRegister<2>(self);
+        System.setRegister<0>(1);
     }
 
     inc(Val self) {}

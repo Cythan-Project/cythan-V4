@@ -1,12 +1,12 @@
 class Pendu {
 
-    DynArray<Byte, N12> string;
-    DynArray<Byte, N12> currentLetters;
+    DynArray<Byte, 12> string;
+    DynArray<Byte, 12> currentLetters;
 
     Pendu new() {
         return Pendu {
-            string = DynArray<Byte, N12>.from<N9>("grammaire"),
-            currentLetters = DynArray<Byte, N12>.from<N9>("_________")
+            string = DynArray<Byte, 12>.from<9>("grammaire"),
+            currentLetters = DynArray<Byte, 12>.from<9>("_________")
         }
     }
 

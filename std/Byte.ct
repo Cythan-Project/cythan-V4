@@ -9,6 +9,25 @@ class Byte {
         };
     }
 
+    printDec(Byte self) {
+        Val lower = self.lower;
+        Val higher = self.higher;
+        if (lower.greater(9)) {
+            lower.sub(10);
+            lower.printDec();
+            higher.inc();
+        } else {
+            lower.printDec();
+        };
+        if (higher.greater(9)) {
+            higher.sub(10);
+            higher.printDec();
+            '1'.print();
+        } else {
+            higher.printDec();
+        };
+    }
+
     sub(Byte self, Byte other) {
         Byte u = other;
         loop {
@@ -60,17 +79,17 @@ class Byte {
     }
 
     Byte input() {
-        System.setRegister<N0>(2);
+        System.setRegister<0>(2);
         return Byte {
-            lower = System.getRegister<N2>(),
-            higher = System.getRegister<N1>()
+            lower = System.getRegister<2>(),
+            higher = System.getRegister<1>()
         };
     }
 
     print(Byte self) {
-        System.setRegister<N2>(self.lower);
-        System.setRegister<N1>(self.higher);
-        System.setRegister<N0>(1);
+        System.setRegister<2>(self.lower);
+        System.setRegister<1>(self.higher);
+        System.setRegister<0>(1);
     }
 
     Bool equals(Byte self, Byte other) {

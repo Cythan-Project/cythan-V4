@@ -1,6 +1,6 @@
 use std::{collections::HashMap, ops::Range};
 
-use ariadne::{Color, ColorGenerator, Fmt, Label, Report, ReportKind};
+use ariadne::Report;
 
 use crate::{
     compiler::mir::MirCodeBlock,

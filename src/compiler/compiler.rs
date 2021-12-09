@@ -24,7 +24,7 @@ pub fn compile_code_block(
     span: Span,
 ) -> Result<OutputData, Report<(String, Range<usize>)>> {
     expr.1.iter().fold(
-        Ok(OutputData::new(MirCodeBlock::new(), span, None)),
+        Ok(OutputData::new(MirCodeBlock::default(), span, None)),
         |acc, expr| {
             let mut acc = acc?;
             let expr = compile(expr, ls, cm)?;
@@ -40,7 +40,7 @@ pub fn compile(
     ls: &mut LocalState,
     cm: &mut CodeManager,
 ) -> Result<OutputData, Report<(String, Range<usize>)>> {
-    let mut mir = MirCodeBlock::new();
+    let mut mir = MirCodeBlock::default();
     match expr {
         Expr::New {
             span,
@@ -88,7 +88,13 @@ pub fn compile(
                 .flatten()
                 .collect();
             Ok(OutputData::new(
-                MirCodeBlock::from(fields.into_iter().map(|x| x.1.mir.0).flatten().collect()),
+                MirCodeBlock::from(
+                    fields
+                        .into_iter()
+                        .map(|x| x.1.mir.0)
+                        .flatten()
+                        .collect::<Vec<_>>(),
+                ),
                 span.clone(),
                 Some(TypedMemory::new(class.clone(), instr, span.clone())),
             ))
@@ -128,7 +134,7 @@ pub fn compile(
                     (None, then_r.mir, else_r.mir)
                 }
             } else {
-                (None, then_r.mir, MirCodeBlock::new())
+                (None, then_r.mir, MirCodeBlock::default())
             };
             mir.add_mir(Mir::If0(loc, tlr, elr));
             Ok(OutputData::new(mir, span.clone(), output))
@@ -386,7 +392,7 @@ pub fn compile(
                 panic!("Boolean expression must return a value");
             };
             mir.add(a.mir);
-            let mut cb = MirCodeBlock::new();
+            let mut cb = MirCodeBlock::default();
             cb.add(b.mir);
             cb.copy(alp, locb);
             if bo == &BooleanOperator::And {
@@ -446,7 +452,7 @@ pub fn compile(
                         "Array",
                         Some(SpannedVector(
                             a.clone(),
-                            vec![rv.clone(), Type::simple(&format!("N{}", m), a.clone())],
+                            vec![rv.clone(), Type::simple(&m.to_string(), a.clone())],
                         )),
                         a.clone(),
                     ),

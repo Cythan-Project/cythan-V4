@@ -130,23 +130,40 @@ impl MirCodeBlock {
     }
 }
 
+impl Default for MirCodeBlock {
+    fn default() -> Self {
+        Self(Vec::new())
+    }
+}
+
+impl From<Vec<Mir>> for MirCodeBlock {
+    fn from(v: Vec<Mir>) -> Self {
+        Self(v)
+    }
+}
+
 impl MirCodeBlock {
     pub fn optimize(&self) -> Self {
         let before = self.instr_count();
         let mut after = self.clone();
         let mut bf = before;
         let mut cafter = 0;
-        let mut i = 0;
+        //let mut i = 0;
         while bf != cafter {
             bf = cafter;
             let opt = optimize::optimize_block(&after, &mut OptimizerState::new());
             after = if REMOVE_UNUSED_VARS {
                 keep_block(&opt, &mut get_reads_from_block(&opt))
+                // new_optimizer::remove_unused_vars(&opt)
             } else {
                 opt
             };
+            /* println!("OPT STEP");
+            after = new_optimizer::opt(&after);
+            after = new_optimizer::remove_unused_vars(&after); */
             cafter = after.instr_count();
-            i += 1;
+            //i += 1;
+            //break;
         }
 
         /* println!(
@@ -168,12 +185,6 @@ impl MirCodeBlock {
                 _ => 1,
             })
             .sum()
-    }
-    pub fn from(mir: Vec<Mir>) -> Self {
-        Self(mir)
-    }
-    pub fn new() -> Self {
-        Self(Vec::new())
     }
 
     pub fn add(&mut self, mut mir: MirCodeBlock) -> &mut Self {

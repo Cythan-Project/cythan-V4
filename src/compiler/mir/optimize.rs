@@ -2,8 +2,6 @@ use std::collections::{HashMap, HashSet};
 
 use either::Either;
 
-use crate::parser::expression::CodeBlock;
-
 use super::{Mir, MirCodeBlock};
 
 const INLINE_LOOPS: bool = true;
@@ -187,7 +185,7 @@ pub fn optimize(instruction: &Mir, state: &mut OptimizerState) -> Vec<Mir> {
                 VarState::Values(values) => {
                     VarState::Values(values.into_iter().map(|x| (x + 1) % 16).collect())
                 }
-                e => e,
+                _ => VarState::Unknown,
             },
         ),
         Mir::Decrement(a) => state.set_var(
@@ -199,7 +197,7 @@ pub fn optimize(instruction: &Mir, state: &mut OptimizerState) -> Vec<Mir> {
                         .map(|x| if x == 0 { 15 } else { x - 1 })
                         .collect(),
                 ),
-                e => e,
+                _ => VarState::Unknown,
             },
         ),
         Mir::If0(a, b, c) => {
@@ -228,7 +226,7 @@ pub fn optimize(instruction: &Mir, state: &mut OptimizerState) -> Vec<Mir> {
                 let (c, d) = try_unroll_loop(&mut state1, &a.0);
                 if c {
                     *state = state1;
-                    //state.remove_vars(&get_muts_from_block(a));
+                    state.remove_vars(&get_muts_from_block(a));
                     return d;
                 }
             }
@@ -281,7 +279,7 @@ fn try_unroll_loop(state: &mut OptimizerState, lp: &[Mir]) -> (bool, Vec<Mir>) {
     let mut o = vec![];
     'r: for _ in 0..16 {
         for i in lp {
-            for i in optimize(&i, state) {
+            for i in optimize(i, state) {
                 if contains_continues(&i) || contains_skip(&i) {
                     break 'r;
                 } else if does_break_in_all_cases(&i) {
@@ -448,10 +446,7 @@ impl OptimizerState {
     fn set_var(&mut self, id: u32, state: VarState) {
         self.variables
             .iter()
-            .filter(|(id, x)| match x {
-                VarState::Ref(j) if j == *id => true,
-                _ => false,
-            })
+            .filter(|(id, x)| matches!(x, VarState::Ref(j) if j == *id))
             .map(|x| *x.0)
             .collect::<Vec<u32>>()
             .into_iter()
