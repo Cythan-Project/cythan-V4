@@ -10,12 +10,8 @@ use crate::{
 
 pub fn implement(cl: &mut ClassLoader) {
     cl.implement_native("Array", "setDyn", |ls, cm, mv| {
-        let size: u32 = mv.arguments[0].0.template.as_ref().unwrap().1[1]
-            .name
-            .1
-            .parse()
-            .unwrap();
-        let ty = &mv.arguments[0].0.template.as_ref().unwrap().1[0];
+        let size: u32 = mv.arguments[0].0.get_template()?.1[1].as_number()?;
+        let ty = &mv.arguments[0].0.get_template()?.1[0];
         let unit_size = cm.cl.view(ty)?.size(&cm.cl)?;
         let mpos = cm.alloc();
         let mut mircb = MirCodeBlock::default();
@@ -41,17 +37,13 @@ pub fn implement(cl: &mut ClassLoader) {
         Ok(OutputData::native(mircb, None))
     });
     cl.implement_native("Array", "get", |ls, cm, mv| {
-        let position: u32 = mv.template.as_ref().unwrap().1[0].name.1.parse().unwrap();
-        let size: u32 = mv.arguments[0].0.template.as_ref().unwrap().1[1]
-            .name
-            .1
-            .parse()
-            .unwrap();
+        let position: u32 = mv.get_template()?.1[0].as_number()?;
+        let size: u32 = mv.arguments[0].0.get_template()?.1[1].as_number()?;
         if position >= size {
             panic!("Index out of bounds");
         }
 
-        let ty = &mv.arguments[0].0.template.as_ref().unwrap().1[0];
+        let ty = &mv.arguments[0].0.get_template()?.1[0];
         let unit_size = cm.cl.view(ty)?.size(&cm.cl)?;
 
         let data_loc = ls.get_var_native("self")?;
@@ -70,11 +62,7 @@ pub fn implement(cl: &mut ClassLoader) {
         ))
     });
     cl.implement_native("Array", "getDyn", |ls, cm, mv| {
-        let size: u32 = mv.arguments[0].0.template.as_ref().unwrap().1[1]
-            .name
-            .1
-            .parse()
-            .unwrap();
+        let size: u32 = mv.arguments[0].0.get_template()?.1[1].as_number()?;
         let ty = &mv.arguments[0].0.template.as_ref().unwrap().1[0];
         let unit_size = cm.cl.view(ty)?.size(&cm.cl)?;
         let mpos = cm.alloc();
@@ -105,17 +93,13 @@ pub fn implement(cl: &mut ClassLoader) {
     });
 
     cl.implement_native("Array", "set", |ls, cm, mv| {
-        let position: u32 = mv.template.as_ref().unwrap().1[0].name.1.parse().unwrap();
-        let size: u32 = mv.arguments[0].0.template.as_ref().unwrap().1[1]
-            .name
-            .1
-            .parse()
-            .unwrap();
+        let position: u32 = mv.get_template()?.1[0].as_number()?;
+        let size: u32 = mv.arguments[0].0.get_template()?.1[1].as_number()?;
         if position >= size {
             panic!("Index out of bounds");
         }
 
-        let ty = &mv.arguments[0].0.template.as_ref().unwrap().1[0];
+        let ty = &mv.arguments[0].0.get_template()?.1[0];
         let unit_size = cm.cl.view(ty)?.size(&cm.cl)?;
 
         let data_loc = ls.get_var_native("self")?;
@@ -137,19 +121,12 @@ pub fn implement(cl: &mut ClassLoader) {
         Ok(OutputData::native(mir, None))
     });
     cl.implement_native("Array", "len", |_ls, cm, mv| {
-        let len: usize = mv.arguments[0].0.template.as_ref().unwrap().1[1]
-            .name
-            .1
-            .parse()
-            .unwrap();
+        let len: usize = mv.arguments[0].0.get_template()?.1[1].as_number()? as usize;
         let alloc = cm.alloc();
 
         Ok(OutputData::native(
             MirCodeBlock(vec![Mir::Set(alloc, len as u8)]),
-            Some(TypedMemory::native(
-                Type::simple("Val", Span::default()),
-                vec![alloc],
-            )),
+            Some(TypedMemory::native(Type::native_simple("Val"), vec![alloc])),
         ))
     });
 }

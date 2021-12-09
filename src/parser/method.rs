@@ -130,6 +130,12 @@ impl MethodView {
         })
     }
 
+    pub fn get_template(&self) -> Result<&SpannedVector<Type>, Error> {
+        self.template
+            .as_ref()
+            .ok_or_else(|| invalid_type_template(&self.name.0, &self.name.0))
+    }
+
     pub fn execute(
         &self,
         ls: &mut LocalState,

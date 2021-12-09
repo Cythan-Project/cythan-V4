@@ -7,7 +7,11 @@ use super::{
     token_utils::split_complex,
     ClosableType, Token, TokenExtracter, TokenParser,
 };
-use crate::{errors::Span, parser::token_utils::SplitAction};
+use crate::{
+    errors::{expected_number_as_type, invalid_type_template, Span},
+    parser::token_utils::SplitAction,
+    Error,
+};
 
 #[derive(Clone, Eq)]
 pub struct Type {
@@ -70,6 +74,18 @@ impl Type {
     }
     pub fn simple(name: &str, span: Span) -> Self {
         Self::new(name, None, span)
+    }
+    pub fn as_number(&self) -> Result<u32, Error> {
+        self.name
+            .1
+            .parse()
+            .map_err(|_| expected_number_as_type(&self.name.0))
+    }
+
+    pub fn get_template(&self) -> Result<&SpannedVector<Type>, Error> {
+        self.template
+            .as_ref()
+            .ok_or_else(|| invalid_type_template(&self.name.0, &self.name.0))
     }
 }
 

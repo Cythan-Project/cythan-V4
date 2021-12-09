@@ -77,6 +77,20 @@ pub fn invalid_type_template(template_def: &Span, span: &Span) -> Error {
     er.finish()
 }
 
+pub fn expected_number_as_type(span: &Span) -> Error {
+    let mut colors = ColorGenerator::new();
+    let b = colors.next();
+    let er = Report::build(ReportKind::Error, span.file.to_owned(), span.start)
+        .with_code(17)
+        .with_message("Expected number as type")
+        .with_label(
+            Label::new(span.as_span())
+                .with_message("Should be a number")
+                .with_color(b),
+        );
+    er.finish()
+}
+
 pub fn report_similar(
     singular: &str,
     plural: &str,
