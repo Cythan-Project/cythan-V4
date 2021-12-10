@@ -77,6 +77,38 @@ pub fn invalid_type_template(template_def: &Span, span: &Span) -> Error {
     er.finish()
 }
 
+pub fn index_out_of_bounds(len: usize, alen: usize, access: &Span, listdef: &Span) -> Error {
+    let mut colors = ColorGenerator::new();
+    let b = colors.next();
+    let er = Report::build(ReportKind::Error, access.file.to_owned(), access.start)
+        .with_code(18)
+        .with_message("Index out of bounds")
+        .with_label(
+            Label::new(access.as_span())
+                .with_message(format!("The accessed index is {}", len))
+                .with_color(b),
+        )
+        .with_label(
+            Label::new(listdef.as_span())
+                .with_message(format!("But the list length is {}", alen))
+                .with_color(colors.next()),
+        );
+    let er = if len == alen {
+        er.with_note(format!(
+            "Did you correctly shift the index? In a {} size list the maximum index is {}",
+            len,
+            len - 1
+        ))
+    } else {
+        er.with_note(format!(
+            "Maybe you should change the list from {} length to {} length",
+            alen,
+            len + 1
+        ))
+    };
+    er.finish()
+}
+
 pub fn expected_number_as_type(span: &Span) -> Error {
     let mut colors = ColorGenerator::new();
     let b = colors.next();

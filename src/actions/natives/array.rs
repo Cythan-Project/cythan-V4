@@ -4,7 +4,7 @@ use crate::{
         mir::{Mir, MirCodeBlock},
         state::{output_data::OutputData, typed_definition::TypedMemory},
     },
-    errors::Span,
+    errors::index_out_of_bounds,
     parser::ty::Type,
 };
 
@@ -40,7 +40,12 @@ pub fn implement(cl: &mut ClassLoader) {
         let position: u32 = mv.get_template()?.1[0].as_number()?;
         let size: u32 = mv.arguments[0].0.get_template()?.1[1].as_number()?;
         if position >= size {
-            panic!("Index out of bounds");
+            return Err(index_out_of_bounds(
+                position as usize,
+                size as usize,
+                &mv.get_template()?.1[0].span,
+                &mv.arguments[0].0.get_template()?.1[1].span,
+            ));
         }
 
         let ty = &mv.arguments[0].0.get_template()?.1[0];
@@ -96,7 +101,12 @@ pub fn implement(cl: &mut ClassLoader) {
         let position: u32 = mv.get_template()?.1[0].as_number()?;
         let size: u32 = mv.arguments[0].0.get_template()?.1[1].as_number()?;
         if position >= size {
-            panic!("Index out of bounds");
+            return Err(index_out_of_bounds(
+                position as usize,
+                size as usize,
+                &mv.get_template()?.1[0].span,
+                &mv.arguments[0].0.get_template()?.1[1].span,
+            ));
         }
 
         let ty = &mv.arguments[0].0.get_template()?.1[0];
