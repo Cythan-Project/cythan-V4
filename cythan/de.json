@@ -1,0 +1,18 @@
+{
+      "comment": "boxed slice literal",
+      "begin": "(<)(\\[)",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.brackets.angle.rust"
+        },
+        "2": {
+          "name": "punctuation.brackets.square.rust"
+        }
+      },
+      "end": ">",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.brackets.angle.rust"
+        }
+      }
+    },
