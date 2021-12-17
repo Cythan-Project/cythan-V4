@@ -7,7 +7,7 @@ use std::{
 
 use ariadne::{Color, Fmt, Label, Report, ReportKind};
 use either::Either;
-use mir::{Mir, MirCodeBlock};
+use mir::{need_block, remove_skips, Mir, MirCodeBlock};
 
 use crate::{
     compiler::{
@@ -18,7 +18,6 @@ use crate::{
         },
     },
     errors::{invalid_type_template, Span},
-    mir_utils::block_inliner::{need_block, remove_skips},
     parser::{
         expression::TokenProcessor,
         token_utils::{split_complex, SplitAction},

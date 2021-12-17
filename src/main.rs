@@ -11,7 +11,6 @@ use crate::actions::{build_context::compile, run_context::run};
 mod actions;
 mod compiler;
 mod errors;
-mod mir_utils;
 mod parser;
 #[cfg(test)]
 mod tests;
