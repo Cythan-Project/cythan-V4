@@ -2,9 +2,9 @@ use std::{rc::Rc, sync::Mutex};
 
 use cythan::{Cythan, InterruptedCythan};
 use lir::CompilableInstruction;
-use mir::{MirCodeBlock, MirState, RunContext};
+use mir::{MemoryState, MirCodeBlock, MirState, RunContext};
 
-use crate::{compiler::asm::interpreter::MemoryState, MIR_MODE};
+use crate::MIR_MODE;
 
 pub fn run<T: RunContext + 'static>(mir: &MirCodeBlock, car: T) -> (usize, Rc<Mutex<T>>) {
     let car = Rc::new(Mutex::new(car));
