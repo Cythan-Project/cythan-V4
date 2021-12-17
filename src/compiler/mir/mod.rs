@@ -3,15 +3,11 @@ pub mod optimize;
 use std::fmt::Display;
 
 use either::Either;
+use lir::{AsmValue, CompilableInstruction, Counter, Label, LabelType, Number, Var};
 
-use crate::compiler::{
-    asm::{AsmValue, LabelType},
-    mir::optimize::REMOVE_UNUSED_VARS,
-};
+use crate::compiler::mir::optimize::REMOVE_UNUSED_VARS;
 
 use self::optimize::{get_reads_from_block, keep_block, OptimizerState};
-
-use super::asm::{optimizer::opt_asm, CompilableInstruction, Label, Number, Var};
 
 #[derive(PartialEq, Clone, Hash, Debug)]
 #[allow(dead_code)]
@@ -143,6 +139,7 @@ impl From<Vec<Mir>> for MirCodeBlock {
 }
 
 impl MirCodeBlock {
+    #[allow(dead_code)]
     pub fn optimize(&self) -> Self {
         let before = self.instr_count();
         let mut after = self.clone();
@@ -175,7 +172,7 @@ impl MirCodeBlock {
         ); */
         after
     }
-
+    #[allow(dead_code)]
     pub fn instr_count(&self) -> usize {
         self.0
             .iter()
@@ -231,7 +228,7 @@ impl MirCodeBlock {
 
 #[derive(Default)]
 pub struct MirState {
-    pub count: usize,
+    pub count: Counter,
     pub instructions: Vec<CompilableInstruction>,
     loops: Vec<Label>,
     blocks: Vec<Label>,
@@ -239,11 +236,7 @@ pub struct MirState {
 
 impl MirState {
     pub fn opt_asm(&mut self) {
-        self.instructions = opt_asm(self.instructions.clone());
-    }
-    pub fn count(&mut self) -> usize {
-        self.count += 1;
-        self.count
+        self.instructions = CompilableInstruction::optimize(self.instructions.clone());
     }
     pub fn jump(&mut self, label: Label) {
         self.instructions.push(CompilableInstruction::Jump(label));
@@ -319,7 +312,7 @@ impl Mir {
                 if b == c {
                     return b.to_asm(state);
                 }
-                let end = Label::alloc(state, crate::compiler::asm::LabelType::IfEnd);
+                let end = Label::alloc(&mut state.count, LabelType::IfEnd);
                 if b.0.is_empty() {
                     state.if0(Var(*a as usize), end.clone());
                     b.to_asm(state);
@@ -338,13 +331,13 @@ impl Mir {
             Mir::Loop(a) => {
                 // If this happens this means the program will do nothing forever.
                 if a.0.is_empty() {
-                    let looplabel = Label::alloc(state, crate::compiler::asm::LabelType::LoopStart);
+                    let looplabel = Label::alloc(&mut state.count, LabelType::LoopStart);
                     state.label(looplabel.clone());
                     state.jump(looplabel);
                     return SkipStatus::Stoped;
                 }
-                let loopstart = Label::alloc(state, crate::compiler::asm::LabelType::LoopStart);
-                let loopend = loopstart.derive(crate::compiler::asm::LabelType::LoopEnd);
+                let loopstart = Label::alloc(&mut state.count, LabelType::LoopStart);
+                let loopend = loopstart.derive(LabelType::LoopEnd);
                 state.label(loopstart.clone());
                 state.loops.push(loopstart.clone());
                 let k = a.to_asm(state);
@@ -381,7 +374,7 @@ impl Mir {
                 return SkipStatus::Skipped;
             }
             Mir::Block(a) => {
-                let blockend = Label::alloc(state, crate::compiler::asm::LabelType::BlockEnd);
+                let blockend = Label::alloc(&mut state.count, LabelType::BlockEnd);
                 state.blocks.push(blockend.clone());
                 let k = a.to_asm(state);
                 state.blocks.pop();

@@ -13,7 +13,7 @@ pub fn report(mut e: Report<(String, Range<usize>)>) {
             MirrorLabel::from(l).span.1 = 0..("Error originated from native context".len());
         });
         e.print((
-            file_name.clone(),
+            file_name,
             Source::from("Error originated from native context".to_owned()),
         ))
         .unwrap();

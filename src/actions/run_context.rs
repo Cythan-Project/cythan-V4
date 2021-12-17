@@ -1,10 +1,11 @@
 use std::{io::Write, rc::Rc, sync::Mutex};
 
 use cythan::{Cythan, InterruptedCythan};
+use lir::CompilableInstruction;
 
 use crate::{
     compiler::{
-        asm::{interpreter::MemoryState, template::Template, Context},
+        asm::interpreter::MemoryState,
         mir::{MirCodeBlock, MirState},
     },
     MIR_MODE,
@@ -34,7 +35,7 @@ pub fn run<T: RunContext + 'static>(mir: &MirCodeBlock, car: T) -> (usize, Rc<Mu
     let car = Rc::new(Mutex::new(car));
     let car1 = car.clone();
     let car2 = car.clone();
-    std::fs::write(
+    /* std::fs::write(
         "out.mir",
         &mir.0
             .iter()
@@ -42,7 +43,7 @@ pub fn run<T: RunContext + 'static>(mir: &MirCodeBlock, car: T) -> (usize, Rc<Mu
             .collect::<Vec<_>>()
             .join("\n"),
     )
-    .unwrap();
+    .unwrap(); */
     if MIR_MODE {
         let mut ms = MemoryState::new(2048, 8);
         ms.execute_block(mir, &mut *car.lock().unwrap());
@@ -51,15 +52,7 @@ pub fn run<T: RunContext + 'static>(mir: &MirCodeBlock, car: T) -> (usize, Rc<Mu
         let mut mirstate = MirState::default();
         mir.to_asm(&mut mirstate);
         mirstate.opt_asm();
-        let mut compile_state = Template::default();
-        let mut ctx = Context::default();
-        mirstate
-            .instructions
-            .iter()
-            .for_each(|i| i.compile(&mut compile_state, &mut ctx));
-        let k = compile_state.build();
-        std::fs::write("out.ct", &k).unwrap();
-        let k = cythan_compiler::compile(&k).unwrap();
+        let k = CompilableInstruction::compile_to_binary(mirstate.instructions);
         let mut machine = InterruptedCythan::new(
             k,
             4,

@@ -134,7 +134,7 @@ impl Cythan for ChunkedCythan {
 #[test]
 fn basic_test_if() {
     let mut cythan = ChunkedCythan::new(vec![1, 9, 5, 10, 1, 0, 0, 11, 0, 1, 20, 21]);
-    for a in 0..10 {
+    for _ in 0..10 {
         cythan.next();
     }
     assert_eq!(

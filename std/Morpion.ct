@@ -105,4 +105,10 @@ class Morpion {
         };
         return Bool.false();
     }
+    
+    Val main() {
+        Morpion morpion = Morpion.new();
+        morpion.play();
+        return 0;
+    }
 }

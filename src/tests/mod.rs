@@ -6,6 +6,7 @@ use crate::{actions::test_context::TestContext, compile, run};
 /*
 @Test("Test 1", "test,\ntest")
 */
+#[test]
 pub fn run_test() {
     /* let (opt, ctx) = time("run_optimized", || {
         run(

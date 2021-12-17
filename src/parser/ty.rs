@@ -66,6 +66,7 @@ impl Type {
             template,
         }
     }
+    #[allow(dead_code)]
     pub fn native(name: &str, template: Option<SpannedVector<Type>>) -> Self {
         Self::new(name, template, Span::default())
     }

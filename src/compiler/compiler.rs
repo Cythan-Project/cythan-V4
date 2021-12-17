@@ -227,7 +227,7 @@ pub fn compile(
                 let k = cm
                     .cl
                     .view(a)?
-                    .method_view(&name, template)?
+                    .method_view(name, template)?
                     .execute(ls, cm, arguments)?;
                 mir.add(k.mir);
                 Ok(OutputData::new(
@@ -256,7 +256,7 @@ pub fn compile(
                 let k = cm
                     .cl
                     .view(a)?
-                    .method_view(&name, template)?
+                    .method_view(name, template)?
                     .execute(ls, cm, arguments)?;
                 mir.add(k.mir);
                 Ok(OutputData::new(
@@ -452,7 +452,7 @@ pub fn compile(
                         "Array",
                         Some(SpannedVector(
                             a.clone(),
-                            vec![rv.clone(), Type::simple(&m.to_string(), a.clone())],
+                            vec![rv, Type::simple(&m.to_string(), a.clone())],
                         )),
                         a.clone(),
                     ),

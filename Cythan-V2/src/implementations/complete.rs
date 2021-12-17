@@ -140,7 +140,7 @@ impl DefaultGenerator {
 #[test]
 fn test_if() {
     let mut cythan = CompleteCythan::new(vec![1, 9, 5, 10, 1, 0, 0, 11, 0, 1, 20, 21]);
-    for a in 0..10 {
+    for _ in 0..10 {
         cythan.next();
     }
     assert_eq!(cythan.cases, vec![34, 20, 5, 10, 1, 1, 0, 11, 0, 1, 20, 21]);
@@ -162,7 +162,7 @@ fn test_junk() {
 #[test]
 fn test_double() {
     let mut cythan = CompleteCythan::new_config(vec![1], 2, Box::new(|x| x * 2));
-    for a in 0..10 {
+    for _ in 0..10 {
         cythan.next();
     }
     assert_eq!(

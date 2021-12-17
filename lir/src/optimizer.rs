@@ -6,15 +6,6 @@ pub fn opt_asm(input: Vec<CompilableInstruction>) -> Vec<CompilableInstruction> 
     if input.is_empty() {
         return vec![];
     }
-    std::fs::write(
-        "target/before_opt.asm",
-        input
-            .iter()
-            .map(|x| x.to_string())
-            .collect::<Vec<_>>()
-            .join("\n"),
-    )
-    .unwrap();
     let _in_count = input.len();
     let mut out = Vec::new();
     let mut label_map: HashMap<Label, Label> = HashMap::new();
@@ -51,19 +42,6 @@ pub fn opt_asm(input: Vec<CompilableInstruction>) -> Vec<CompilableInstruction> 
         out.push(el);
     }
     remap(&mut out, &label_map);
-    std::fs::write(
-        "target/after_opt.asm",
-        out.iter()
-            .map(|x| x.to_string())
-            .collect::<Vec<_>>()
-            .join("\n"),
-    )
-    .unwrap();
-    /* println!(
-        "Optimized from {} ASM instructions to {} ASM instructions",
-        in_count,
-        out.len()
-    ); */
     out
 }
 

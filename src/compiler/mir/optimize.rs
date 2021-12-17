@@ -74,11 +74,7 @@ fn keep(mir: &Mir, reads: &mut HashSet<u32>) -> Option<Mir> {
             }
         }
         Mir::If0(a, b, c) => {
-            return Some(Mir::If0(
-                a.clone(),
-                keep_block(b, reads),
-                keep_block(c, reads),
-            ));
+            return Some(Mir::If0(*a, keep_block(b, reads), keep_block(c, reads)));
         }
         Mir::Loop(a) => return Some(Mir::Loop(keep_block(a, reads))),
         Mir::Break => (),
@@ -128,25 +124,22 @@ pub fn improve_code_flow(block: Vec<Mir>) -> Vec<Mir> {
     let mut out = Vec::new();
     let mut k = block.into_iter();
     while let Some(e) = k.next() {
-        match &e {
-            Mir::If0(a, b, c) => {
-                if b.0.iter().any(|x| always_terminate(x)) {
-                    out.push(Mir::If0(
-                        *a,
-                        b.clone(),
-                        MirCodeBlock(improve_code_flow(c.0.iter().cloned().chain(k).collect())),
-                    ));
-                    return out;
-                } else if c.0.iter().any(|x| always_terminate(x)) {
-                    out.push(Mir::If0(
-                        *a,
-                        MirCodeBlock(improve_code_flow(b.0.iter().cloned().chain(k).collect())),
-                        c.clone(),
-                    ));
-                    return out;
-                }
+        if let Mir::If0(a, b, c) = &e {
+            if b.0.iter().any(|x| always_terminate(x)) {
+                out.push(Mir::If0(
+                    *a,
+                    b.clone(),
+                    MirCodeBlock(improve_code_flow(c.0.iter().cloned().chain(k).collect())),
+                ));
+                return out;
+            } else if c.0.iter().any(|x| always_terminate(x)) {
+                out.push(Mir::If0(
+                    *a,
+                    MirCodeBlock(improve_code_flow(b.0.iter().cloned().chain(k).collect())),
+                    c.clone(),
+                ));
+                return out;
             }
-            _ => (),
         }
         out.push(e);
     }
@@ -241,14 +234,13 @@ pub fn optimize(instruction: &Mir, state: &mut OptimizerState) -> Vec<Mir> {
         }
         Mir::WriteRegister(b, a) => match a {
             Either::Left(_) => (),
-            Either::Right(a) => match state.get_var(*a) {
-                VarState::Values(values) => {
+            Either::Right(a) => {
+                if let VarState::Values(values) = state.get_var(*a) {
                     if values.len() == 1 {
                         return vec![Mir::WriteRegister(*b, Either::Left(values[0]))];
                     }
                 }
-                _ => (),
-            },
+            }
         },
         Mir::Skip => (),
         Mir::Block(a) => {
@@ -256,12 +248,12 @@ pub fn optimize(instruction: &Mir, state: &mut OptimizerState) -> Vec<Mir> {
             if INLINE_BLOCKS {
                 let mut out = vec![];
                 for i in &k.0 {
-                    if does_skip_in_all_cases(&i) {
-                        if let Some(e) = remove_skips(&i) {
+                    if does_skip_in_all_cases(i) {
+                        if let Some(e) = remove_skips(i) {
                             out.push(e);
                         }
                         return out;
-                    } else if contains_skip(&i) {
+                    } else if contains_skip(i) {
                         break;
                     } else {
                         out.push(i.clone());
@@ -282,15 +274,12 @@ fn try_unroll_loop(state: &mut OptimizerState, lp: &[Mir]) -> (bool, Vec<Mir>) {
             for i in optimize(i, state) {
                 if contains_continues(&i) || contains_skip(&i) {
                     break 'r;
-                } else if does_break_in_all_cases(&i) {
-                    if let Some(e) = remove_breaks(&i) {
-                        o.push(e);
-                    }
+                }
+                if let Some(e) = remove_breaks(&i) {
+                    o.push(e);
+                }
+                if does_break_in_all_cases(&i) {
                     return (true, vec![Mir::Block(MirCodeBlock(o))]);
-                } else {
-                    if let Some(e) = remove_breaks(&i) {
-                        o.push(e);
-                    }
                 }
             }
         }
