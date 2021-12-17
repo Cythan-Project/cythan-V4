@@ -7,11 +7,11 @@ use std::{
 
 use ariadne::{Color, Fmt, Label, Report, ReportKind};
 use either::Either;
+use mir::{Mir, MirCodeBlock};
 
 use crate::{
     compiler::{
         compiler::compile_code_block,
-        mir::{Mir, MirCodeBlock},
         state::{
             code_manager::CodeManager, local_state::LocalState, output_data::OutputData,
             typed_definition::TypedMemory,

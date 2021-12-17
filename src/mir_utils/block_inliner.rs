@@ -1,4 +1,4 @@
-use crate::compiler::mir::{Mir, MirCodeBlock};
+use mir::{Mir, MirCodeBlock};
 
 pub fn remove_skips(mir: Vec<Mir>, in_loop: bool) -> Vec<Mir> {
     let mut new_mir = vec![];

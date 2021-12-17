@@ -1,8 +1,6 @@
-use crate::compiler::{
-    class_loader::ClassLoader,
-    mir::{Mir, MirCodeBlock},
-    state::output_data::OutputData,
-};
+use mir::{Mir, MirCodeBlock};
+
+use crate::compiler::{class_loader::ClassLoader, state::output_data::OutputData};
 
 pub fn implement(cl: &mut ClassLoader) {
     cl.implement_native("Val", "dec", |ls, _cm, _mv| {

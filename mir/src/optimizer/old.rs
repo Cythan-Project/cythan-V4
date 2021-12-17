@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use either::Either;
 
-use super::{Mir, MirCodeBlock};
+use crate::{block::MirCodeBlock, mir::Mir};
 
 const INLINE_LOOPS: bool = true;
 const INLINE_BLOCKS: bool = true;

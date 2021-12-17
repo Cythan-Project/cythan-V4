@@ -1,9 +1,9 @@
 use std::{collections::HashMap, ops::Range};
 
 use ariadne::Report;
+use mir::MirCodeBlock;
 
 use crate::{
-    compiler::mir::MirCodeBlock,
     errors::{report_similar, Span},
     parser::{expression::SpannedObject, ty::Type},
     Error,

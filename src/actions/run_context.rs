@@ -1,35 +1,10 @@
-use std::{io::Write, rc::Rc, sync::Mutex};
+use std::{rc::Rc, sync::Mutex};
 
 use cythan::{Cythan, InterruptedCythan};
 use lir::CompilableInstruction;
+use mir::{MirCodeBlock, MirState, RunContext};
 
-use crate::{
-    compiler::{
-        asm::interpreter::MemoryState,
-        mir::{MirCodeBlock, MirState},
-    },
-    MIR_MODE,
-};
-
-pub struct StdIoContext;
-
-pub trait RunContext {
-    fn input(&mut self) -> u8;
-    fn print(&mut self, i: char);
-}
-
-impl RunContext for StdIoContext {
-    fn input(&mut self) -> u8 {
-        let mut string = String::new();
-        std::io::stdin().read_line(&mut string).unwrap();
-        string.bytes().next().unwrap()
-    }
-
-    fn print(&mut self, i: char) {
-        print!("{}", i);
-        std::io::stdout().flush().unwrap();
-    }
-}
+use crate::{compiler::asm::interpreter::MemoryState, MIR_MODE};
 
 pub fn run<T: RunContext + 'static>(mir: &MirCodeBlock, car: T) -> (usize, Rc<Mutex<T>>) {
     let car = Rc::new(Mutex::new(car));

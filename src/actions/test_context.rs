@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use super::run_context::RunContext;
+use mir::RunContext;
 
 impl RunContext for TestContext {
     fn input(&mut self) -> u8 {

@@ -1,12 +1,12 @@
 use std::{ops::Range, process::exit};
 
 use ariadne::Report;
+use mir::{Mir, MirCodeBlock};
 
 use crate::{
     actions::natives::load_natives,
     compiler::{
         class_loader::ClassLoader,
-        mir::{Mir, MirCodeBlock},
         state::{code_manager::CodeManager, local_state::LocalState},
     },
     errors::{reporting::report, Span},

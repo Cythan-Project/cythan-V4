@@ -4,11 +4,9 @@
 use std::ops::Range;
 
 use ariadne::Report;
+use mir::StdIoContext;
 
-use crate::actions::{
-    build_context::compile,
-    run_context::{run, StdIoContext},
-};
+use crate::actions::{build_context::compile, run_context::run};
 
 mod actions;
 mod compiler;

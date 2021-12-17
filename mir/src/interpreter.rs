@@ -1,5 +1,29 @@
+use std::io::Write;
+
 use either::Either;
-use mir::{Mir, MirCodeBlock, RunContext};
+
+use crate::{Mir, MirCodeBlock};
+
+// TODO: Move this code toward a better place
+pub struct StdIoContext;
+
+pub trait RunContext {
+    fn input(&mut self) -> u8;
+    fn print(&mut self, i: char);
+}
+
+impl RunContext for StdIoContext {
+    fn input(&mut self) -> u8 {
+        let mut string = String::new();
+        std::io::stdin().read_line(&mut string).unwrap();
+        string.bytes().next().unwrap()
+    }
+
+    fn print(&mut self, i: char) {
+        print!("{}", i);
+        std::io::stdout().flush().unwrap();
+    }
+}
 
 pub struct MemoryState {
     pub memory: Vec<u8>,

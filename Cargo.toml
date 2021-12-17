@@ -8,9 +8,10 @@ edition = "2018"
 [dependencies]
 either = "*"
 lir = { path = "lir" }
+mir = { path = "mir" }
 cythan = { path = "Cythan-V2" }
 ariadne = "0.1.3"
 strsim = "0.10.0"
 
 [workspace]
-members = ["lir", "Cythan-V2"]
+members = ["lir", "Cythan-V2", "mir"]

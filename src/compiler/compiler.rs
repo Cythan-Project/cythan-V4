@@ -1,6 +1,7 @@
 use std::ops::Range;
 
 use ariadne::{Color, ColorGenerator, Fmt, Label, Report, ReportKind};
+use mir::{Mir, MirCodeBlock};
 
 use crate::{
     compiler::state::typed_definition::{CheckAgainst, TypedMemory},
@@ -12,10 +13,7 @@ use crate::{
     },
 };
 
-use super::{
-    mir::{Mir, MirCodeBlock},
-    state::{code_manager::CodeManager, local_state::LocalState, output_data::OutputData},
-};
+use super::state::{code_manager::CodeManager, local_state::LocalState, output_data::OutputData};
 
 pub fn compile_code_block(
     expr: &SpannedVector<Expr>,

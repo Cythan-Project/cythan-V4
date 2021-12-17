@@ -1,8 +1,8 @@
 use either::Either;
+use mir::{Mir, MirCodeBlock};
 
 use crate::compiler::{
     class_loader::ClassLoader,
-    mir::{Mir, MirCodeBlock},
     state::{output_data::OutputData, typed_definition::TypedMemory},
 };
 

@@ -1,7 +1,8 @@
+use mir::{Mir, MirCodeBlock};
+
 use crate::{
     compiler::{
         class_loader::ClassLoader,
-        mir::{Mir, MirCodeBlock},
         state::{output_data::OutputData, typed_definition::TypedMemory},
     },
     errors::index_out_of_bounds,
