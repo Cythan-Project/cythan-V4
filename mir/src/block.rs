@@ -1,6 +1,6 @@
 use crate::{
     mir::Mir,
-    optimizer::old::{self, get_reads_from_block, keep_block, OptimizerState, REMOVE_UNUSED_VARS},
+    optimizer::old::{self, get_reads_from_block, keep_block, OptConfig, OptimizerState},
     skip_status::SkipStatus,
     state::MirState,
 };
@@ -39,11 +39,13 @@ impl MirCodeBlock {
         let mut after = self.clone();
         let mut bf = before;
         let mut cafter = 0;
-        //let mut i = 0;
+
+        let mut opti = OptConfig::default();
+        let mut i = 0;
         while bf != cafter {
             bf = cafter;
-            let opt = old::optimize_block(&after, &mut OptimizerState::new());
-            after = if REMOVE_UNUSED_VARS {
+            let opt = old::optimize_block(&after, &mut OptimizerState::new(), &opti);
+            after = if opti.remove_unused_vars {
                 keep_block(&opt, &mut get_reads_from_block(&opt))
                 // new_optimizer::remove_unused_vars(&opt)
             } else {
@@ -53,17 +55,38 @@ impl MirCodeBlock {
             after = new_optimizer::opt(&after);
             after = new_optimizer::remove_unused_vars(&after); */
             cafter = after.instr_count();
+            println!("OPT Pass done {}", cafter);
+            if opti.inline_loops {
+                break;
+            }
+            if bf == cafter && !opti.inline_loops {
+                std::fs::write(
+                    "target/opt.mir",
+                    after
+                        .0
+                        .iter()
+                        .map(|x| x.to_string())
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                )
+                .unwrap();
+                opti.inline_loops = true;
+                cafter = 0;
+                continue;
+            }
             //i += 1;
             //break;
         }
-
-        /* println!(
-            "Optimized from {} to {} ({}%) in {} iter",
-            before,
-            cafter,
-            100 - 100 * cafter / before,
-            i
-        ); */
+        std::fs::write(
+            "target/opt-loop.mir",
+            after
+                .0
+                .iter()
+                .map(|x| x.to_string())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .unwrap();
         after
     }
     #[allow(dead_code)]

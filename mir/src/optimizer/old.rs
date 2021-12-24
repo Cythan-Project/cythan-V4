@@ -4,10 +4,23 @@ use either::Either;
 
 use crate::{block::MirCodeBlock, mir::Mir};
 
-const INLINE_LOOPS: bool = true;
-const INLINE_BLOCKS: bool = true;
-const REORGANIZE_IFS: bool = true;
-pub const REMOVE_UNUSED_VARS: bool = true;
+pub struct OptConfig {
+    pub inline_loops: bool,
+    pub inline_blocks: bool,
+    pub reorganize_ifs: bool,
+    pub remove_unused_vars: bool,
+}
+
+impl Default for OptConfig {
+    fn default() -> Self {
+        Self {
+            inline_loops: false,
+            inline_blocks: true,
+            reorganize_ifs: true,
+            remove_unused_vars: true,
+        }
+    }
+}
 
 pub fn get_reads_from_block(mir: &MirCodeBlock) -> HashSet<u32> {
     let mut set = HashSet::new();
@@ -117,8 +130,8 @@ fn get_muts(mir: &Mir, muts: &mut HashSet<u32>) {
     }
 }
 
-pub fn improve_code_flow(block: Vec<Mir>) -> Vec<Mir> {
-    if !REORGANIZE_IFS {
+pub fn improve_code_flow(block: Vec<Mir>, opt: &OptConfig) -> Vec<Mir> {
+    if !opt.reorganize_ifs {
         return block;
     }
     let mut out = Vec::new();
@@ -129,13 +142,19 @@ pub fn improve_code_flow(block: Vec<Mir>) -> Vec<Mir> {
                 out.push(Mir::If0(
                     *a,
                     b.clone(),
-                    MirCodeBlock(improve_code_flow(c.0.iter().cloned().chain(k).collect())),
+                    MirCodeBlock(improve_code_flow(
+                        c.0.iter().cloned().chain(k).collect(),
+                        opt,
+                    )),
                 ));
                 return out;
             } else if c.0.iter().any(|x| always_terminate(x)) {
                 out.push(Mir::If0(
                     *a,
-                    MirCodeBlock(improve_code_flow(b.0.iter().cloned().chain(k).collect())),
+                    MirCodeBlock(improve_code_flow(
+                        b.0.iter().cloned().chain(k).collect(),
+                        opt,
+                    )),
                     c.clone(),
                 ));
                 return out;
@@ -146,18 +165,23 @@ pub fn improve_code_flow(block: Vec<Mir>) -> Vec<Mir> {
     out
 }
 
-pub fn optimize_block(instruction: &MirCodeBlock, state: &mut OptimizerState) -> MirCodeBlock {
+pub fn optimize_block(
+    instruction: &MirCodeBlock,
+    state: &mut OptimizerState,
+    opt: &OptConfig,
+) -> MirCodeBlock {
     MirCodeBlock(improve_code_flow(
         instruction
             .0
             .iter()
-            .map(|x| optimize(x, state))
+            .map(|x| optimize(x, state, opt))
             .flatten()
             .collect(),
+        opt,
     ))
 }
 
-pub fn optimize(instruction: &Mir, state: &mut OptimizerState) -> Vec<Mir> {
+pub fn optimize(instruction: &Mir, state: &mut OptimizerState, opt: &OptConfig) -> Vec<Mir> {
     match &instruction {
         Mir::Set(a, b) => {
             state.set_var(*a, VarState::Values(vec![*b]));
@@ -197,34 +221,34 @@ pub fn optimize(instruction: &Mir, state: &mut OptimizerState) -> Vec<Mir> {
             if let VarState::Values(values) = state.get_var(*a) {
                 if values.contains(&0) {
                     if values.len() == 1 {
-                        return optimize_block(b, state).0;
+                        return optimize_block(b, state, opt).0;
                     }
                 } else {
-                    return optimize_block(c, state).0;
+                    return optimize_block(c, state, opt).0;
                 }
             }
             let mut state1 = state.clone();
             let mut state2 = state.clone();
             state1.remove_possibilities(*a, &(1..16).collect::<Vec<_>>());
             state2.remove_possibilities(*a, &[0]);
-            let b1 = optimize_block(b, &mut state1);
-            let b2 = optimize_block(c, &mut state2);
+            let b1 = optimize_block(b, &mut state1, opt);
+            let b2 = optimize_block(c, &mut state2, opt);
             let a = state.get_var_value(*a).right().unwrap();
             *state = state1.merge(&state2);
             return vec![Mir::If0(a, b1, b2)];
         }
         Mir::Loop(a) => {
-            if INLINE_LOOPS {
+            if opt.inline_loops {
                 let mut state1 = state.clone();
-                let (c, d) = try_unroll_loop(&mut state1, &a.0);
+                let (c, d) = try_unroll_loop(&mut state1, &a.0, opt);
                 if c {
                     *state = state1;
-                    state.remove_vars(&get_muts_from_block(a));
+                    //state.remove_vars(&get_muts_from_block(a));
                     return d;
                 }
             }
             state.remove_vars(&get_muts_from_block(a));
-            return vec![Mir::Loop(optimize_block(a, &mut state.clone()))];
+            return vec![Mir::Loop(optimize_block(a, &mut state.clone(), opt))];
         }
         Mir::Break => (),
         Mir::Continue => (),
@@ -244,8 +268,8 @@ pub fn optimize(instruction: &Mir, state: &mut OptimizerState) -> Vec<Mir> {
         },
         Mir::Skip => (),
         Mir::Block(a) => {
-            let k = optimize_block(a, state);
-            if INLINE_BLOCKS {
+            let k = optimize_block(a, state, opt);
+            if opt.inline_blocks {
                 let mut out = vec![];
                 for i in &k.0 {
                     if does_skip_in_all_cases(i) {
@@ -260,24 +284,22 @@ pub fn optimize(instruction: &Mir, state: &mut OptimizerState) -> Vec<Mir> {
                     }
                 }
             }
-            state.remove_vars(&get_muts_from_block(a));
+            //state.remove_vars(&get_muts_from_block(a));
             return vec![Mir::Block(k)];
         }
     };
     vec![instruction.clone()]
 }
 
-fn try_unroll_loop(state: &mut OptimizerState, lp: &[Mir]) -> (bool, Vec<Mir>) {
+fn try_unroll_loop(state: &mut OptimizerState, lp: &[Mir], opt: &OptConfig) -> (bool, Vec<Mir>) {
     let mut o = vec![];
     'r: for _ in 0..16 {
         for i in lp {
-            for i in optimize(i, state) {
+            for i in optimize(i, state, opt) {
                 if contains_continues(&i) || contains_skip(&i) {
                     break 'r;
                 }
-                if let Some(e) = remove_breaks(&i) {
-                    o.push(e);
-                }
+                o.push(remove_breaks(&i));
                 if does_break_in_all_cases(&i) {
                     return (true, vec![Mir::Block(MirCodeBlock(o))]);
                 }
@@ -312,18 +334,16 @@ fn always_terminate(mir: &Mir) -> bool {
     }
 }
 
-fn remove_breaks(mir: &Mir) -> Option<Mir> {
+fn remove_breaks(mir: &Mir) -> Mir {
     match mir {
-        Mir::If0(c, a, b) => Some(Mir::If0(
+        Mir::If0(c, a, b) => Mir::If0(
             *c,
-            MirCodeBlock(a.0.iter().flat_map(|x| remove_breaks(x)).collect()),
-            MirCodeBlock(b.0.iter().flat_map(|x| remove_breaks(x)).collect()),
-        )),
-        Mir::Break => Some(Mir::Skip),
-        Mir::Block(a) => Some(Mir::Block(MirCodeBlock(
-            a.0.iter().flat_map(|x| remove_breaks(x)).collect(),
-        ))),
-        e => Some(e.clone()),
+            MirCodeBlock(a.0.iter().map(remove_breaks).collect()),
+            MirCodeBlock(b.0.iter().map(remove_breaks).collect()),
+        ),
+        Mir::Break => Mir::Skip,
+        Mir::Block(a) => Mir::Block(MirCodeBlock(a.0.iter().map(remove_breaks).collect())),
+        e => e.clone(),
     }
 }
 

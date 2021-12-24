@@ -74,12 +74,11 @@ class DynArray<T, N> {
     }
     
     print(DynArray<Byte, N> self) {
-        Val index = 0;
+        Val index = self.len();
         loop {
-            if self.len().greater(index) {
-                self.getDyn(index).print();
-                index.inc();
-            } else {
+            index.dec();
+            self.getDyn(index).print();
+            if index.equalsZero() {
                 break;
             };
         };
