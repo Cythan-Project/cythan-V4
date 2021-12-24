@@ -1,12 +1,58 @@
+use std::{
+    ops::{Deref, DerefMut},
+    vec::IntoIter,
+};
+
+use crate::optimizer::state::OptimizerState;
+
 use crate::{
     mir::Mir,
-    optimizer::old::{self, get_reads_from_block, keep_block, OptConfig, OptimizerState},
+    optimizer::{
+        old::{keep_block, OptConfig},
+        optimize::Optimize,
+    },
     skip_status::SkipStatus,
     state::MirState,
 };
 
 #[derive(PartialEq, Clone, Hash, Debug)]
 pub struct MirCodeBlock(pub Vec<Mir>);
+
+impl From<Mir> for MirCodeBlock {
+    fn from(a: Mir) -> Self {
+        Self(vec![a])
+    }
+}
+
+impl From<Vec<Mir>> for MirCodeBlock {
+    fn from(a: Vec<Mir>) -> Self {
+        Self(a)
+    }
+}
+
+impl Deref for MirCodeBlock {
+    type Target = Vec<Mir>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for MirCodeBlock {
+    fn deref_mut(&mut self) -> &mut Vec<Mir> {
+        &mut self.0
+    }
+}
+
+impl IntoIterator for MirCodeBlock {
+    type Item = Mir;
+
+    type IntoIter = IntoIter<Mir>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
 
 impl MirCodeBlock {
     pub fn to_asm(&self, state: &mut MirState) -> SkipStatus {
@@ -26,56 +72,25 @@ impl Default for MirCodeBlock {
     }
 }
 
-impl From<Vec<Mir>> for MirCodeBlock {
-    fn from(v: Vec<Mir>) -> Self {
-        Self(v)
-    }
-}
-
 impl MirCodeBlock {
     #[allow(dead_code)]
-    pub fn optimize(&self) -> Self {
+    pub fn optimize_code(&self) -> Self {
         let before = self.instr_count();
         let mut after = self.clone();
         let mut bf = before;
         let mut cafter = 0;
 
-        let mut opti = OptConfig::default();
-        let mut i = 0;
+        let opti = OptConfig::default();
         while bf != cafter {
             bf = cafter;
-            let opt = old::optimize_block(&after, &mut OptimizerState::new(), &opti);
+            let opt = after.optimize(&mut OptimizerState::new(), &opti);
             after = if opti.remove_unused_vars {
-                keep_block(&opt, &mut get_reads_from_block(&opt))
-                // new_optimizer::remove_unused_vars(&opt)
+                keep_block(&opt, &mut opt.get_reads())
             } else {
                 opt
             };
-            /* println!("OPT STEP");
-            after = new_optimizer::opt(&after);
-            after = new_optimizer::remove_unused_vars(&after); */
             cafter = after.instr_count();
             println!("OPT Pass done {}", cafter);
-            if opti.inline_loops {
-                break;
-            }
-            if bf == cafter && !opti.inline_loops {
-                std::fs::write(
-                    "target/opt.mir",
-                    after
-                        .0
-                        .iter()
-                        .map(|x| x.to_string())
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                )
-                .unwrap();
-                opti.inline_loops = true;
-                cafter = 0;
-                continue;
-            }
-            //i += 1;
-            //break;
         }
         std::fs::write(
             "target/opt-loop.mir",

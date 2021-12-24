@@ -24,7 +24,7 @@ fn main() {
     match args.get(1).map(|x| x.as_str()) {
         Some("run") => {
             let fname = args.get(2).expect("No file name given");
-            let pg = compile(fname.to_owned()).optimize();
+            let pg = compile(fname.to_owned()).optimize_code();
             println!("Compiled successfully!");
             println!("Now running...");
             run(&pg, StdIoContext);
