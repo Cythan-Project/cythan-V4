@@ -1,8 +1,8 @@
+use errors::{report_similar, Error};
+
 use crate::{
     compiler::class_loader::ClassLoader,
-    errors::report_similar,
     parser::{class::ClassView, expression::SpannedObject, ty::Type},
-    Error,
 };
 
 pub struct CodeManager {

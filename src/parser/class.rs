@@ -1,20 +1,15 @@
-use std::{
-    collections::{HashMap, VecDeque},
-    ops::Range,
-};
+use std::collections::{HashMap, VecDeque};
 
-use ariadne::Report;
 use either::Either;
+use errors::{invalid_type_template, report_similar, Error};
 
 use crate::{
     compiler::class_loader::ClassLoader,
-    errors::{invalid_type_template, report_similar},
     parser::{
         expression::TokenProcessor,
         token_utils::{split_complex, SplitAction},
         ClosableType, Keyword, TokenExtracter,
     },
-    Error,
 };
 
 use super::{
@@ -301,7 +296,7 @@ impl TemplateFixer {
 }
 
 impl TokenParser<Class> for VecDeque<Token> {
-    fn parse(mut self) -> Result<Class, Report<(String, Range<usize>)>> {
+    fn parse(mut self) -> Result<Class, Error> {
         let annotations = self.extract()?;
         if !matches!(self.get_token(), Some(Token::Keyword(_, Keyword::Class))) {
             panic!("Expected keyword class");

@@ -1,6 +1,5 @@
+use errors::Span;
 use mir::MirCodeBlock;
-
-use crate::errors::Span;
 
 use super::typed_definition::TypedMemory;
 

@@ -1,12 +1,11 @@
 use std::{
     collections::{HashMap, VecDeque},
     fmt::Debug,
-    ops::Range,
     rc::Rc,
 };
 
-use ariadne::{Color, Fmt, Label, Report, ReportKind};
 use either::Either;
+use errors::{invalid_argument_type, invalid_type_template, Error, Span};
 use mir::{need_block, remove_skips, Mir, MirCodeBlock};
 
 use crate::{
@@ -17,14 +16,12 @@ use crate::{
             typed_definition::TypedMemory,
         },
     },
-    errors::{invalid_type_template, Span},
     parser::{
         expression::TokenProcessor,
         token_utils::{split_complex, SplitAction},
         ty::Type,
         ClosableType, Token, TokenExtracter, TokenParser,
     },
-    Error,
 };
 
 use super::{
@@ -70,15 +67,8 @@ pub struct MethodView {
     pub code: Either<CodeBlock, NativeMethod>,
 }
 
-pub type NativeMethod = Rc<
-    Box<
-        dyn Fn(
-            &mut LocalState,
-            &mut CodeManager,
-            &MethodView,
-        ) -> Result<OutputData, Report<(String, Range<usize>)>>,
-    >,
->;
+pub type NativeMethod =
+    Rc<Box<dyn Fn(&mut LocalState, &mut CodeManager, &MethodView) -> Result<OutputData, Error>>>;
 
 impl MethodView {
     pub fn new(
@@ -140,7 +130,7 @@ impl MethodView {
         ls: &mut LocalState,
         cm: &mut CodeManager,
         arguments: Vec<TypedMemory>,
-    ) -> Result<OutputData, Report<(String, Range<usize>)>> {
+    ) -> Result<OutputData, Error> {
         let return_loc = match self.return_type.as_ref() {
             Some(x) => Some(TypedMemory::new(
                 x.clone(),
@@ -152,20 +142,11 @@ impl MethodView {
         let mut ls = ls.shadow_method(return_loc.clone());
         for (x, y) in self.arguments.iter().zip(arguments.iter()) {
             if x.0 != y.ty {
-                let span = &y.span;
-                let er = Report::build(ReportKind::Error, span.file.to_owned(), span.start)
-                    .with_code(16)
-                    .with_message("Invalid argument type")
-                    .with_label(
-                        Label::new(span.as_span())
-                            .with_message(format!(
-                                "Expected {} found {}",
-                                format!("{:?}", x.0).fg(Color::Green),
-                                format!("{:?}", y.ty).fg(Color::Green),
-                            ))
-                            .with_color(Color::Green),
-                    );
-                return Err(er.finish());
+                return Err(invalid_argument_type(
+                    &y.span,
+                    &format!("{:?}", x.0),
+                    &format!("{:?}", y.ty),
+                ));
             }
             ls.vars.insert(x.1.clone(), y.clone());
         }
@@ -197,7 +178,7 @@ impl MethodView {
 }
 
 impl TokenParser<Method> for VecDeque<Token> {
-    fn parse(mut self) -> Result<Method, Report<(String, Range<usize>)>> {
+    fn parse(mut self) -> Result<Method, Error> {
         let annotations = self.extract()?;
         let tp = if matches!(self.front(), Some(Token::TypeName(_, _))) {
             Some(self.extract()?)

@@ -1,17 +1,13 @@
-use std::{collections::VecDeque, fmt::Debug, ops::Range};
+use std::{collections::VecDeque, fmt::Debug};
 
-use ariadne::Report;
+use errors::{expected_number_as_type, invalid_type_template, Error, Span};
 
 use super::{
     expression::{SpannedObject, SpannedVector, TokenProcessor},
     token_utils::split_complex,
     ClosableType, Token, TokenExtracter, TokenParser,
 };
-use crate::{
-    errors::{expected_number_as_type, invalid_type_template, Span},
-    parser::token_utils::SplitAction,
-    Error,
-};
+use crate::parser::token_utils::SplitAction;
 
 #[derive(Clone, Eq)]
 pub struct Type {
@@ -94,7 +90,7 @@ impl Type {
 pub struct TemplateDefinition(pub SpannedVector<String>);
 
 impl TokenParser<TemplateDefinition> for VecDeque<Token> {
-    fn parse(self) -> Result<TemplateDefinition, Report<(String, Range<usize>)>> {
+    fn parse(self) -> Result<TemplateDefinition, Error> {
         Ok(TemplateDefinition(SpannedVector(
             self.iter()
                 .fold(None, |a: Option<Span>, b| {
@@ -122,7 +118,7 @@ impl TokenParser<TemplateDefinition> for VecDeque<Token> {
     }
 }
 impl TokenParser<Vec<Type>> for VecDeque<Token> {
-    fn parse(self) -> Result<Vec<Type>, Report<(String, Range<usize>)>> {
+    fn parse(self) -> Result<Vec<Type>, Error> {
         split_complex(self, |a| {
             if matches!(a, Token::Comma(_)) {
                 SplitAction::SplitConsume
@@ -136,7 +132,7 @@ impl TokenParser<Vec<Type>> for VecDeque<Token> {
     }
 }
 impl TokenExtracter<Type> for VecDeque<Token> {
-    fn extract(&mut self) -> Result<Type, Report<(String, Range<usize>)>> {
+    fn extract(&mut self) -> Result<Type, Error> {
         match self.get_token() {
             Some(Token::TypeName(name_span, name)) => {
                 let template = match self.get_token() {

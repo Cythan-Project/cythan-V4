@@ -1,8 +1,6 @@
-use std::{collections::VecDeque, ops::Range};
+use std::collections::VecDeque;
 
-use ariadne::{Color, ColorGenerator, Fmt, Label, Report, ReportKind};
-
-use crate::errors::Span;
+use errors::{invalid_token, Error, Span};
 
 use self::expression::BooleanOperator;
 
@@ -15,11 +13,11 @@ pub mod token_utils;
 pub mod ty;
 
 pub trait TokenExtracter<T> {
-    fn extract(&mut self) -> Result<T, Report<(String, Range<usize>)>>;
+    fn extract(&mut self) -> Result<T, Error>;
 }
 
 pub trait TokenParser<T> {
-    fn parse(self) -> Result<T, Report<(String, Range<usize>)>>;
+    fn parse(self) -> Result<T, Error>;
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Clone)]
@@ -83,7 +81,7 @@ pub fn parse(
     char: &mut VecDeque<char>,
     initial_size: usize,
     file: &str,
-) -> Result<Option<ClosableType>, Report<(String, std::ops::Range<usize>)>> {
+) -> Result<Option<ClosableType>, Error> {
     let mut current_token = None;
     while let Some(c) = char.pop_front() {
         let current = initial_size - char.len() - 1;
@@ -368,25 +366,12 @@ pub fn parse(
                 ));
             }
             Some(e) => {
-                let mut colors = ColorGenerator::new();
-                let a = colors.next();
-                let out = Color::Fixed(81);
-                let span = e.span();
-                return Err(Report::build(ReportKind::Error, span.file.to_owned(), 0)
-                    .with_code(1)
-                    .with_message("Invalid token")
-                    .with_label(
-                        Label::new(span.as_span())
-                            .with_message(format!("This is a {} token", e.name().fg(a)))
-                            .with_color(a),
-                    )
-                    .with_note(format!(
-                        "Expected {}, {} or {}",
-                        "Literal".fg(out),
-                        "TypeName".fg(out),
-                        "Number".fg(out)
-                    ))
-                    .finish());
+                return Err(invalid_token(
+                    &e.name(),
+                    &["Literal", "TypeName", "Number"],
+                    e.span(),
+                    1,
+                ));
             }
         }
     }

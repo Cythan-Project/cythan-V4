@@ -1,8 +1,6 @@
-use std::ops::Range;
+use errors::{invalid_type, Error, Span};
 
-use ariadne::{ColorGenerator, Fmt, Label, Report, ReportKind};
-
-use crate::{errors::Span, parser::ty::Type};
+use crate::parser::ty::Type;
 
 use super::output_data::OutputData;
 
@@ -26,76 +24,38 @@ impl TypedMemory {
     }
 }
 impl CheckAgainst for TypedMemory {
-    fn check_against(&self, other: &Type) -> Result<&[u32], Report<(String, Range<usize>)>> {
+    fn check_against(&self, other: &Type) -> Result<&[u32], Error> {
         if self.ty != *other {
-            let mut colors = ColorGenerator::new();
-            let a = colors.next();
-            let b = colors.next();
-            let span = &self.span;
-            let er = Report::build(ReportKind::Error, span.file.to_owned(), span.start)
-                .with_code(9)
-                .with_message("Invalid type")
-                .with_label(
-                    Label::new(span.as_span())
-                        .with_message(format!(
-                            "Found {} expected {}",
-                            format!("{:?}", self.ty).fg(b),
-                            format!("{:?}", other).fg(a)
-                        ))
-                        .with_color(b),
-                );
-            let er = if other.span.file == "<internal>" || other.span.file == "<native>" {
-                er
-            } else {
-                er.with_label(
-                    Label::new(other.span.as_span())
-                        .with_message(format!(
-                            "Because of {} requirement here",
-                            format!("{:?}", other).fg(b)
-                        ))
-                        .with_color(b),
-                )
-            };
-            return Err(er.finish());
+            return Err(invalid_type(
+                &self.span,
+                &other.span,
+                &format!("{:?}", self.ty),
+                &format!("{:?}", other),
+            ));
         }
         Ok(&self.locations)
     }
 }
 
 pub trait CheckAgainst {
-    fn check_against(&self, other: &Type) -> Result<&[u32], Report<(String, Range<usize>)>>;
+    fn check_against(&self, other: &Type) -> Result<&[u32], Error>;
 }
 
 impl CheckAgainst for OutputData {
-    fn check_against(&self, other: &Type) -> Result<&[u32], Report<(String, Range<usize>)>> {
+    fn check_against(&self, other: &Type) -> Result<&[u32], Error> {
         if let Some(e) = &self.return_value {
             e.check_against(other)
         } else {
-            let mut colors = ColorGenerator::new();
-            //let a = colors.next();
-            let b = colors.next();
-            let span = &self.span;
-            let er = Report::build(ReportKind::Error, span.file.to_owned(), span.start)
-                .with_code(8)
-                .with_message("Invalid type")
-                .with_label(
-                    Label::new(span.as_span())
-                        .with_message("This expression doesn't output any value")
-                        .with_color(b),
-                );
-            let er = if other.span.file == "<internal>" || other.span.file == "<native>" {
-                er
-            } else {
-                er.with_label(
-                    Label::new(other.span.as_span())
-                        .with_message(format!(
-                            "Because of {} requirement here",
-                            format!("{:?}", other).fg(b)
-                        ))
-                        .with_color(b),
-                )
-            };
-            Err(er.finish())
+            Err(invalid_type(
+                &self.span,
+                &other.span,
+                &self
+                    .return_value
+                    .as_ref()
+                    .map(|x| format!("{:?}", x.ty))
+                    .unwrap_or_else(|| "Void".to_owned()),
+                &format!("{:?}", other),
+            ))
         }
     }
 }

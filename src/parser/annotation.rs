@@ -1,6 +1,6 @@
-use std::{collections::VecDeque, ops::Range};
+use std::collections::VecDeque;
 
-use ariadne::Report;
+use errors::Error;
 
 use super::{expression::TokenProcessor, ClosableType, Token, TokenExtracter};
 
@@ -11,7 +11,7 @@ pub struct Annotation {
 }
 
 impl TokenExtracter<Vec<Annotation>> for VecDeque<Token> {
-    fn extract(&mut self) -> Result<Vec<Annotation>, Report<(String, Range<usize>)>> {
+    fn extract(&mut self) -> Result<Vec<Annotation>, Error> {
         let mut annotations = Vec::new();
         loop {
             match self.get_token() {

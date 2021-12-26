@@ -1,11 +1,8 @@
-use std::ops::Range;
-
-use ariadne::{Color, ColorGenerator, Fmt, Label, Report, ReportKind};
+use errors::{method_return_type_invalid, report_similar, Error, Span};
 use mir::{Mir, MirCodeBlock};
 
 use crate::{
     compiler::state::typed_definition::{CheckAgainst, TypedMemory},
-    errors::{report_similar, Span},
     parser::{
         expression::{BooleanOperator, Expr, SpannedObject, SpannedVector},
         ty::Type,
@@ -20,7 +17,7 @@ pub fn compile_code_block(
     ls: &mut LocalState,
     cm: &mut CodeManager,
     span: Span,
-) -> Result<OutputData, Report<(String, Range<usize>)>> {
+) -> Result<OutputData, Error> {
     expr.1.iter().fold(
         Ok(OutputData::new(MirCodeBlock::default(), span, None)),
         |acc, expr| {
@@ -37,7 +34,7 @@ pub fn compile(
     expr: &Expr,
     ls: &mut LocalState,
     cm: &mut CodeManager,
-) -> Result<OutputData, Report<(String, Range<usize>)>> {
+) -> Result<OutputData, Error> {
     let mut mir = MirCodeBlock::default();
     match expr {
         Expr::New {
@@ -298,31 +295,12 @@ pub fn compile(
                     .expect("A return value wasn't expected");
                 let rt = ret.return_value.expect("Return value must be a value");
                 if rl.ty != rt.ty {
-                    let mut colors = ColorGenerator::new();
-                    let a = colors.next();
-                    let b = colors.next();
-                    let _out = Color::Fixed(81);
-                    let span = e.span();
-                    return Err(
-                        Report::build(ReportKind::Error, span.file.to_owned(), span.start)
-                            .with_code(5)
-                            .with_message("Return type doesn't match method return type")
-                            .with_label(
-                                Label::new(rl.ty.span.as_span())
-                                    .with_message("Type defined here")
-                                    .with_color(b),
-                            )
-                            .with_label(
-                                Label::new(e.span().as_span())
-                                    .with_message(format!(
-                                        "This expression has type {} expected {}.",
-                                        format!("{:?}", rl.ty).fg(a),
-                                        format!("{:?}", rl.ty).fg(a)
-                                    ))
-                                    .with_color(a),
-                            )
-                            .finish(),
-                    );
+                    return Err(method_return_type_invalid(
+                        e.span(),
+                        &rl.ty.span,
+                        &format!("{:?}", rl.ty),
+                        &format!("{:?}", rt.ty),
+                    ));
                 }
                 mir.add(ret.mir);
                 mir.copy_bulk(&rl.locations, &rt.locations);

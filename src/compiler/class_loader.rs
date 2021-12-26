@@ -1,19 +1,15 @@
-use std::{collections::VecDeque, ops::Range, rc::Rc};
+use std::{collections::VecDeque, rc::Rc};
 
-use ariadne::Report;
 use either::Either;
+use errors::{report_similar, Error};
 
-use crate::{
-    errors::report_similar,
-    parser::{
-        class::{Class, ClassView},
-        expression::SpannedObject,
-        method::{Method, MethodView},
-        parse,
-        ty::Type,
-        TokenParser,
-    },
-    Error,
+use crate::parser::{
+    class::{Class, ClassView},
+    expression::SpannedObject,
+    method::{Method, MethodView},
+    parse,
+    ty::Type,
+    TokenParser,
 };
 
 use super::state::{code_manager::CodeManager, local_state::LocalState, output_data::OutputData};
@@ -34,22 +30,14 @@ impl ClassLoader {
         &mut self,
         class_name: &str,
         name: &str,
-        native: impl Fn(
-                &mut LocalState,
-                &mut CodeManager,
-                &MethodView,
-            ) -> Result<OutputData, Report<(String, Range<usize>)>>
+        native: impl Fn(&mut LocalState, &mut CodeManager, &MethodView) -> Result<OutputData, Error>
             + 'static,
     ) {
         self.get_class_mut(class_name).get_method_mut(name).code =
             Either::Right(Rc::new(Box::new(native)));
     }
 
-    pub fn load_string(
-        &mut self,
-        class: &str,
-        filename: &str,
-    ) -> Result<(), Report<(String, Range<usize>)>> {
+    pub fn load_string(&mut self, class: &str, filename: &str) -> Result<(), Error> {
         let mut vdc = VecDeque::new();
         let mut k: VecDeque<char> = class.chars().filter(|x| *x != '\r').collect();
         let kl = k.len();

@@ -1,13 +1,9 @@
-use std::{collections::HashMap, ops::Range};
+use std::collections::HashMap;
 
-use ariadne::Report;
+use errors::{report_similar, Error, Span};
 use mir::MirCodeBlock;
 
-use crate::{
-    errors::{report_similar, Span},
-    parser::{expression::SpannedObject, ty::Type},
-    Error,
-};
+use crate::parser::{expression::SpannedObject, ty::Type};
 
 use super::{code_manager::CodeManager, typed_definition::TypedMemory};
 
@@ -38,17 +34,11 @@ impl LocalState {
         }
     }
 
-    pub fn get_var_native(
-        &self,
-        name: &str,
-    ) -> Result<&TypedMemory, Report<(String, Range<usize>)>> {
+    pub fn get_var_native(&self, name: &str) -> Result<&TypedMemory, Error> {
         self.get_var(&SpannedObject(Span::default(), name.to_owned()))
     }
 
-    pub fn get_var(
-        &self,
-        name: &SpannedObject<String>,
-    ) -> Result<&TypedMemory, Report<(String, Range<usize>)>> {
+    pub fn get_var(&self, name: &SpannedObject<String>) -> Result<&TypedMemory, Error> {
         if let Some(e) = self.vars.get(&name.1) {
             Ok(e)
         } else {

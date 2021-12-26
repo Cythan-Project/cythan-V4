@@ -1,13 +1,10 @@
-use std::{collections::VecDeque, ops::Range};
+use std::collections::VecDeque;
 
-use ariadne::{Color, ColorGenerator, Fmt, Label, Report, ReportKind};
+use errors::{invalid_token_after, Error, Span};
 
-use crate::{
-    errors::Span,
-    parser::{
-        token_utils::{split_complex, take_until, SplitAction},
-        ClosableType, Keyword, Token, TokenExtracter,
-    },
+use crate::parser::{
+    token_utils::{split_complex, take_until, SplitAction},
+    ClosableType, Keyword, Token, TokenExtracter,
 };
 
 pub trait TokenProcessor {
@@ -99,10 +96,7 @@ pub enum BooleanOperator {
     Or,
 }
 
-fn chain_expression(
-    tokens: &mut VecDeque<Token>,
-    exp: Expr,
-) -> Result<Expr, Report<(String, Range<usize>)>> {
+fn chain_expression(tokens: &mut VecDeque<Token>, exp: Expr) -> Result<Expr, Error> {
     let k = match tokens.get_token() {
         None | Some(Token::SemiColon(_)) => return Ok(exp),
         Some(Token::Equals(span)) => Expr::Assignement {
@@ -194,51 +188,20 @@ fn chain_expression(
             }
         }
         Some(e) => {
-            let mut colors = ColorGenerator::new();
-            let a = colors.next();
-            let b = colors.next();
-            let out = Color::Fixed(81);
-            let span = e.span();
-            return Err(
-                Report::build(ReportKind::Error, span.file.to_owned(), span.start)
-                    .with_code(2)
-                    .with_message("Invalid token after expression")
-                    .with_label(
-                        Label::new(exp.span().as_span())
-                            .with_message(format!(
-                                "Did you forget a {} at the end of this expression.",
-                                ";".fg(b),
-                            ))
-                            .with_color(b),
-                    )
-                    .with_label(
-                        Label::new(span.as_span())
-                            .with_message(format!(
-                                "This {} token was expected after expression",
-                                e.name().fg(a)
-                            ))
-                            .with_color(a),
-                    )
-                    .with_note(format!(
-                        "Expected {}, {}, {}, {}, {} or {}",
-                        ";".fg(out),
-                        "||".fg(out),
-                        "&&".fg(out),
-                        "=".fg(out),
-                        ".".fg(out),
-                        "as".fg(out)
-                    ))
-                    .finish(),
-            );
+            return Err(invalid_token_after(
+                e.span(),
+                exp.span(),
+                "expression",
+                &e.name(),
+                &[";", "||", "&&", "=", ".", "as"],
+                true,
+            ));
         }
     };
     chain_expression(tokens, k)
 }
 
-fn parse_if(
-    tokens: &mut VecDeque<Token>,
-    if_token_span: Span,
-) -> Result<Expr, Report<(String, Range<usize>)>> {
+fn parse_if(tokens: &mut VecDeque<Token>, if_token_span: Span) -> Result<Expr, Error> {
     let k = box take_until(tokens, |e| {
         matches!(e, Token::Block(_, ClosableType::Brace, _))
     })
@@ -246,44 +209,24 @@ fn parse_if(
     let if_b = match tokens.get_token() {
         Some(Token::Block(span, ClosableType::Brace, e)) => SpannedVector(span, e.parse()?),
         Some(e) => {
-            let mut colors = ColorGenerator::new();
-            let a = colors.next();
-            let out = Color::Fixed(81);
-            return Err(
-                Report::build(ReportKind::Error, e.span().file.to_owned(), 0)
-                    .with_code(4)
-                    .with_message("Invalid token after if")
-                    .with_label(
-                        Label::new(e.span().as_span())
-                            .with_message(format!("This is a {} token", e.name().fg(a)))
-                            .with_color(a),
-                    )
-                    .with_note(format!(
-                        "Expected {}, {} or {}",
-                        "Literal".fg(out),
-                        "TypeName".fg(out),
-                        "Number".fg(out)
-                    ))
-                    .finish(),
-            );
+            return Err(invalid_token_after(
+                e.span(),
+                e.span(),
+                "if",
+                &e.name(),
+                &["Literal", "TypeName", "Number"],
+                false,
+            ));
         }
         None => {
-            let mut colors = ColorGenerator::new();
-            let a = colors.next();
-            let out = Color::Fixed(81);
-            return Err(
-                Report::build(ReportKind::Error, if_token_span.file.to_owned(), 0)
-                    .with_code(5)
-                    .with_message("Expected token after if")
-                    .with_label(Label::new(if_token_span.as_span()).with_color(a))
-                    .with_note(format!(
-                        "Expected {}, {} or {}",
-                        "Literal".fg(out),
-                        "TypeName".fg(out),
-                        "Number".fg(out)
-                    ))
-                    .finish(),
-            );
+            return Err(invalid_token_after(
+                &if_token_span,
+                &if_token_span,
+                "if",
+                "",
+                &["Literal", "TypeName", "Number"],
+                false,
+            ));
         }
     };
     let else_b = if matches!(tokens.front(), Some(Token::Keyword(_, Keyword::Else))) {
@@ -310,7 +253,7 @@ fn parse_if(
 }
 
 impl TokenParser<Expr> for VecDeque<Token> {
-    fn parse(mut self) -> Result<Expr, Report<(String, Range<usize>)>> {
+    fn parse(mut self) -> Result<Expr, Error> {
         let tk = if let Some(e) = self.get_token() {
             e
         } else {
@@ -466,7 +409,7 @@ impl TokenParser<Expr> for VecDeque<Token> {
 pub type CodeBlock = SpannedVector<Expr>;
 
 impl TokenParser<Vec<Expr>> for VecDeque<Token> {
-    fn parse(self) -> Result<Vec<Expr>, Report<(String, Range<usize>)>> {
+    fn parse(self) -> Result<Vec<Expr>, Error> {
         split_complex(self, |a| {
             if matches!(a, Token::SemiColon(_)) {
                 SplitAction::SplitConsume

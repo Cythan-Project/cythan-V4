@@ -1,3 +1,4 @@
+use errors::index_out_of_bounds;
 use mir::{Mir, MirCodeBlock};
 
 use crate::{
@@ -5,7 +6,6 @@ use crate::{
         class_loader::ClassLoader,
         state::{output_data::OutputData, typed_definition::TypedMemory},
     },
-    errors::index_out_of_bounds,
     parser::ty::Type,
 };
 

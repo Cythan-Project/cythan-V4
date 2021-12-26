@@ -1,6 +1,6 @@
-use std::{ops::Range, process::exit};
+use std::process::exit;
 
-use ariadne::Report;
+use errors::{report, Error, Span};
 use mir::{Mir, MirCodeBlock};
 
 use crate::{
@@ -9,7 +9,6 @@ use crate::{
         class_loader::ClassLoader,
         state::{code_manager::CodeManager, local_state::LocalState},
     },
-    errors::{reporting::report, Span},
     parser::{expression::SpannedObject, ty::Type},
     STACK_SIZE,
 };
@@ -23,7 +22,7 @@ pub fn compile(class_name: String) -> MirCodeBlock {
 }
 
 fn generate_mir(class_name: &str) -> MirCodeBlock {
-    let r: Result<(), Report<(String, Range<usize>)>> = try {
+    let r: Result<(), Error> = try {
         let mut cl = ClassLoader::new();
         for file in std::fs::read_dir("std").unwrap() {
             cl.load_string(
