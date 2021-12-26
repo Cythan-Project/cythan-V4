@@ -63,6 +63,21 @@ impl Type {
             template,
         }
     }
+    pub fn apply_expected(&self, expected: &Option<Type>) -> Self {
+        if let Some(e) = expected {
+            if matches!(self.template, None) {
+                Type {
+                    span: self.span.clone(),
+                    name: self.name.clone(),
+                    template: e.template.clone(),
+                }
+            } else {
+                self.clone()
+            }
+        } else {
+            self.clone()
+        }
+    }
     #[allow(dead_code)]
     pub fn native(name: &str, template: Option<SpannedVector<Type>>) -> Self {
         Self::new(name, template, Span::default())

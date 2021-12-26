@@ -4,14 +4,14 @@ class DynArray<T, N> {
     Val length;
 
     DynArray<T, N> new() {
-        return DynArray<T, N> {
-            array = Array<T, N> tmp,
+        return DynArray {
+            array = Array tmp,
             length = 0
         };
     }
     
     DynArray<T, N> from<Number>(Array<T, Number> input) {
-        DynArray<T, N> dyn = DynArray<T, N>.new();
+        DynArray<T, N> dyn = DynArray.new();
         dyn.addAll<Number>(input);
         return dyn;
     }

@@ -24,7 +24,7 @@ pub fn compile_code_block(
         Ok(OutputData::new(MirCodeBlock::default(), span, None)),
         |acc, expr| {
             let mut acc = acc?;
-            let expr = compile(expr, ls, cm)?;
+            let expr = compile(expr, ls, cm, None)?;
             acc.mir.add(expr.mir);
             acc.return_value = expr.return_value;
             Ok(acc)
@@ -36,6 +36,7 @@ pub fn compile(
     expr: &Expr,
     ls: &mut LocalState,
     cm: &mut CodeManager,
+    expected_type: Option<Type>,
 ) -> Result<OutputData, Error> {
     let mut mir = MirCodeBlock::default();
     match expr {
@@ -44,12 +45,19 @@ pub fn compile(
             class,
             fields,
         } => {
+            // TODO: Set expected type to correct value.
+            let class = class.apply_expected(&expected_type);
+            let view = cm.cl.view(&class)?;
             let fields = fields
                 .1
                 .iter()
-                .map(|(a, b)| Ok((a, compile(b, ls, cm)?)))
+                .map(|(a, b)| {
+                    Ok((
+                        a,
+                        compile(b, ls, cm, Some(view.get_field_type(a, b.span())?))?,
+                    ))
+                })
                 .collect::<Result<Vec<_>, _>>()?;
-            let view = cm.cl.view(class)?;
             // get_field
 
             let instr = view
@@ -93,7 +101,7 @@ pub fn compile(
                         .collect::<Vec<_>>(),
                 ),
                 span.clone(),
-                Some(TypedMemory::new(class.clone(), instr, span.clone())),
+                Some(TypedMemory::new(class, instr, span.clone())),
             ))
         }
         Expr::If {
@@ -102,7 +110,7 @@ pub fn compile(
             then,
             or_else,
         } => {
-            let er = compile(condition, ls, cm)?;
+            let er = compile(condition, ls, cm, None)?;
             let loc = er.check_against(&Type::native_simple("Bool"))?[0];
             mir.add(er.mir);
 
@@ -188,7 +196,7 @@ pub fn compile(
             panic!("Expected something else than Type in expression")
         }
         Expr::Field { span, source, name } => {
-            let out = compile(&*source, ls, cm)?;
+            let out = compile(&*source, ls, cm, None)?;
             let rtv = out
                 .return_value
                 .as_ref()
@@ -212,18 +220,19 @@ pub fn compile(
             template,
         } => {
             if let Expr::Type(_tspan, a) = &**source {
+                let a = a.apply_expected(&expected_type);
                 let arguments = arguments
                     .1
                     .iter()
                     .map(|x| {
-                        let k = compile(x, ls, cm)?;
+                        let k = compile(x, ls, cm, None)?;
                         mir.add(k.mir);
                         Ok(k.return_value.expect("Argument must be a value"))
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 let k = cm
                     .cl
-                    .view(a)?
+                    .view(&a)?
                     .method_view(name, template)?
                     .execute(ls, cm, arguments)?;
                 mir.add(k.mir);
@@ -236,7 +245,7 @@ pub fn compile(
                     }),
                 ))
             } else {
-                let aj = compile(source, ls, cm)?;
+                let aj = compile(source, ls, cm, None)?;
                 mir.add(aj.mir);
                 let ah = aj.return_value.expect("Method source must be a value");
                 let a = &ah.ty;
@@ -244,7 +253,7 @@ pub fn compile(
                     .1
                     .iter()
                     .map(|x| {
-                        let k = compile(x, ls, cm)?;
+                        let k = compile(x, ls, cm, None)?;
                         mir.add(k.mir);
                         Ok(k.return_value.expect("Argument must be a value"))
                     })
@@ -267,15 +276,16 @@ pub fn compile(
             }
         }
         Expr::NamedResource { span, vtype, name } => {
-            let k = ls.new_var(cm, &name.1, vtype.clone(), &mut mir, span.clone())?;
+            let vtype = vtype.apply_expected(&expected_type);
+            let k = ls.new_var(cm, &name.1, vtype, &mut mir, span.clone())?;
             Ok(OutputData::new(mir, span.clone(), Some(k)))
         }
         Expr::Assignement { span, target, to } => {
-            let ret = compile(target, ls, cm)?;
-            let ret1 = compile(to, ls, cm)?;
+            let ret = compile(target, ls, cm, None)?;
             let rt = ret
                 .return_value
                 .expect("Assignement target must be a value");
+            let ret1 = compile(to, ls, cm, Some(rt.ty.clone()))?;
             let rt1 = ret1
                 .return_value
                 .expect("Assignement value must be a value");
@@ -290,11 +300,12 @@ pub fn compile(
         Expr::Block(span, a) => compile_code_block(a, &mut ls.shadow(), cm, span.clone()),
         Expr::Return(span, a) => {
             if let Some(e) = a {
-                let ret = compile(e, ls, cm)?;
                 let rl = ls
                     .return_loc
                     .as_ref()
-                    .expect("A return value wasn't expected");
+                    .expect("A return value wasn't expected")
+                    .clone();
+                let ret = compile(e, ls, cm, Some(rl.ty.clone()))?;
                 let rt = ret.return_value.expect("Return value must be a value");
                 if rl.ty != rt.ty {
                     return Err(method_return_type_invalid(
@@ -320,18 +331,19 @@ pub fn compile(
             source,
             target,
         } => {
-            let ret = compile(source, ls, cm)?;
+            let target = target.apply_expected(&expected_type);
+            let ret = compile(source, ls, cm, Some(target.clone()))?;
             mir.add(ret.mir);
             let rt = ret.return_value.expect("Cast source must be a value");
             let source_view = cm.cl.view(&rt.ty)?;
-            let target_view = cm.cl.view(target)?;
+            let target_view = cm.cl.view(&target)?;
             if source_view.size(&cm.cl)? != target_view.size(&cm.cl)? {
                 panic!("Type size cast must match, {:?} and {:?}", source, target);
             }
             Ok(OutputData::new(
                 mir,
                 span.clone(),
-                Some(TypedMemory::new(target.clone(), rt.locations, span.clone())),
+                Some(TypedMemory::new(target, rt.locations, span.clone())),
             ))
         }
         Expr::Loop(span, a) => {
@@ -351,7 +363,7 @@ pub fn compile(
         )),
         Expr::BooleanExpression(span, a, bo, c) => {
             let alp = cm.alloc();
-            let a = compile(a, ls, cm)?;
+            let a = compile(a, ls, cm, None)?;
             let loca = if let Some(a) = a.return_value {
                 if a.ty.name.1 != "Bool" {
                     panic!("Boolean expression must be a bool");
@@ -360,7 +372,7 @@ pub fn compile(
             } else {
                 panic!("Boolean expression must return a value");
             };
-            let b = compile(c, ls, cm)?;
+            let b = compile(c, ls, cm, None)?;
             let locb = if let Some(b) = b.return_value {
                 if b.ty.name.1 != "Bool" {
                     panic!("Boolean expression must be a bool");
@@ -399,7 +411,7 @@ pub fn compile(
         Expr::ArrayDefinition(a, b) => {
             let out1 =
                 b.1.iter()
-                    .map(|x| compile(x, ls, cm))
+                    .map(|x| compile(x, ls, cm, None))
                     .collect::<Result<Vec<_>, _>>()?;
             let fe = out1.first().expect("Array must have at least one element");
             let rv = fe

@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 
 use either::Either;
-use errors::{invalid_type_template, report_similar, Error, SpannedObject, SpannedVector};
+use errors::{invalid_type_template, report_similar, Error, Span, SpannedObject, SpannedVector};
 
 use crate::{
     compiler::class_loader::ClassLoader,
@@ -95,6 +95,29 @@ impl ClassView {
             superclass: class.superclass.clone().map(|x| tmp_map.ty(x)),
             name: class.name.clone(),
         })
+    }
+
+    pub fn get_field_type(&self, field_name: &str, access_span: &Span) -> Result<Type, Error> {
+        Ok(self
+            .fields
+            .iter()
+            .find(|x| *x.name == field_name)
+            .ok_or_else(|| {
+                report_similar(
+                    "field",
+                    "fields",
+                    access_span,
+                    field_name,
+                    &self
+                        .fields
+                        .iter()
+                        .map(|x| x.name.1.clone())
+                        .collect::<Vec<_>>(),
+                    14,
+                )
+            })?
+            .ty
+            .clone())
     }
 
     pub fn method_view(

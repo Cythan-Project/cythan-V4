@@ -12,5 +12,8 @@ mir = { path = "mir" }
 errors = { path = "errors" }
 cythan = { path = "Cythan-V2" }
 
+[profile.release]
+debug = true
+
 [workspace]
 members = ["lir", "Cythan-V2", "mir","errors"]
