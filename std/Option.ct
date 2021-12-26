@@ -1,0 +1,19 @@
+class Option<T> {
+    Bool is_none;
+    T t;
+
+    Self none<T>() {
+        T t;
+        return Self {
+            is_none = Bool.true(),
+            t = t
+        };
+    }
+
+    Self some<T>(T t) {
+        return Self {
+            is_none = Bool.false(),
+            t = t
+        };
+    }
+}

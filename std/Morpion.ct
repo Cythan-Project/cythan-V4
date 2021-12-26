@@ -2,24 +2,24 @@ class Morpion {
 
     Array<Val, 9> grid;
 
-    Morpion new() {
-        return Morpion {
+    Self new() {
+        return Self {
             grid = Array tmp
         };
     }
 
-    set(Morpion self, Val pos, Val val) {
+    set(self, Val pos, Val val) {
         self.grid.setDyn(pos, val);
     }
 
-    Val getDyn(Morpion self, Val pos) {
+    Val getDyn(self, Val pos) {
         return self.grid.getDyn(pos);
     }
-    Val get<TE>(Morpion self) {
+    Val get<TE>(self) {
         return self.grid.get<TE>();
     }
 
-    display(Morpion self) {
+    display(self) {
         Val count = 0;
         loop {
             if count.equals(9) {
@@ -41,7 +41,7 @@ class Morpion {
         }
     }
 
-    play(Morpion self) {
+    play(self) {
         Val currentPlayer = 1;
         Val count = 9;
         self.display();
@@ -79,7 +79,7 @@ class Morpion {
         };
     }
 
-    Bool winner(Morpion self, Val tocheck) {
+    Bool winner(self, Val tocheck) {
         if self.get<0>().equals(tocheck) {
             if self.get<1>().equals(tocheck) && self.get<2>().equals(tocheck) {
                 return Bool.true();
@@ -107,7 +107,7 @@ class Morpion {
     }
     
     Val main() {
-        Morpion morpion = Morpion.new();
+        Self morpion = Self.new();
         morpion.play();
         return 0;
     }

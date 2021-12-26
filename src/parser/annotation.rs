@@ -13,7 +13,7 @@ pub struct Annotation {
 }
 
 impl TokenExtracter<Vec<Annotation>> for VecDeque<Token> {
-    fn extract(&mut self, types: &Type) -> Result<Vec<Annotation>, Error> {
+    fn extract(&mut self, _types: &Type) -> Result<Vec<Annotation>, Error> {
         let mut annotations = Vec::new();
         loop {
             match self.get_token() {

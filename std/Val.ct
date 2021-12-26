@@ -1,17 +1,17 @@
 class Val {
     
-    Bool equalsZero(Val self) {
+    Bool equalsZero(self) {
         return self as Bool;
     }
 
-    Val input() {
+    Self input() {
         System.setRegister<0>(2);
         return System.getRegister<2>();
     }
 
-    Bool equals(Val self, Val other) {
-        Val copy = self;
-        Val copy1 = other;
+    Bool equals(self, Self other) {
+        Self copy = self;
+        Self copy1 = other;
         loop {
             if copy.equalsZero() {
                 return copy1.equalsZero();
@@ -21,9 +21,9 @@ class Val {
         };
     }
 
-    Bool greater(Val self, Val other) {
-        Val copy = self;
-        Val copy1 = other;
+    Bool greater(self, Self other) {
+        Self copy = self;
+        Self copy1 = other;
         loop {
             if copy.equalsZero() {
                 return Bool.false();
@@ -35,8 +35,8 @@ class Val {
         };
     }
 
-    sub(Val self, Val other) {
-        Val g = other;
+    sub(self, Self other) {
+        Self g = other;
         loop {
             if other.equalsZero() {
                 break;
@@ -46,10 +46,10 @@ class Val {
         }
     }
 
-    printDec(Val self) {
+    printDec(self) {
         if self.greater(9) {
             '1'.print();
-            Val k = self;
+            Self k = self;
             k.sub(10);
             k.print();
         } else {
@@ -57,12 +57,12 @@ class Val {
         };
     }
 
-    print(Val self) {
+    print(self) {
         System.setRegister<1>(3);
         System.setRegister<2>(self);
         System.setRegister<0>(1);
     }
 
-    inc(Val self) {}
-    dec(Val self) {}
+    inc(self) {}
+    dec(self) {}
 }

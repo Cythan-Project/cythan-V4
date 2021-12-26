@@ -2,14 +2,14 @@ class Byte {
     Val lower;
     Val higher;
 
-    Byte new(Byte a) {
-        return Byte {
+    Self new(Self a) {
+        return Self {
             lower = a.lower,
             higher = a.higher
         };
     }
 
-    printDec(Byte self) {
+    printDec(self) {
         Val lower = self.lower;
         Val higher = self.higher;
         if (lower.greater(9)) {
@@ -28,8 +28,8 @@ class Byte {
         };
     }
 
-    sub(Byte self, Byte other) {
-        Byte u = other;
+    sub(self, Self other) {
+        Self u = other;
         loop {
             if u.equalsZero() {
                 break;
@@ -39,8 +39,8 @@ class Byte {
         }
     }
 
-    add(Byte self, Byte other) {
-        Byte u = other;
+    add(self, Self other) {
+        Self u = other;
         loop {
             if u.equalsZero() {
                 break;
@@ -50,53 +50,53 @@ class Byte {
         }
     }
 
-    inc(Byte self) {
+    inc(self) {
         self.lower.inc();
         if self.lower.equalsZero() {
             self.higher.inc();
         }
     }
 
-    dec(Byte self) {
+    dec(self) {
         if self.lower.equalsZero() {
             self.higher.dec();
         };
         self.lower.dec();
     }
 
-    Byte fromValAsNumber(Val a) {
-        return Byte {
+    Self fromValAsNumber(Val a) {
+        return Self {
             lower = a,
             higher = 3
         };
     }
 
-    Byte fromVal(Val a) {
-        return Byte {
+    Self fromVal(Val a) {
+        return Self {
             lower = a,
             higher = 0
         };
     }
 
-    Byte input() {
+    Self input() {
         System.setRegister<0>(2);
-        return Byte {
+        return Self {
             lower = System.getRegister<2>(),
             higher = System.getRegister<1>()
         };
     }
 
-    print(Byte self) {
+    print(self) {
         System.setRegister<2>(self.lower);
         System.setRegister<1>(self.higher);
         System.setRegister<0>(1);
     }
 
-    Bool equals(Byte self, Byte other) {
+    Bool equals(self, Self other) {
         return self.lower.equals(other.lower) && self.higher.equals(other.higher);
     }
 
-    Bool equalsZero(Byte self) {
+    Bool equalsZero(self) {
         if self.lower as Bool {
             if self.higher as Bool {
                 return Bool.true();

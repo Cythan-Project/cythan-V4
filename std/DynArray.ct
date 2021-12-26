@@ -73,7 +73,7 @@ class DynArray<T, N> {
         return self.array.get<Number>();
     }
     
-    print(DynArray<Byte, N> self) {
+    print(Self<Byte, N> self) {
         Val index = self.len();
         loop {
             index.dec();
@@ -83,7 +83,7 @@ class DynArray<T, N> {
             };
         };
     }
-    println(DynArray<Byte, N> self) {
+    println(Self<Byte, N> self) {
         Val index = 0;
         loop {
             if self.len().greater(index) {

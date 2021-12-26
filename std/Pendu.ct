@@ -3,14 +3,14 @@ class Pendu {
     DynArray<Byte, 12> string;
     DynArray<Byte, 12> currentLetters;
 
-    Pendu new() {
-        return Pendu {
-            string = DynArray<Byte, 12>.from<9>("grammaire"),
-            currentLetters = DynArray<Byte, 12>.from<9>("_________")
+    Self new() {
+        return Self {
+            string = DynArray.from<9>("grammaire"),
+            currentLetters = DynArray.from<9>("_________")
         }
     }
 
-    display(Pendu self, Val life) {
+    display(self, Val life) {
         Val lifes = life;
         if lifes.equalsZero() {
             " |--|".println();
@@ -75,7 +75,7 @@ class Pendu {
         '\n'.print();
     }
 
-    play(Pendu self) {
+    play(self) {
         Val looses = 6;
         loop {
             self.display(looses);
@@ -113,8 +113,7 @@ class Pendu {
     }
 
     Val main() {
-        Pendu.new().play(); 
-        
+        Self.new().play();
         return 0;
     }
 }

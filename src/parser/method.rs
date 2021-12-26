@@ -206,12 +206,17 @@ impl TokenParser<Method> for VecDeque<Token> {
                 })
                 .into_iter()
                 .map(|mut a| {
-                    let ty = a.extract(types)?;
+                    let ty = if matches!(a.front(), Some(&Token::Literal(..))) {
+                        types.clone()
+                    } else {
+                        a.extract(types)?
+                    };
                     let name = if let Some(Token::Literal(_, name)) = a.get_token() {
                         name
                     } else {
                         panic!("Expected argument name");
                     };
+                    // TODO panic if more items are left in the vecdequeue
                     Ok((ty, name))
                 })
                 .collect::<Result<_, _>>()?

@@ -1,7 +1,7 @@
 class UnitTests {
 
     Val main() {
-        Byte b = UnitTests.fib(5);
+        Byte b = Self.fib(5);
         b.printDec();
         '\n'.print();
     }

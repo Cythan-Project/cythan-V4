@@ -1,24 +1,26 @@
 @AllowOnly(0..=1)
+@GlobalConst(true = 0)
+@GlobalConst(false = 1)
 class Bool {
 
     Val value;
 
-    Bool true() {
-        return Bool { value = 0 };
+    Self true() {
+        return Self { value = 0 };
     }
 
-    Bool false() {
-        return Bool { value = 1 };
+    Self false() {
+        return Self { value = 1 };
     }
-    Bool not(Bool self) {
-        return if self.value as Bool {
-            Bool.false()
+    Self not(self) {
+        return if self.value as Self {
+            Self.false()
         } else {
-            Bool.true()
+            Self.true()
         };
     }
 
-    print(Bool self) {
+    print(self) {
         if self {
             "true".print();
         } else {
