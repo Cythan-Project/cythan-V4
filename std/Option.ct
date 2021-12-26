@@ -3,10 +3,9 @@ class Option<T> {
     T t;
 
     Self none<T>() {
-        T t;
         return Self {
             is_none = true,
-            t = t
+            t = T t
         };
     }
 
