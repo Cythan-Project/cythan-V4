@@ -99,7 +99,7 @@ fn chain_expression(tokens: &mut VecDeque<Token>, exp: Expr, types: &Type) -> Re
             to: Box::new(tokens.drain(0..).collect::<VecDeque<_>>().parse(types)?),
         },
         Some(Token::Keyword(span, Keyword::As)) => {
-            let t = tokens.extract(&types)?;
+            let t = tokens.extract(types)?;
             Expr::Cast {
                 span,
                 source: Box::new(exp),

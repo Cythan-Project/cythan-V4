@@ -200,7 +200,7 @@ pub fn compile(
                 Ok(OutputData::new(
                     mir,
                     span.clone(),
-                    Some(TypedMemory::new(e.0.clone(), kg, e.0.span.clone())),
+                    Some(TypedMemory::new(e.0.clone(), kg, e.0.span)),
                 ))
             } else {
                 Ok(OutputData::new(
