@@ -6,6 +6,9 @@ pub type Error = Report<(String, Range<usize>)>;
 
 mod mirrors;
 mod reporting;
+mod wrappers;
+
+pub use wrappers::*;
 
 pub use reporting::report;
 

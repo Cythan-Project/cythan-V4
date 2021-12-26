@@ -1,11 +1,12 @@
 use std::{collections::VecDeque, fmt::Debug};
 
-use errors::{expected_number_as_type, invalid_type_template, Error, Span};
+use errors::{
+    expected_number_as_type, invalid_type_template, Error, Span, SpannedObject, SpannedVector,
+};
 
 use super::{
-    expression::{SpannedObject, SpannedVector, TokenProcessor},
-    token_utils::split_complex,
-    ClosableType, Token, TokenExtracter, TokenParser,
+    expression::TokenProcessor, token_utils::split_complex, ClosableType, Token, TokenExtracter,
+    TokenParser,
 };
 use crate::parser::token_utils::SplitAction;
 

@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
-use errors::{report_similar, Error, Span};
+use errors::{report_similar, Error, Span, SpannedObject};
 use mir::MirCodeBlock;
 
-use crate::parser::{expression::SpannedObject, ty::Type};
+use crate::parser::ty::Type;
 
 use super::{code_manager::CodeManager, typed_definition::TypedMemory};
 

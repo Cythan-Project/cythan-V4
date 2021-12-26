@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use errors::{invalid_token_after, Error, Span};
+use errors::{invalid_token_after, Error, Span, SpannedObject, SpannedVector};
 
 use crate::parser::{
     token_utils::{split_complex, take_until, SplitAction},
@@ -83,12 +83,6 @@ pub enum Expr {
     Return(Span, Option<Box<Expr>>),
     BooleanExpression(Span, Box<Expr>, BooleanOperator, Box<Expr>),
 }
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd)]
-pub struct SpannedVector<T>(pub Span, pub Vec<T>);
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd)]
-pub struct SpannedObject<T>(pub Span, pub T);
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
 pub enum BooleanOperator {
@@ -299,7 +293,7 @@ impl TokenParser<Expr> for VecDeque<Token> {
             },
             Token::Number(span, a, t) => Expr::Number(span, a, t),
             Token::TypeName(span, a) => {
-                let template = match self.get_token() {
+                let template: Option<SpannedVector<Type>> = match self.get_token() {
                     Some(Token::Block(tspan, ClosableType::Type, e)) => {
                         Some(SpannedVector(tspan, e.parse()?))
                     }

@@ -5,7 +5,9 @@ use std::{
 };
 
 use either::Either;
-use errors::{invalid_argument_type, invalid_type_template, Error, Span};
+use errors::{
+    invalid_argument_type, invalid_type_template, Error, Span, SpannedObject, SpannedVector,
+};
 use mir::{need_block, remove_skips, Mir, MirCodeBlock};
 
 use crate::{
@@ -24,12 +26,7 @@ use crate::{
     },
 };
 
-use super::{
-    annotation::Annotation,
-    class::TemplateFixer,
-    expression::{SpannedObject, SpannedVector},
-    ty::TemplateDefinition,
-};
+use super::{annotation::Annotation, class::TemplateFixer, ty::TemplateDefinition};
 use crate::parser::expression::CodeBlock;
 
 #[derive(Clone)]

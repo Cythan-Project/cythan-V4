@@ -1,4 +1,6 @@
-use super::{annotation::Annotation, expression::SpannedObject, ty::Type};
+use errors::SpannedObject;
+
+use super::{annotation::Annotation, ty::Type};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Field {

@@ -1,6 +1,6 @@
 use std::process::exit;
 
-use errors::{report, Error, Span};
+use errors::{report, Error, Span, SpannedObject};
 use mir::{Mir, MirCodeBlock};
 
 use crate::{
@@ -9,7 +9,7 @@ use crate::{
         class_loader::ClassLoader,
         state::{code_manager::CodeManager, local_state::LocalState},
     },
-    parser::{expression::SpannedObject, ty::Type},
+    parser::ty::Type,
     STACK_SIZE,
 };
 

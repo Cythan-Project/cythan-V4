@@ -1,11 +1,10 @@
 use std::{collections::VecDeque, rc::Rc};
 
 use either::Either;
-use errors::{report_similar, Error};
+use errors::{report_similar, Error, SpannedObject};
 
 use crate::parser::{
     class::{Class, ClassView},
-    expression::SpannedObject,
     method::{Method, MethodView},
     parse,
     ty::Type,

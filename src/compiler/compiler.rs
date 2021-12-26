@@ -1,10 +1,12 @@
-use errors::{method_return_type_invalid, report_similar, Error, Span};
+use errors::{
+    method_return_type_invalid, report_similar, Error, Span, SpannedObject, SpannedVector,
+};
 use mir::{Mir, MirCodeBlock};
 
 use crate::{
     compiler::state::typed_definition::{CheckAgainst, TypedMemory},
     parser::{
-        expression::{BooleanOperator, Expr, SpannedObject, SpannedVector},
+        expression::{BooleanOperator, Expr},
         ty::Type,
         NumberType,
     },

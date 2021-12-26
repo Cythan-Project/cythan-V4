@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 
 use either::Either;
-use errors::{invalid_type_template, report_similar, Error};
+use errors::{invalid_type_template, report_similar, Error, SpannedObject, SpannedVector};
 
 use crate::{
     compiler::class_loader::ClassLoader,
@@ -14,7 +14,7 @@ use crate::{
 
 use super::{
     annotation::Annotation,
-    expression::{Expr, SpannedObject, SpannedVector},
+    expression::Expr,
     field::Field,
     method::{Method, MethodView},
     ty::{TemplateDefinition, Type},
@@ -114,7 +114,7 @@ impl ClassView {
                 "method",
                 "methods",
                 &name.0,
-                &name.1,
+                name,
                 &self
                     .methods
                     .iter()
@@ -126,10 +126,10 @@ impl ClassView {
     }
 
     pub fn size(&self, cl: &ClassLoader) -> Result<u32, Error> {
-        if self.name.1 == "Val" {
+        if *self.name == "Val" {
             return Ok(1);
         }
-        if self.name.1 == "Array" {
+        if *self.name == "Array" {
             return Ok({
                 match self.ty.template.as_ref() {
                     Some(x) => {
