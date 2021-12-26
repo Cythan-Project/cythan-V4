@@ -3,25 +3,25 @@ class DynArray<T, N> {
     Array<T, N> array;
     Val length;
 
-    DynArray<T, N> new() {
-        return DynArray {
+    Self new() {
+        return Self {
             array = Array tmp,
             length = 0
         };
     }
     
-    DynArray<T, N> from<Number>(Array<T, Number> input) {
-        DynArray<T, N> dyn = DynArray.new();
+    Self from<Number>(Array<T, Number> input) {
+        Self dyn = Self.new();
         dyn.addAll<Number>(input);
         return dyn;
     }
 
-    add(DynArray<T, N> self, T t) {
+    add(Self self, T t) {
         self.array.setDyn(self.length, t);
         self.length.inc();
     }
 
-    addAll<Ng>(DynArray<T, N> self, Array<T, Ng> arr) {
+    addAll<Ng>(Self self, Array<T, Ng> arr) {
         Val l = arr.len();
         Val c = 0;
         loop {
@@ -34,42 +34,42 @@ class DynArray<T, N> {
         };
     }
 
-    T pop(DynArray<T, N> self) {
+    T pop(Self self) {
         self.length.dec();
         return self.getDyn(self.length);
     }
 
-    Array<T, N> raw(DynArray<T, N> self) {
+    Array<T, N> raw(Self self) {
         return self.array;
     }
 
-    Val len(DynArray<T, N> self) {
+    Val len(Self self) {
         return self.length;
     }
 
-    Val capacity(DynArray<T, N> self) {
+    Val capacity(Self self) {
         return self.array.len();
     }
 
-    last(DynArray<T, N> self, Val pos) {
+    last(Self self, Val pos) {
         Val k = self.len();
         k.dec();
         return self.getDyn(k);
     }
 
-    setDyn(DynArray<T, N> self, Val pos, T t) {
+    setDyn(Self self, Val pos, T t) {
         self.array.setDyn(pos,t);
     }
 
-    set<Number>(DynArray<T, N> self,T t) {
+    set<Number>(Self self,T t) {
         self.set<Number>(t);
     }
 
-    T getDyn(DynArray<T, N> self, Val pos) {
+    T getDyn(Self self, Val pos) {
         return self.array.getDyn(pos);
     }
 
-    T get<Number>(DynArray<T, N> self) {
+    T get<Number>(Self self) {
         return self.array.get<Number>();
     }
     
@@ -96,7 +96,7 @@ class DynArray<T, N> {
         '\n'.print();
     }
 
-    Bool contains(DynArray<T, N> self, T t) {
+    Bool contains(Self self, T t) {
         Val size = self.len();
         loop {
             if size.equalsZero() {
@@ -108,5 +108,4 @@ class DynArray<T, N> {
             } 
         };
     }
-
 }

@@ -175,10 +175,10 @@ impl MethodView {
 }
 
 impl TokenParser<Method> for VecDeque<Token> {
-    fn parse(mut self) -> Result<Method, Error> {
-        let annotations = self.extract()?;
+    fn parse(mut self, types: &Type) -> Result<Method, Error> {
+        let annotations = self.extract(types)?;
         let tp = if matches!(self.front(), Some(Token::TypeName(_, _))) {
-            Some(self.extract()?)
+            Some(self.extract(types)?)
         } else {
             None
         };
@@ -188,7 +188,7 @@ impl TokenParser<Method> for VecDeque<Token> {
             panic!("Expected method name");
         };
         let template = match self.get_token() {
-            Some(Token::Block(_, ClosableType::Type, inside)) => Some(inside.parse()?),
+            Some(Token::Block(_, ClosableType::Type, inside)) => Some(inside.parse(types)?),
             Some(e) => {
                 self.push_front(e);
                 None
@@ -206,7 +206,7 @@ impl TokenParser<Method> for VecDeque<Token> {
                 })
                 .into_iter()
                 .map(|mut a| {
-                    let ty = a.extract()?;
+                    let ty = a.extract(types)?;
                     let name = if let Some(Token::Literal(_, name)) = a.get_token() {
                         name
                     } else {
@@ -219,7 +219,7 @@ impl TokenParser<Method> for VecDeque<Token> {
                 panic!("Expected brackets after method name");
             };
         let code = if let Some(Token::Block(span, ClosableType::Brace, inside)) = self.get_token() {
-            Either::Left(SpannedVector(span, inside.parse()?))
+            Either::Left(SpannedVector(span, inside.parse(types)?))
         } else {
             panic!("Expected braces after method arguments");
         };

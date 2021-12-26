@@ -44,7 +44,7 @@ impl ClassLoader {
         /* for i in &vdc {
             display(i, class);
         } */
-        self.load(vdc.parse()?);
+        self.load(vdc.parse(&Type::native_simple("Self provider"))?);
         Ok(())
     }
 

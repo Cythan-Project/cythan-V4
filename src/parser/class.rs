@@ -319,8 +319,8 @@ impl TemplateFixer {
 }
 
 impl TokenParser<Class> for VecDeque<Token> {
-    fn parse(mut self) -> Result<Class, Error> {
-        let annotations = self.extract()?;
+    fn parse(mut self, native: &Type) -> Result<Class, Error> {
+        let annotations = self.extract(native)?;
         if !matches!(self.get_token(), Some(Token::Keyword(_, Keyword::Class))) {
             panic!("Expected keyword class");
         }
@@ -329,17 +329,29 @@ impl TokenParser<Class> for VecDeque<Token> {
         } else {
             panic!("Expected class name");
         };
-        let template = match self.get_token() {
-            Some(Token::Block(_, ClosableType::Type, inside)) => Some(inside.parse()?),
+        let template: Option<TemplateDefinition> = match self.get_token() {
+            Some(Token::Block(_, ClosableType::Type, inside)) => Some(inside.parse(native)?),
             Some(e) => {
                 self.push_front(e);
                 None
             }
             None => None,
         };
+        let types = Type::new(
+            &name.1,
+            template.as_ref().map(|x| {
+                SpannedVector(
+                    x.0 .0.clone(),
+                    x.0.iter()
+                        .map(|y| Type::simple(y, x.0 .0.clone()))
+                        .collect(),
+                )
+            }),
+            name.0.clone(),
+        );
         let superclass = if matches!(self.front(), Some(Token::Keyword(_, Keyword::Extends))) {
             self.get_token();
-            Some(self.extract()?)
+            Some(self.extract(&types)?)
         } else {
             None
         };
@@ -364,10 +376,10 @@ impl TokenParser<Class> for VecDeque<Token> {
             .into_iter()
             .map(|mut x| {
                 if matches!(x.back(), Some(Token::Block(_, ClosableType::Brace, _))) {
-                    class.methods.push(x.parse()?);
+                    class.methods.push(x.parse(&types)?);
                 } else {
-                    let annotations: Vec<Annotation> = self.extract()?;
-                    let ty: Type = x.extract()?;
+                    let annotations: Vec<Annotation> = self.extract(&types)?;
+                    let ty: Type = x.extract(&types)?;
                     let name = if let Some(Token::Literal(span, name)) = x.get_token() {
                         SpannedObject(span, name)
                     } else {

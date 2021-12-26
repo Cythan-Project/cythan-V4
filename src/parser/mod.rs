@@ -2,6 +2,8 @@ use std::collections::VecDeque;
 
 use errors::{invalid_token, Error, Span};
 
+use crate::parser::ty::Type;
+
 use self::expression::BooleanOperator;
 
 pub mod annotation;
@@ -13,11 +15,11 @@ pub mod token_utils;
 pub mod ty;
 
 pub trait TokenExtracter<T> {
-    fn extract(&mut self) -> Result<T, Error>;
+    fn extract(&mut self, class_type: &Type) -> Result<T, Error>;
 }
 
 pub trait TokenParser<T> {
-    fn parse(self) -> Result<T, Error>;
+    fn parse(self, types: &Type) -> Result<T, Error>;
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Clone)]

@@ -90,16 +90,16 @@ pub enum BooleanOperator {
     Or,
 }
 
-fn chain_expression(tokens: &mut VecDeque<Token>, exp: Expr) -> Result<Expr, Error> {
+fn chain_expression(tokens: &mut VecDeque<Token>, exp: Expr, types: &Type) -> Result<Expr, Error> {
     let k = match tokens.get_token() {
         None | Some(Token::SemiColon(_)) => return Ok(exp),
         Some(Token::Equals(span)) => Expr::Assignement {
             span,
             target: Box::new(exp),
-            to: Box::new(tokens.drain(0..).collect::<VecDeque<_>>().parse()?),
+            to: Box::new(tokens.drain(0..).collect::<VecDeque<_>>().parse(types)?),
         },
         Some(Token::Keyword(span, Keyword::As)) => {
-            let t = tokens.extract()?;
+            let t = tokens.extract(&types)?;
             Expr::Cast {
                 span,
                 source: Box::new(exp),
@@ -110,7 +110,7 @@ fn chain_expression(tokens: &mut VecDeque<Token>, exp: Expr) -> Result<Expr, Err
             span,
             box exp,
             e,
-            Box::new(tokens.drain(0..).collect::<VecDeque<_>>().parse()?),
+            Box::new(tokens.drain(0..).collect::<VecDeque<_>>().parse(types)?),
         ),
         Some(Token::Dot(_)) => {
             if let Some(Token::Literal(name_span, name)) = tokens.get_token() {
@@ -130,7 +130,7 @@ fn chain_expression(tokens: &mut VecDeque<Token>, exp: Expr) -> Result<Expr, Err
                                     }
                                 })
                                 .into_iter()
-                                .map(|a| a.parse())
+                                .map(|a| a.parse(types))
                                 .collect::<Result<_, _>>()?,
                             ),
                             template: None,
@@ -157,10 +157,13 @@ fn chain_expression(tokens: &mut VecDeque<Token>, exp: Expr) -> Result<Expr, Err
                                         }
                                     })
                                     .into_iter()
-                                    .map(|a| a.parse())
+                                    .map(|a| a.parse(types))
                                     .collect::<Result<_, _>>()?,
                                 ),
-                                template: Some(SpannedVector(template_span, template.parse()?)),
+                                template: Some(SpannedVector(
+                                    template_span,
+                                    template.parse(types)?,
+                                )),
                             }
                         } else {
                             panic!("Expected brackets after method call")
@@ -192,16 +195,20 @@ fn chain_expression(tokens: &mut VecDeque<Token>, exp: Expr) -> Result<Expr, Err
             ));
         }
     };
-    chain_expression(tokens, k)
+    chain_expression(tokens, k, types)
 }
 
-fn parse_if(tokens: &mut VecDeque<Token>, if_token_span: Span) -> Result<Expr, Error> {
+fn parse_if(
+    tokens: &mut VecDeque<Token>,
+    if_token_span: Span,
+    types: &Type,
+) -> Result<Expr, Error> {
     let k = box take_until(tokens, |e| {
         matches!(e, Token::Block(_, ClosableType::Brace, _))
     })
-    .parse()?;
+    .parse(types)?;
     let if_b = match tokens.get_token() {
-        Some(Token::Block(span, ClosableType::Brace, e)) => SpannedVector(span, e.parse()?),
+        Some(Token::Block(span, ClosableType::Brace, e)) => SpannedVector(span, e.parse(types)?),
         Some(e) => {
             return Err(invalid_token_after(
                 e.span(),
@@ -227,10 +234,10 @@ fn parse_if(tokens: &mut VecDeque<Token>, if_token_span: Span) -> Result<Expr, E
         tokens.remove(0);
         match tokens.get_token() {
             Some(Token::Block(span, ClosableType::Brace, e)) => {
-                Some(SpannedVector(span, e.parse()?))
+                Some(SpannedVector(span, e.parse(types)?))
             }
             Some(Token::Keyword(span, Keyword::If)) => {
-                let ifb = parse_if(tokens, span)?;
+                let ifb = parse_if(tokens, span, types)?;
                 Some(SpannedVector(ifb.span().clone(), vec![ifb]))
             }
             _ => panic!("Expected brackets after else"),
@@ -247,7 +254,7 @@ fn parse_if(tokens: &mut VecDeque<Token>, if_token_span: Span) -> Result<Expr, E
 }
 
 impl TokenParser<Expr> for VecDeque<Token> {
-    fn parse(mut self) -> Result<Expr, Error> {
+    fn parse(mut self, types: &Type) -> Result<Expr, Error> {
         let tk = if let Some(e) = self.get_token() {
             e
         } else {
@@ -267,10 +274,10 @@ impl TokenParser<Expr> for VecDeque<Token> {
             Token::Literal(span, a) => Expr::Variable(span, a),
             Token::Keyword(span, a) => match a {
                 Keyword::Return => {
-                    let out: Expr = self.parse()?;
+                    let out: Expr = self.parse(types)?;
                     return Ok(Expr::Return(span.merge(out.span()), Some(box out)));
                 }
-                Keyword::If => parse_if(&mut self, span)?,
+                Keyword::If => parse_if(&mut self, span, types)?,
                 Keyword::Else => panic!("Unexpected else"),
                 Keyword::Class => panic!("Unexpected class"),
                 Keyword::Extends => panic!("Unexpected extends"),
@@ -279,7 +286,7 @@ impl TokenParser<Expr> for VecDeque<Token> {
                     let cb = if let Some(Token::Block(span, ClosableType::Brace, e)) =
                         self.get_token()
                     {
-                        SpannedVector(span, e.parse()?)
+                        SpannedVector(span, e.parse(types)?)
                     } else {
                         panic!("Expected brackets after loop")
                     };
@@ -295,13 +302,22 @@ impl TokenParser<Expr> for VecDeque<Token> {
             Token::TypeName(span, a) => {
                 let template: Option<SpannedVector<Type>> = match self.get_token() {
                     Some(Token::Block(tspan, ClosableType::Type, e)) => {
-                        Some(SpannedVector(tspan, e.parse()?))
+                        Some(SpannedVector(tspan, e.parse(types)?))
                     }
                     Some(e) => {
                         self.push_front(e);
                         None
                     }
                     None => None,
+                };
+                let (a, template) = if a == "Self" {
+                    if template.is_none() {
+                        (types.name.1.clone(), types.template.clone())
+                    } else {
+                        (types.name.1.clone(), template)
+                    }
+                } else {
+                    (a, template)
                 };
                 match self.get_token() {
                     Some(Token::Block(span_block, ClosableType::Brace, inside)) => Expr::New {
@@ -326,7 +342,7 @@ impl TokenParser<Expr> for VecDeque<Token> {
                                 if !matches!(a.get_token(), Some(Token::Equals(_))) {
                                     panic!("Expected equals");
                                 };
-                                let value = a.parse()?;
+                                let value = a.parse(types)?;
                                 Ok((name, value))
                             })
                             .collect::<Result<_, _>>()?,
@@ -349,16 +365,16 @@ impl TokenParser<Expr> for VecDeque<Token> {
                 }
             }
             Token::Block(span, ClosableType::Brace, b) => {
-                Expr::Block(span.clone(), SpannedVector(span, b.parse()?))
+                Expr::Block(span.clone(), SpannedVector(span, b.parse(types)?))
             }
-            Token::Block(_, ClosableType::Parenthesis, b) => b.parse()?,
+            Token::Block(_, ClosableType::Parenthesis, b) => b.parse(types)?,
             Token::Block(_, ClosableType::Type, _) => panic!("Unexpected template"),
             Token::Char(span, a) => Expr::Number(
                 span,
                 a.chars().fold(0, |acc, c| acc * 255 + c as u8 as i32),
                 NumberType::Byte,
             ),
-            Token::Comment(_, _) => return self.parse(),
+            Token::Comment(_, _) => return self.parse(types),
             Token::String(a, b) => Expr::ArrayDefinition(
                 a.clone(),
                 SpannedVector(
@@ -391,19 +407,19 @@ impl TokenParser<Expr> for VecDeque<Token> {
                         }
                     })
                     .into_iter()
-                    .map(|x| x.parse())
+                    .map(|x| x.parse(types))
                     .collect::<Result<_, _>>()?,
                 ),
             ),
         };
-        chain_expression(&mut self, j)
+        chain_expression(&mut self, j, types)
     }
 }
 
 pub type CodeBlock = SpannedVector<Expr>;
 
 impl TokenParser<Vec<Expr>> for VecDeque<Token> {
-    fn parse(self) -> Result<Vec<Expr>, Error> {
+    fn parse(self, types: &Type) -> Result<Vec<Expr>, Error> {
         split_complex(self, |a| {
             if matches!(a, Token::SemiColon(_)) {
                 SplitAction::SplitConsume
@@ -413,7 +429,7 @@ impl TokenParser<Vec<Expr>> for VecDeque<Token> {
         })
         .into_iter()
         .filter(|a| a.length() != 0)
-        .map(|a| a.parse())
+        .map(|a| a.parse(types))
         .collect::<Result<_, _>>()
     }
 }

@@ -106,7 +106,7 @@ impl Type {
 pub struct TemplateDefinition(pub SpannedVector<String>);
 
 impl TokenParser<TemplateDefinition> for VecDeque<Token> {
-    fn parse(self) -> Result<TemplateDefinition, Error> {
+    fn parse(self, _: &Type) -> Result<TemplateDefinition, Error> {
         Ok(TemplateDefinition(SpannedVector(
             self.iter()
                 .fold(None, |a: Option<Span>, b| {
@@ -134,7 +134,7 @@ impl TokenParser<TemplateDefinition> for VecDeque<Token> {
     }
 }
 impl TokenParser<Vec<Type>> for VecDeque<Token> {
-    fn parse(self) -> Result<Vec<Type>, Error> {
+    fn parse(self, types: &Type) -> Result<Vec<Type>, Error> {
         split_complex(self, |a| {
             if matches!(a, Token::Comma(_)) {
                 SplitAction::SplitConsume
@@ -143,17 +143,17 @@ impl TokenParser<Vec<Type>> for VecDeque<Token> {
             }
         })
         .into_iter()
-        .map(|mut a| a.extract())
+        .map(|mut a| a.extract(types))
         .collect()
     }
 }
 impl TokenExtracter<Type> for VecDeque<Token> {
-    fn extract(&mut self) -> Result<Type, Error> {
+    fn extract(&mut self, types: &Type) -> Result<Type, Error> {
         match self.get_token() {
             Some(Token::TypeName(name_span, name)) => {
                 let template = match self.get_token() {
                     Some(Token::Block(span, ClosableType::Type, inside)) => {
-                        Some(SpannedVector(span, inside.parse()?))
+                        Some(SpannedVector(span, inside.parse(types)?))
                     }
                     Some(e) => {
                         self.push_front(e);
@@ -161,12 +161,24 @@ impl TokenExtracter<Type> for VecDeque<Token> {
                     }
                     None => None,
                 };
-                Ok(Type::new(&name, template, name_span))
+                if name == "Self" {
+                    Ok(Type::new(
+                        &types.name.1,
+                        if let Some(e) = template {
+                            Some(e)
+                        } else {
+                            types.template.clone()
+                        },
+                        name_span,
+                    ))
+                } else {
+                    Ok(Type::new(&name, template, name_span))
+                }
             }
             Some(Token::Number(name_span, number, _)) => {
                 let template = match self.get_token() {
                     Some(Token::Block(span, ClosableType::Type, inside)) => {
-                        Some(SpannedVector(span, inside.parse()?))
+                        Some(SpannedVector(span, inside.parse(types)?))
                     }
                     Some(e) => {
                         self.push_front(e);

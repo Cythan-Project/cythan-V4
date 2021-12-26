@@ -2,6 +2,8 @@ use std::collections::VecDeque;
 
 use errors::Error;
 
+use crate::parser::ty::Type;
+
 use super::{expression::TokenProcessor, ClosableType, Token, TokenExtracter};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -11,7 +13,7 @@ pub struct Annotation {
 }
 
 impl TokenExtracter<Vec<Annotation>> for VecDeque<Token> {
-    fn extract(&mut self) -> Result<Vec<Annotation>, Error> {
+    fn extract(&mut self, types: &Type) -> Result<Vec<Annotation>, Error> {
         let mut annotations = Vec::new();
         loop {
             match self.get_token() {
