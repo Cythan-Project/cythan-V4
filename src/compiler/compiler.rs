@@ -187,11 +187,29 @@ pub fn compile(
                 )),
             ))
         }
-        Expr::Variable(span, a) => Ok(OutputData::new(
-            mir,
-            span.clone(),
-            Some(ls.get_var(&SpannedObject(span.clone(), a.clone()))?.clone()),
-        )),
+        Expr::Variable(span, a) => {
+            if let Some(e) = cm.cl.constants.get(a).cloned() {
+                let kg: Vec<u32> =
+                    e.1.iter()
+                        .map(|x| {
+                            let alc = cm.alloc();
+                            mir.add_mir(Mir::Set(alc, *x));
+                            alc
+                        })
+                        .collect();
+                Ok(OutputData::new(
+                    mir,
+                    span.clone(),
+                    Some(TypedMemory::new(e.0.clone(), kg, e.0.span.clone())),
+                ))
+            } else {
+                Ok(OutputData::new(
+                    mir,
+                    span.clone(),
+                    Some(ls.get_var(&SpannedObject(span.clone(), a.clone()))?.clone()),
+                ))
+            }
+        }
         Expr::Type(_span, _a) => {
             panic!("Expected something else than Type in expression")
         }

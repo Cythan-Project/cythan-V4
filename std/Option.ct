@@ -5,14 +5,14 @@ class Option<T> {
     Self none<T>() {
         T t;
         return Self {
-            is_none = Bool.true(),
+            is_none = true,
             t = t
         };
     }
 
     Self some<T>(T t) {
         return Self {
-            is_none = Bool.false(),
+            is_none = false,
             t = t
         };
     }

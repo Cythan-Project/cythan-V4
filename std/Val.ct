@@ -26,9 +26,9 @@ class Val {
         Self copy1 = other;
         loop {
             if copy.equalsZero() {
-                return Bool.false();
+                return false;
             } else if copy1.equalsZero() {
-                return Bool.true();
+                return true;
             };
             copy.dec();
             copy1.dec();

@@ -99,12 +99,12 @@ class Byte {
     Bool equalsZero(self) {
         if self.lower as Bool {
             if self.higher as Bool {
-                return Bool.true();
+                return true;
             } else {
-                return Bool.false();
+                return false;
             }
         } else {
-            return Bool.false();
+            return false;
         }
     }
 }

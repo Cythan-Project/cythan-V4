@@ -1,4 +1,7 @@
-use std::{collections::VecDeque, rc::Rc};
+use std::{
+    collections::{HashMap, VecDeque},
+    rc::Rc,
+};
 
 use either::Either;
 use errors::{report_similar, Error, SpannedObject};
@@ -8,7 +11,7 @@ use crate::parser::{
     method::{Method, MethodView},
     parse,
     ty::Type,
-    TokenParser,
+    Token, TokenParser,
 };
 
 use super::state::{code_manager::CodeManager, local_state::LocalState, output_data::OutputData};
@@ -16,12 +19,14 @@ use super::state::{code_manager::CodeManager, local_state::LocalState, output_da
 #[derive(Debug)]
 pub struct ClassLoader {
     classes: Vec<Class>,
+    pub constants: HashMap<String, (Type, Vec<u8>)>,
 }
 
 impl ClassLoader {
     pub fn new() -> ClassLoader {
         ClassLoader {
             classes: Vec::new(),
+            constants: HashMap::new(),
         }
     }
 
@@ -49,6 +54,38 @@ impl ClassLoader {
     }
 
     pub fn load(&mut self, class: Class) {
+        for annotation in &class.annotations {
+            if annotation.name == "GlobalConst" {
+                let mut k = annotation.arguments.clone();
+                let name = if let Token::Literal(_, a) =
+                    k.pop_front().expect("Expected global const name")
+                {
+                    a
+                } else {
+                    panic!("Invalid name")
+                };
+                if !matches!(
+                    k.pop_front().expect("Expected global const name"),
+                    Token::Equals(_)
+                ) {
+                    panic!("Expected equals");
+                }
+                let numbers: Vec<u8> = k
+                    .iter()
+                    .map(|x| {
+                        if let Token::Number(_, a, _) = x {
+                            *a as u8
+                        } else {
+                            panic!("Expected number found {:?}", x)
+                        }
+                    })
+                    .collect();
+                self.constants.insert(
+                    name,
+                    (Type::simple(&class.name.1, class.name.0.clone()), numbers),
+                );
+            }
+        }
         self.classes.push(class);
     }
 

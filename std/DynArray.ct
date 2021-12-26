@@ -100,11 +100,11 @@ class DynArray<T, N> {
         Val size = self.len();
         loop {
             if size.equalsZero() {
-                return Bool.false();
+                return false;
             };
             size.dec();
             if self.getDyn(size).equals(t) {
-                return Bool.true();
+                return true;
             } 
         };
     }

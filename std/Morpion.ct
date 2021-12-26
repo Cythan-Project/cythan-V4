@@ -82,28 +82,28 @@ class Morpion {
     Bool winner(self, Val tocheck) {
         if self.get<0>().equals(tocheck) {
             if self.get<1>().equals(tocheck) && self.get<2>().equals(tocheck) {
-                return Bool.true();
+                return true;
             };
             if self.get<3>().equals(tocheck) && self.get<6>().equals(tocheck) {
-                return Bool.true();
+                return true;
             };
             if self.get<4>().equals(tocheck) && self.get<8>().equals(tocheck) {
-                return Bool.true();
+                return true;
             };
         };
         if self.get<1>().equals(tocheck) && self.get<4>().equals(tocheck) && self.get<7>().equals(tocheck) {
-            return Bool.true();
+            return true;
         };
         if self.get<2>().equals(tocheck) && self.get<4>().equals(tocheck) && self.get<6>().equals(tocheck) {
-            return Bool.true();
+            return true;
         };
         if self.get<3>().equals(tocheck) && self.get<4>().equals(tocheck) && self.get<5>().equals(tocheck) {
-            return Bool.true();
+            return true;
         };
         if self.get<6>().equals(tocheck) && self.get<7>().equals(tocheck) && self.get<8>().equals(tocheck) {
-            return Bool.true();
+            return true;
         };
-        return Bool.false();
+        return false;
     }
     
     Val main() {
