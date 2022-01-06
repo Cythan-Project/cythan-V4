@@ -21,7 +21,11 @@ pub fn implement(cl: &mut ClassLoader) {
 
         let mut mircb = MirCodeBlock::default();
 
-        mircb.copy_bulk(&mpos, &ls.get_var_native("index")?.locations);
+        mircb.copy_bulk(
+            &mpos,
+            &ls.get_var_native("index")?.locations,
+            &Span::default(),
+        )?;
 
         let mut ifcontainer = MirCodeBlock::default();
 
@@ -37,7 +41,7 @@ pub fn implement(cl: &mut ClassLoader) {
                 .copied()
                 .collect::<Vec<_>>();
             let mut cb = MirCodeBlock::default();
-            cb.copy_bulk(&to, &from);
+            cb.copy_bulk(&to, &from, &Span::default())?;
             cb.add_mir(Mir::Skip);
             ifcontainer.add(mpos.iter().fold(cb, |a, b| {
                 MirCodeBlock::from(Mir::If0(*b, a, MirCodeBlock::default()))
@@ -96,7 +100,11 @@ pub fn implement(cl: &mut ClassLoader) {
         let mtypedmemory = TypedMemory::new(index_ty.clone(), mpos.clone(), Span::default());
 
         let mut mircb = MirCodeBlock::default();
-        mircb.copy_bulk(&mpos, &ls.get_var_native("index")?.locations);
+        mircb.copy_bulk(
+            &mpos,
+            &ls.get_var_native("index")?.locations,
+            &Span::default(),
+        )?;
 
         let to = cm.alloc_block(unit_size as usize);
         let mut ifcontainer = MirCodeBlock::default();
@@ -110,7 +118,8 @@ pub fn implement(cl: &mut ClassLoader) {
                 .copied()
                 .collect::<Vec<_>>();
             let mut cb = MirCodeBlock::default();
-            cb.copy_bulk(&to, &from).add_mir(Mir::Skip);
+            cb.copy_bulk(&to, &from, &Span::default())?
+                .add_mir(Mir::Skip);
             ifcontainer.add(mpos.iter().fold(cb, |a, b| {
                 MirCodeBlock::from(Mir::If0(*b, a, MirCodeBlock::default()))
             }));
@@ -158,7 +167,7 @@ pub fn implement(cl: &mut ClassLoader) {
 
         let from = &ls.get_var_native("value")?.locations;
 
-        mir.copy_bulk(&to, from);
+        mir.copy_bulk(&to, from, &Span::default())?;
 
         Ok(OutputData::native(mir, None))
     });

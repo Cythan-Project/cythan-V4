@@ -9,3 +9,4 @@ edition = "2018"
 
 lir = { path = "../lir" }
 either = "1.6.1"
+errors = { path = "../errors" }

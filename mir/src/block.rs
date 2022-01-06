@@ -3,6 +3,8 @@ use std::{
     vec::IntoIter,
 };
 
+use errors::{invalid_length_asm, Error, Span};
+
 use crate::optimizer::state::OptimizerState;
 
 use crate::{
@@ -130,14 +132,14 @@ impl MirCodeBlock {
         self
     }
 
-    pub fn copy_bulk(&mut self, to: &[u32], from: &[u32]) -> &mut Self {
+    pub fn copy_bulk(&mut self, to: &[u32], from: &[u32], span: &Span) -> Result<&mut Self, Error> {
         if to.len() != from.len() {
-            panic!("Invalid copy operation");
+            return Err(invalid_length_asm(span, to.len() as u32, from.len() as u32));
         }
         to.iter().zip(from.iter()).for_each(|(to, from)| {
             self.0.push(Mir::Copy(*to, *from));
         });
-        self
+        Ok(self)
     }
 
     pub fn set_bulk(&mut self, to: &[u32], from: &[u8]) -> &mut Self {

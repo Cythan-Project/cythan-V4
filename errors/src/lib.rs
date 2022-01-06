@@ -330,6 +330,24 @@ pub fn method_return_type_invalid(
         )
 }
 
+pub fn invalid_length_asm(this: &Span, length1: u32, length2: u32) -> Error {
+    let mut colors = ColorGenerator::new();
+    let a = colors.next();
+    let b = colors.next();
+    Report::build(ReportKind::Error, this.file.to_owned(), this.start)
+        .with_code(666)
+        .with_message("Invalid length in MIR-ASM copy operation")
+        .with_label(
+            Label::new(this.as_span())
+                .with_message(format!(
+                    "Found {} expected {}",
+                    length1.to_string().fg(b),
+                    length2.to_string().fg(a)
+                ))
+                .with_color(b),
+        )
+}
+
 pub fn invalid_type(this: &Span, other: &Span, this_type: &str, other_type: &str) -> Error {
     let mut colors = ColorGenerator::new();
     let a = colors.next();

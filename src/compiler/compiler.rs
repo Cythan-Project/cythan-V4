@@ -131,9 +131,9 @@ pub fn compile(
                     }
                     let alc = cm.alloc_type(&a.ty)?;
                     let mut tr = then_r.mir;
-                    tr.copy_bulk(&alc, &b.locations);
+                    tr.copy_bulk(&alc, &b.locations, &b.span)?;
                     let mut er = else_r.mir;
-                    er.copy_bulk(&alc, &a.locations);
+                    er.copy_bulk(&alc, &a.locations, &a.span)?;
 
                     (Some(TypedMemory::new(a.ty, alc, span.clone())), tr, er)
                 } else {
@@ -320,7 +320,7 @@ pub fn compile(
             }
             mir.add(ret1.mir);
             mir.add(ret.mir);
-            mir.copy_bulk(&rt.locations, &rt1.locations);
+            mir.copy_bulk(&rt.locations, &rt1.locations, &span)?;
             Ok(OutputData::new(mir, span.clone(), None))
         }
         Expr::Block(span, a) => compile_code_block(a, &mut ls.shadow(), cm, span.clone()),
@@ -342,7 +342,7 @@ pub fn compile(
                     ));
                 }
                 mir.add(ret.mir);
-                mir.copy_bulk(&rl.locations, &rt.locations);
+                mir.copy_bulk(&rl.locations, &rt.locations, &span)?;
                 mir.add_mir(Mir::Skip);
                 Ok(OutputData::new(mir, span.clone(), None))
             } else if ls.return_loc.is_some() {
@@ -459,7 +459,7 @@ pub fn compile(
                 alloc_block.append(&mut rv1.locations);
             }
             let az = cm.alloc_block(alloc_block.len());
-            mir.copy_bulk(&az, &alloc_block);
+            mir.copy_bulk(&az, &alloc_block, a)?;
             Ok(OutputData::new(
                 mir,
                 a.clone(),

@@ -6,7 +6,7 @@ class DynArray<T, N, F> {
     Self new() {
         return Self {
             array = Array tmp,
-            length = 0
+            length = F.zero()
         };
     }
     
@@ -23,7 +23,7 @@ class DynArray<T, N, F> {
 
     addAll<Ng>(Self self, Array<T, Ng, F> arr) {
         F l = arr.len();
-        F c = 0;
+        F c = F.zero();
         loop {
             if l.equalsZero() {
                 break;
@@ -84,13 +84,13 @@ class DynArray<T, N, F> {
         };
     }
     println(Self<Byte, N, F> self) {
-        F index = 0;
+        F index = F.zero();
         loop {
-            if self.len().greater(index) {
+            if self.len().equals(index) {
+                break;
+            } else {
                 self.getDyn(index).print();
                 index.inc();
-            } else {
-                break;
             };
         };
         '\n'.print();

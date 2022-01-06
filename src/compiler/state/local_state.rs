@@ -54,10 +54,16 @@ impl LocalState {
     }
 
     #[allow(dead_code)]
-    pub fn set_var(&mut self, name: &str, value: TypedMemory, code: &mut MirCodeBlock) {
+    pub fn set_var(
+        &mut self,
+        name: &str,
+        value: TypedMemory,
+        code: &mut MirCodeBlock,
+    ) -> Result<(), Error> {
         if let Some(e) = self.vars.get(name) {
-            code.copy_bulk(&e.locations, &value.locations);
+            code.copy_bulk(&e.locations, &value.locations, &value.span)?;
         }
+        Ok(())
     }
 
     pub fn new_var(
