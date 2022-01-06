@@ -1,8 +1,8 @@
 use std::{cmp::Ordering, ops::Range};
 
-use ariadne::{Color, ColorGenerator, Fmt, Label, Report, ReportKind};
+use ariadne::{Color, ColorGenerator, Fmt, Label, Report, ReportBuilder, ReportKind};
 
-pub type Error = Report<(String, Range<usize>)>;
+pub type Error = ReportBuilder<(String, Range<usize>)>;
 
 mod mirrors;
 mod reporting;
@@ -63,6 +63,16 @@ impl Span {
     }
 }
 
+pub fn in_method(template_def: &Span, er: Error) -> Error {
+    let mut colors = ColorGenerator::new();
+    let b = colors.next();
+    er.with_label(
+        Label::new(template_def.as_span())
+            .with_color(b)
+            .with_message("Originated from here"),
+    )
+}
+
 pub fn invalid_type_template(template_def: &Span, span: &Span) -> Error {
     let mut colors = ColorGenerator::new();
     let b = colors.next();
@@ -79,7 +89,7 @@ pub fn invalid_type_template(template_def: &Span, span: &Span) -> Error {
                 .with_message("Should match this template")
                 .with_color(b),
         );
-    er.finish()
+    er
 }
 
 pub fn index_out_of_bounds(len: usize, alen: usize, access: &Span, listdef: &Span) -> Error {
@@ -111,7 +121,7 @@ pub fn index_out_of_bounds(len: usize, alen: usize, access: &Span, listdef: &Spa
             len + 1
         ))
     };
-    er.finish()
+    er
 }
 
 pub fn expected_number_as_type(span: &Span) -> Error {
@@ -125,7 +135,7 @@ pub fn expected_number_as_type(span: &Span) -> Error {
                 .with_message("Should be a number")
                 .with_color(b),
         );
-    er.finish()
+    er
 }
 
 pub fn report_similar(
@@ -181,7 +191,7 @@ pub fn report_similar(
                 .join(", ")
         ))
     };
-    er.finish()
+    er
 }
 
 pub fn invalid_token(
@@ -215,7 +225,6 @@ pub fn invalid_token(
                 expected_tokens[0].fg(out)
             ),
         })
-        .finish()
 }
 
 pub fn invalid_argument_type(span: &Span, expected_type: &str, found_type: &str) -> Error {
@@ -231,7 +240,6 @@ pub fn invalid_argument_type(span: &Span, expected_type: &str, found_type: &str)
                 ))
                 .with_color(Color::Green),
         )
-        .finish()
 }
 
 pub fn invalid_token_after(
@@ -290,7 +298,6 @@ pub fn invalid_token_after(
             expected_tokens[0].fg(out)
         ),
     })
-    .finish()
 }
 
 pub fn method_return_type_invalid(
@@ -321,7 +328,6 @@ pub fn method_return_type_invalid(
                 ))
                 .with_color(a),
         )
-        .finish()
 }
 
 pub fn invalid_type(this: &Span, other: &Span, this_type: &str, other_type: &str) -> Error {
@@ -349,5 +355,4 @@ pub fn invalid_type(this: &Span, other: &Span, this_type: &str, other_type: &str
                 .with_color(b),
         )
     }
-    .finish()
 }

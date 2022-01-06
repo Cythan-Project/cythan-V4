@@ -15,7 +15,8 @@ fn provider(x: &String) -> Result<String, Box<(dyn Debug + 'static)>> {
     }
 }
 
-pub fn report(mut e: Error) {
+pub fn report(e: Error) {
+    let mut e = e.finish();
     let mirror = MirrorReport::from(&mut e);
     let file_name = mirror.location.0.clone();
     if file_name == "<internal>" || file_name == "<native>" {

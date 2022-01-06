@@ -9,6 +9,13 @@ class Byte {
         };
     }
 
+    Self zero() {
+        return Self {
+            lower = 0,
+            higher = 0
+        };
+    }
+
     printDec(self) {
         Val lower = self.lower;
         Val higher = self.higher;

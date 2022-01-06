@@ -7,6 +7,12 @@ use crate::compiler::{
 };
 
 pub fn implement(cl: &mut ClassLoader) {
+    cl.implement_native("System", "debugType", |_ls, _cm, mv| {
+        println!("----DEBUGING----");
+        println!("Type: {:?}", mv.template.as_ref().map(|x| &x.1));
+        println!("----------------");
+        Ok(OutputData::native(MirCodeBlock::default(), None))
+    });
     cl.implement_native("System", "debug", |ls, _cm, _mv| {
         let k = ls.get_var_native("a")?;
         println!("----DEBUGING----");

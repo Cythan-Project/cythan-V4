@@ -4,6 +4,10 @@ class Val {
         return self as Bool;
     }
 
+    Self zero() {
+        return 0;
+    }
+
     Self input() {
         System.setRegister<0>(2);
         return System.getRegister<2>();

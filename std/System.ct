@@ -2,5 +2,6 @@ class System {
 
     setRegister<N>(Val value) {}
     Val getRegister<N>() {}
-    debug<T>(T t) {}
+    debug<T>(T a) {}
+    debugType<T>() {}
 }

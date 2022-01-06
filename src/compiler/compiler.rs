@@ -1,5 +1,6 @@
 use errors::{
-    method_return_type_invalid, report_similar, Error, Span, SpannedObject, SpannedVector,
+    in_method, invalid_type, method_return_type_invalid, report_similar, Error, Span,
+    SpannedObject, SpannedVector,
 };
 use mir::{Mir, MirCodeBlock};
 
@@ -252,7 +253,8 @@ pub fn compile(
                     .cl
                     .view(&a)?
                     .method_view(name, template)?
-                    .execute(ls, cm, arguments)?;
+                    .execute(ls, cm, arguments)
+                    .map_err(|r| in_method(&name.0, r))?;
                 mir.add(k.mir);
                 Ok(OutputData::new(
                     mir,
@@ -281,7 +283,8 @@ pub fn compile(
                     .cl
                     .view(a)?
                     .method_view(name, template)?
-                    .execute(ls, cm, arguments)?;
+                    .execute(ls, cm, arguments)
+                    .map_err(|r| in_method(&name.0, r))?;
                 mir.add(k.mir);
                 Ok(OutputData::new(
                     mir,
@@ -308,7 +311,12 @@ pub fn compile(
                 .return_value
                 .expect("Assignement value must be a value");
             if rt.ty != rt1.ty {
-                panic!("Assignement types must match");
+                return Err(invalid_type(
+                    &rt.ty.span,
+                    &rt1.ty.span,
+                    &format!("{:?}", rt.ty),
+                    &format!("{:?}", rt1.ty),
+                ));
             }
             mir.add(ret1.mir);
             mir.add(ret.mir);
@@ -460,7 +468,14 @@ pub fn compile(
                         "Array",
                         Some(SpannedVector(
                             a.clone(),
-                            vec![rv, Type::simple(&m.to_string(), a.clone())],
+                            vec![
+                                rv,
+                                Type::simple(&m.to_string(), a.clone()),
+                                Type::simple(
+                                    if b.1.len() < 15 { "Val" } else { "Byte" }.clone(),
+                                    a.clone(),
+                                ),
+                            ],
                         )),
                         a.clone(),
                     ),

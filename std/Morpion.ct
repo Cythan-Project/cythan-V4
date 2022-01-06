@@ -1,6 +1,6 @@
 class Morpion {
 
-    Array<Val, 9> grid;
+    Array<Val, 9, Val> grid;
 
     Self new() {
         return Self {

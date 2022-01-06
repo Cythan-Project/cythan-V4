@@ -1,7 +1,7 @@
 class Pendu {
 
-    DynArray<Byte, 12> string;
-    DynArray<Byte, 12> currentLetters;
+    DynArray<Byte, 12, Val> string;
+    DynArray<Byte, 12, Val> currentLetters;
 
     Self new() {
         return Self {
@@ -100,9 +100,9 @@ class Pendu {
                 index.inc();
             };
             if foundLetters.equalsZero() {
-                "Tu n'as pas ".print();
-                "trouvé de".print();
-                " lettre -1 vie".println();
+                "Tu n'as pas".print();
+                " trouvé de ".print();
+                "lettre -1 vie".println();
                 looses.dec();
             } else if self.currentLetters.contains('_').not() {
                 "Vous avez ".print();

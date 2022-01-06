@@ -1,4 +1,4 @@
-use errors::index_out_of_bounds;
+use errors::{index_out_of_bounds, Span, SpannedObject};
 use mir::{Mir, MirCodeBlock};
 
 use crate::{
@@ -6,7 +6,7 @@ use crate::{
         class_loader::ClassLoader,
         state::{output_data::OutputData, typed_definition::TypedMemory},
     },
-    parser::ty::Type,
+    parser::{expression::Expr, ty::Type},
 };
 
 pub fn implement(cl: &mut ClassLoader) {

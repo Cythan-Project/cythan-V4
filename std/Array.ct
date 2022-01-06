@@ -1,12 +1,12 @@
-class Array<T,E> {
+class Array<T,E,F> {
 
     set<N>(self, T value) {}
-    setDyn(self, Val index, T value) {}
+    setDyn(self, F index, T value) {}
     get<N>(self) {}
-    getDyn(self, Val index) {}
-    Val len(self) {}
-    print(Self<Byte, E> self) {
-        Val index = 0;
+    getDyn(self, F index) {}
+    F len(self) {}
+    print(Self<Byte, E, F> self) {
+        F index = F.zero();
         loop {
             if self.len().greater(index) {
                 self.getDyn(index).print();
@@ -16,20 +16,20 @@ class Array<T,E> {
             };
         };
     }
-    println(Self<Byte, E> self) {
-        Val index = 0;
+    println(Self<Byte, E, F> self) {
+        F index = F.zero();
         loop {
-            if self.len().greater(index) {
+            if self.len().equals(index) {
+                break;
+            } else {
                 self.getDyn(index).print();
                 index.inc();
-            } else {
-                break;
             };
         };
         '\n'.print();
     }
     Bool contains(self, T t) {
-        Val size = self.len();
+        F size = self.len();
         loop {
             if size.equalsZero() {
                 return false;
