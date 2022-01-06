@@ -97,6 +97,11 @@ impl Cythan for InterruptedCythan {
                 (self.print_provider)(char as u8);
                 //print!("{}", char as u8 as char);
             }
+            if value == 3 {
+                let a = self.get_value(self.interrupt_place + 1);
+                println!("DEBUG INTERUPT CALLED {}", a);
+                //print!("{}", char as u8 as char);
+            }
             if value == 2 {
                 // println!("INPUT");
                 //let o: u8 = std::io::stdin().bytes().next().unwrap().unwrap();

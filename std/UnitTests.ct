@@ -1,24 +1,6 @@
 class UnitTests {
 
     Val main() {
-        Byte b = Self.fib(5);
-        b.printDec();
-        '\n'.print();
-    }
-
-    Byte fib(Val n) {
-        Byte a1 = 1b;
-        Byte a2 = 1b;
-        loop {
-            if n.equalsZero() {
-                break;
-            };
-            Byte tmp = a1;
-            a1 = a2;
-            tmp.add(a2);
-            a2 = tmp;
-            n.dec();
-        };
-        return a2;
+        "aejerjgernerzddd".println();
     }
 }

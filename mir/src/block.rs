@@ -23,7 +23,6 @@ impl From<Mir> for MirCodeBlock {
         Self(vec![a])
     }
 }
-
 impl From<Vec<Mir>> for MirCodeBlock {
     fn from(a: Vec<Mir>) -> Self {
         Self(a)

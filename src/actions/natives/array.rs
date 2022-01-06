@@ -1,25 +1,33 @@
 use errors::{index_out_of_bounds, Span, SpannedObject};
 use mir::{Mir, MirCodeBlock};
 
-use crate::{
-    compiler::{
-        class_loader::ClassLoader,
-        state::{output_data::OutputData, typed_definition::TypedMemory},
-    },
-    parser::{expression::Expr, ty::Type},
+use crate::compiler::{
+    class_loader::ClassLoader,
+    state::{local_state::LocalState, output_data::OutputData, typed_definition::TypedMemory},
 };
 
 pub fn implement(cl: &mut ClassLoader) {
     cl.implement_native("Array", "setDyn", |ls, cm, mv| {
         let size: u32 = mv.arguments[0].0.get_template()?.1[1].as_number()?;
         let ty = &mv.arguments[0].0.get_template()?.1[0];
+        let index_ty = &mv.arguments[0].0.get_template()?.1[2];
+
+        // Size of an item of the list
         let unit_size = cm.cl.view(ty)?.size(&cm.cl)?;
-        let mpos = cm.alloc();
+
+        // Size of the list indexer
+        let mpos = cm.alloc_block(cm.cl.view(index_ty)?.size(&cm.cl)? as usize);
+        let mtypedmemory = TypedMemory::new(index_ty.clone(), mpos.clone(), Span::default());
+
         let mut mircb = MirCodeBlock::default();
-        mircb.copy(mpos, ls.get_var_native("index")?.locations[0]);
+
+        mircb.copy_bulk(&mpos, &ls.get_var_native("index")?.locations);
+
+        let mut ifcontainer = MirCodeBlock::default();
+
         let from = ls.get_var_native("value")?.locations.clone();
-        let mut mir = MirCodeBlock::default();
-        for position in (0..size).rev() {
+        for position in 0..size {
+            // Get the position to copy to
             let to = ls
                 .get_var_native("self")?
                 .locations
@@ -30,10 +38,18 @@ pub fn implement(cl: &mut ClassLoader) {
                 .collect::<Vec<_>>();
             let mut cb = MirCodeBlock::default();
             cb.copy_bulk(&to, &from);
-            mir.0.insert(0, Mir::Decrement(mpos));
-            mir = MirCodeBlock::from(vec![Mir::If0(mpos, cb, mir)]);
+            cb.add_mir(Mir::Skip);
+            ifcontainer.add(mpos.iter().fold(cb, |a, b| {
+                MirCodeBlock::from(Mir::If0(*b, a, MirCodeBlock::default()))
+            }));
+            let output_data = cm
+                .cl
+                .view(index_ty)?
+                .method_view(&SpannedObject::native("dec".to_string()), &None)?
+                .execute(&mut LocalState::new(), cm, vec![mtypedmemory.clone()])?;
+            ifcontainer.add(output_data.mir);
         }
-        mircb.add(mir);
+        mircb.add_mir(Mir::Block(ifcontainer));
 
         Ok(OutputData::native(mircb, None))
     });
@@ -70,13 +86,21 @@ pub fn implement(cl: &mut ClassLoader) {
     cl.implement_native("Array", "getDyn", |ls, cm, mv| {
         let size: u32 = mv.arguments[0].0.get_template()?.1[1].as_number()?;
         let ty = &mv.arguments[0].0.template.as_ref().unwrap().1[0];
+        let index_ty = &mv.arguments[0].0.get_template()?.1[2];
+
+        // Size of an item of the list
         let unit_size = cm.cl.view(ty)?.size(&cm.cl)?;
-        let mpos = cm.alloc();
+
+        // Size of the list indexer
+        let mpos = cm.alloc_block(cm.cl.view(index_ty)?.size(&cm.cl)? as usize);
+        let mtypedmemory = TypedMemory::new(index_ty.clone(), mpos.clone(), Span::default());
+
         let mut mircb = MirCodeBlock::default();
-        mircb.copy(mpos, ls.get_var_native("index")?.locations[0]);
+        mircb.copy_bulk(&mpos, &ls.get_var_native("index")?.locations);
+
         let to = cm.alloc_block(unit_size as usize);
-        let mut mir = MirCodeBlock::default();
-        for position in (0..size).rev() {
+        let mut ifcontainer = MirCodeBlock::default();
+        for position in 0..size {
             let from = ls
                 .get_var_native("self")?
                 .locations
@@ -86,11 +110,18 @@ pub fn implement(cl: &mut ClassLoader) {
                 .copied()
                 .collect::<Vec<_>>();
             let mut cb = MirCodeBlock::default();
-            cb.copy_bulk(&to, &from);
-            mir.0.insert(0, Mir::Decrement(mpos));
-            mir = MirCodeBlock::from(vec![Mir::If0(mpos, cb, mir)]);
+            cb.copy_bulk(&to, &from).add_mir(Mir::Skip);
+            ifcontainer.add(mpos.iter().fold(cb, |a, b| {
+                MirCodeBlock::from(Mir::If0(*b, a, MirCodeBlock::default()))
+            }));
+            let output_data = cm
+                .cl
+                .view(index_ty)?
+                .method_view(&SpannedObject::native("dec".to_string()), &None)?
+                .execute(&mut LocalState::new(), cm, vec![mtypedmemory.clone()])?;
+            ifcontainer.add(output_data.mir);
         }
-        mircb.add(mir);
+        mircb.add_mir(Mir::Block(ifcontainer));
 
         Ok(OutputData::native(
             mircb,
@@ -132,12 +163,17 @@ pub fn implement(cl: &mut ClassLoader) {
         Ok(OutputData::native(mir, None))
     });
     cl.implement_native("Array", "len", |_ls, cm, mv| {
-        let len: usize = mv.arguments[0].0.get_template()?.1[1].as_number()? as usize;
-        let alloc = cm.alloc();
-
+        let mut len: usize = mv.arguments[0].0.get_template()?.1[1].as_number()? as usize;
+        let ltylen = &mv.arguments[0].0.get_template()?.1[2];
+        let mpos = cm.alloc_block(cm.cl.view(&ltylen)?.size(&cm.cl)? as usize);
+        let mut k = MirCodeBlock::default();
+        mpos.iter().for_each(|v| {
+            k.set(*v, (len % 16) as u8);
+            len /= 16;
+        });
         Ok(OutputData::native(
-            MirCodeBlock(vec![Mir::Set(alloc, len as u8)]),
-            Some(TypedMemory::native(Type::native_simple("Val"), vec![alloc])),
+            k,
+            Some(TypedMemory::native(ltylen.clone(), mpos)),
         ))
     });
 }

@@ -100,13 +100,10 @@ class Pendu {
                 index.inc();
             };
             if foundLetters.equalsZero() {
-                "Tu n'as pas".print();
-                " trouvé de ".print();
-                "lettre -1 vie".println();
+                "Tu n'as pas trouvé de lettre -1 vie".println();
                 looses.dec();
             } else if self.currentLetters.contains('_').not() {
-                "Vous avez ".print();
-                "gagné!".println();
+                "Vous avez gagné!".println();
                 break;
             };
         };

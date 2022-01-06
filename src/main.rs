@@ -25,7 +25,19 @@ fn main() {
         }
         Some("build") => {
             let fname = args.get(2).expect("No file name given");
-            compile(fname.to_owned());
+            let compiled = compile(fname.to_owned());
+            if let Some(e) = args.get(3) {
+                std::fs::write(
+                    e,
+                    compiled
+                        .0
+                        .iter()
+                        .map(|x| x.to_string())
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                )
+                .expect("Could not write file");
+            }
             println!("Compiled successfully!")
         }
         Some("test") => {

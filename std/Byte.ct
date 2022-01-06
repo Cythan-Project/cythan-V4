@@ -114,4 +114,9 @@ class Byte {
             return false;
         }
     }
+
+    debug(self) {
+        System.debugInterupt(self.lower);
+        System.debugInterupt(self.higher);
+    }
 }

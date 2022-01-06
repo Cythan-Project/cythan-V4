@@ -4,4 +4,9 @@ class System {
     Val getRegister<N>() {}
     debug<T>(T a) {}
     debugType<T>() {}
+
+    debugInterupt(Val a) {
+        Self.setRegister<1>(a);
+        Self.setRegister<0>(3);
+    }
 }

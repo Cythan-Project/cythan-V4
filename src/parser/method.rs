@@ -6,8 +6,7 @@ use std::{
 
 use either::Either;
 use errors::{
-    in_method, invalid_argument_type, invalid_type_template, Error, Span, SpannedObject,
-    SpannedVector,
+    invalid_argument_type, invalid_type_template, Error, Span, SpannedObject, SpannedVector,
 };
 use mir::{need_block, remove_skips, Mir, MirCodeBlock};
 
