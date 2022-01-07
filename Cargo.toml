@@ -11,9 +11,10 @@ lir = { path = "lir" }
 mir = { path = "mir" }
 errors = { path = "errors" }
 cythan = { path = "Cythan-V2" }
+varuint = "*"
 
 [profile.release]
 debug = true
 
 [workspace]
-members = ["lir", "Cythan-V2", "mir","errors"]
+members = ["lir", "Cythan-V2", "mir", "errors"]
