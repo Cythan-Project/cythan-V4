@@ -4,6 +4,7 @@ use std::{
 };
 
 // 7715
+// 7242
 
 use either::Either;
 
@@ -31,10 +32,10 @@ impl OptContext {
             })
             .map(|(a, _)| *a)
             .collect();
+        let j = self.variables.remove(&id);
         k.iter().for_each(|x| {
-            self.remove(*x);
+            self.set_or_remove(*x, j);
         });
-        self.variables.remove(&id);
     }
 
     fn set_or_remove(&mut self, id: u32, status: Option<VariableStatus>) {
@@ -77,18 +78,21 @@ impl OptContext {
             })
             .map(|(a, _)| *a)
             .collect();
+        let j = self.variables.remove(&id);
         k.iter().for_each(|x| {
-            self.remove(*x);
+            self.set_or_remove(*x, j);
         });
         self.variables.insert(id, status);
     }
 
-    fn merge(&self, other: &Self) -> Self {
+    fn merge(&mut self, other: &mut Self) -> Self {
         let mut variables = HashMap::new();
-        for (k, v) in other.variables.iter() {
-            if let Some(e) = self.variables.get(k) {
-                if e == v {
-                    variables.insert(*k, *v);
+        for a in other.variables.keys().copied().collect::<Vec<_>>() {
+            if let Some(aa) = other.get_flatten(a) {
+                if let Some(ab) = self.get_flatten(a) {
+                    if aa == ab {
+                        variables.insert(a, aa);
+                    }
                 }
             }
         }
@@ -153,22 +157,31 @@ fn optimize(mir: Mir, context: &mut OptContext) -> Vec<Mir> {
 
             vec![Mir::Decrement(a)]
         }
-        Mir::If0(a, b, c) => {
-            if let Some(e) = context.get_value(a) {
-                if e == 0 {
-                    return optimize_block(b, context);
-                } else {
-                    return optimize_block(c, context);
-                }
-            } else {
+        Mir::If0(a, b, c) => match context.get_flatten(a) {
+            Some(VariableStatus::Ref(e)) => {
                 let mut cb = context.clone();
                 let mut cc = context.clone();
                 let b = MirCodeBlock(optimize_block(b, &mut cb));
                 let c = MirCodeBlock(optimize_block(c, &mut cc));
-                *context = cb.merge(&cc);
+                *context = cb.merge(&mut cc);
+                vec![Mir::If0(e, b, c)]
+            }
+            Some(VariableStatus::Value(e)) => {
+                if e == 0 {
+                    optimize_block(b, context)
+                } else {
+                    optimize_block(c, context)
+                }
+            }
+            None => {
+                let mut cb = context.clone();
+                let mut cc = context.clone();
+                let b = MirCodeBlock(optimize_block(b, &mut cb));
+                let c = MirCodeBlock(optimize_block(c, &mut cc));
+                *context = cb.merge(&mut cc);
                 vec![Mir::If0(a, b, c)]
             }
-        }
+        },
         Mir::Loop(a) => {
             for w in a.get_writes() {
                 context.remove(w);

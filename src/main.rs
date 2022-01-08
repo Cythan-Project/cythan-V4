@@ -79,4 +79,4 @@ fn main() {
     }
 }
 
-const MIR_MODE: bool = true;
+const MIR_MODE: bool = false;
