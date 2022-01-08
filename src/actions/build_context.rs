@@ -18,7 +18,25 @@ pub fn compile(class_name: String) -> MirCodeBlock {
         .stack_size(STACK_SIZE)
         .spawn(move || generate_mir(&class_name))
         .unwrap();
-    child.join().unwrap()
+    let k = child.join().unwrap();
+    std::fs::write(
+        "before.mir",
+        k.0.iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+    .expect("Could not write file");
+    let k = k.optimize_code_new();
+    std::fs::write(
+        "after.mir",
+        k.0.iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+    .expect("Could not write file");
+    k
 }
 
 fn generate_mir(class_name: &str) -> MirCodeBlock {

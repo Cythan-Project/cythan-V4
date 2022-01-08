@@ -56,6 +56,9 @@ impl IntoIterator for MirCodeBlock {
 }
 
 impl MirCodeBlock {
+    pub fn optimize_code_new(self) -> Self {
+        crate::optimizer::new_opt::optimize_code(self)
+    }
     pub fn to_asm(&self, state: &mut MirState) -> SkipStatus {
         for i in &self.0 {
             match i.to_asm(state) {
