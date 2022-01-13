@@ -67,6 +67,14 @@ pub fn keep(mir: &Mir, reads: &mut HashSet<u32>) -> Option<Mir> {
         Mir::WriteRegister(_, _) => (),
         Mir::Skip => (),
         Mir::Block(a) => return Some(Mir::Block(keep_block(a, reads))),
+        Mir::Match(a, b) => {
+            return Some(Mir::Match(
+                *a,
+                b.iter()
+                    .map(|(x, y)| (keep_block(x, reads), y.clone()))
+                    .collect(),
+            ))
+        }
     }
     Some(mir.clone())
 }
@@ -100,7 +108,7 @@ pub fn improve_code_flow(block: Vec<Mir>, opt: &OptConfig) -> Vec<Mir> {
     out
 }
 
-pub fn try_unroll_loop(
+/* pub fn try_unroll_loop(
     state: &mut OptimizerState,
     lp: &[Mir],
     opt: &OptConfig,
@@ -120,7 +128,7 @@ pub fn try_unroll_loop(
         }
     }
     (false, Mir::Loop(MirCodeBlock(lp.to_vec())).into())
-}
+} */
 
 pub fn remove_skips(mir: &Mir) -> Option<Mir> {
     match mir {

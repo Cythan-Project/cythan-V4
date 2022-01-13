@@ -1,6 +1,6 @@
 use either::Either;
 
-use crate::optimizer::old::{contains_skip, does_skip_in_all_cases, remove_skips, try_unroll_loop};
+use crate::optimizer::old::{contains_skip, does_skip_in_all_cases, remove_skips};
 use crate::optimizer::state::{OptimizerState, VarState};
 use crate::{
     optimizer::old::{improve_code_flow, OptConfig},
@@ -10,7 +10,7 @@ use crate::{
 pub trait Optimize {
     fn optimize(&self, state: &mut OptimizerState, opt: &OptConfig) -> MirCodeBlock;
 }
-
+/*
 impl Optimize for MirCodeBlock {
     fn optimize(&self, state: &mut OptimizerState, opt: &OptConfig) -> MirCodeBlock {
         MirCodeBlock(improve_code_flow(
@@ -21,8 +21,8 @@ impl Optimize for MirCodeBlock {
             opt,
         ))
     }
-}
-
+} */
+/*
 impl Optimize for Mir {
     fn optimize(&self, state: &mut OptimizerState, opt: &OptConfig) -> MirCodeBlock {
         match &self {
@@ -134,3 +134,4 @@ impl Optimize for Mir {
         self.clone().into()
     }
 }
+ */

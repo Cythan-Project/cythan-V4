@@ -124,6 +124,14 @@ impl MemoryState {
                 SkipStatus::Skip => return SkipStatus::None,
                 e => return e,
             },
+            Mir::Match(a, b) => {
+                let k = self.get_mem(*a);
+                for (a, b) in b.iter() {
+                    if b.contains(&k) {
+                        return self.execute_block(a, printer);
+                    }
+                }
+            }
         }
         SkipStatus::None
     }

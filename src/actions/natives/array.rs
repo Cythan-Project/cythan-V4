@@ -30,6 +30,34 @@ pub fn implement(cl: &mut ClassLoader) {
         let mut ifcontainer = MirCodeBlock::default();
 
         let from = ls.get_var_native("value")?.locations.clone();
+
+        if mpos.len() == 1 {
+            mircb.add_mir(Mir::Match(
+                mpos[0].clone(),
+                (0..size)
+                    .map(|x| {
+                        Ok((
+                            {
+                                let mut kj = MirCodeBlock::default();
+                                let to = ls
+                                    .get_var_native("self")?
+                                    .locations
+                                    .iter()
+                                    .skip((unit_size * x) as usize)
+                                    .take(unit_size as usize)
+                                    .copied()
+                                    .collect::<Vec<_>>();
+                                kj.copy_bulk(&to, &from, &Span::default())?;
+                                kj
+                            },
+                            vec![x as u8],
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            ));
+            return Ok(OutputData::native(mircb, None));
+        }
+
         for position in 0..size {
             // Get the position to copy to
             let to = ls

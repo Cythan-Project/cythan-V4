@@ -1,3 +1,5 @@
+#![feature(format_args_capture)]
+
 mod instruction;
 mod label;
 mod number;

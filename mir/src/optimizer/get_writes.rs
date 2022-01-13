@@ -25,6 +25,11 @@ impl MirCodeBlock {
                 Mir::Stop => (),
                 Mir::WriteRegister(_, _) => (),
                 Mir::Skip => (),
+                Mir::Match(_, b) => {
+                    b.iter().for_each(|(b, _)| {
+                        b.iter().for_each(|x| inner(x, muts));
+                    });
+                }
             }
         }
         let mut set = HashSet::new();

@@ -57,7 +57,7 @@ impl IntoIterator for MirCodeBlock {
 
 impl MirCodeBlock {
     pub fn optimize_code_new(self) -> Self {
-        crate::optimizer::new_opt::optimize_code(self)
+        crate::optimizer::new_opt::optimize_code(self, 0)
     }
     pub fn to_asm(&self, state: &mut MirState) -> SkipStatus {
         for i in &self.0 {
@@ -77,7 +77,7 @@ impl Default for MirCodeBlock {
 }
 
 impl MirCodeBlock {
-    #[allow(dead_code)]
+    /* #[allow(dead_code)]
     pub fn optimize_code(&self) -> Self {
         let before = self.instr_count();
         let mut after = self.clone();
@@ -107,7 +107,7 @@ impl MirCodeBlock {
         )
         .unwrap();
         after
-    }
+    } */
     #[allow(dead_code)]
     pub fn instr_count(&self) -> usize {
         self.0

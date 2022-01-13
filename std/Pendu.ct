@@ -1,12 +1,12 @@
 class Pendu {
 
-    DynArray<Byte, 50, Byte> string;
-    DynArray<Byte, 50, Byte> currentLetters;
+    DynArray<Byte, 15, Val> string;
+    DynArray<Byte, 15, Val> currentLetters;
 
     Self new() {
         return Self {
-            string = DynArray.from<26>("intergouvernementalisation"),
-            currentLetters = DynArray.from<26>("__________________________")
+            string = DynArray.from<9>("grammaire"),
+            currentLetters = DynArray.from<9>("_________")
         }
     }
 
@@ -84,9 +84,9 @@ class Pendu {
                 break;
             };
             Byte input = Byte.input();
-            Byte slen = self.string.len();
-            Byte index = Byte.zero();
-            Byte foundLetters = Byte.zero();
+            Val slen = self.string.len();
+            Val index = Val.zero();
+            Val foundLetters = Val.zero();
             loop {
                 if slen.equalsZero() {
                     break;

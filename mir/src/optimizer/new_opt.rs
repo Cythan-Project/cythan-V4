@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     ops::RangeBounds,
+    slice::SliceIndex,
 };
 
 // 7715
@@ -13,6 +14,125 @@ use crate::{Mir, MirCodeBlock};
 #[derive(Clone)]
 struct OptContext {
     variables: HashMap<u32, VariableStatus>,
+}
+
+pub fn get_static_vars(cb: &MirCodeBlock) -> HashMap<u32, u8> {
+    fn inner(cb: &MirCodeBlock, vars: &mut HashMap<u32, u8>) {
+        cb.iter().for_each(|x| match x {
+            Mir::Set(a, b) => {
+                vars.insert(*a, *b);
+            }
+            Mir::If0(_, b, c) => {
+                inner(b, vars);
+                inner(c, vars);
+            }
+            Mir::Block(a) => {
+                inner(a, vars);
+            }
+            _ => (),
+        });
+    }
+    fn remove_inner(cb: &MirCodeBlock, vars: &mut HashMap<u32, u8>, in_rm: bool) {
+        cb.iter().for_each(|x| match x {
+            Mir::Set(a, b) => {
+                if in_rm {
+                    if vars.get(a) != Some(b) {
+                        vars.remove(a);
+                    }
+                }
+            }
+            Mir::Copy(a, _) => {
+                vars.remove(a);
+            }
+            Mir::Increment(a) => {
+                vars.remove(a);
+            }
+            Mir::Decrement(a) => {
+                vars.remove(a);
+            }
+            Mir::If0(_, b, c) => {
+                remove_inner(b, vars, in_rm);
+                remove_inner(c, vars, in_rm);
+            }
+            Mir::Loop(a) => {
+                remove_inner(a, vars, true);
+            }
+            Mir::Break => (),
+            Mir::Continue => (),
+            Mir::Stop => (),
+            Mir::ReadRegister(a, _) => {
+                vars.remove(a);
+            }
+            Mir::WriteRegister(_, _) => (),
+            Mir::Skip => (),
+            Mir::Block(a) => {
+                remove_inner(a, vars, in_rm);
+            }
+            Mir::Match(a, b) => {
+                vars.remove(a);
+                b.iter().for_each(|(a, _)| {
+                    remove_inner(a, vars, in_rm);
+                });
+            }
+        });
+    }
+    let mut vars = HashMap::new();
+    inner(cb, &mut vars);
+    remove_inner(cb, &mut vars, false);
+    vars
+}
+
+fn apply_static_vars(cb: MirCodeBlock, vars: &HashMap<u32, u8>) -> MirCodeBlock {
+    MirCodeBlock(
+        cb.into_iter()
+            .flat_map(|x| {
+                vec![match x {
+                    Mir::Set(a, b) => Mir::Set(a, b),
+                    Mir::Copy(a, b) => {
+                        if let Some(e) = vars.get(&b) {
+                            Mir::Set(a, *e)
+                        } else {
+                            Mir::Copy(a, b)
+                        }
+                    }
+                    Mir::Increment(a) => Mir::Increment(a),
+                    Mir::Decrement(a) => Mir::Decrement(a),
+                    Mir::If0(a, b, c) => {
+                        if let Some(e) = vars.get(&a) {
+                            if e == &0 {
+                                return apply_static_vars(b, &vars).0;
+                            } else {
+                                return apply_static_vars(c, &vars).0;
+                            }
+                        } else {
+                            Mir::If0(a, apply_static_vars(b, &vars), apply_static_vars(c, &vars))
+                        }
+                    }
+                    Mir::Loop(a) => Mir::Loop(apply_static_vars(a, &vars)),
+                    Mir::Break => Mir::Break,
+                    Mir::Continue => Mir::Continue,
+                    Mir::Stop => Mir::Stop,
+                    Mir::ReadRegister(a, b) => Mir::ReadRegister(a, b),
+                    Mir::WriteRegister(a, b) => match b {
+                        Either::Right(b) => {
+                            if let Some(e) = vars.get(&b) {
+                                Mir::WriteRegister(a, Either::Left(*e))
+                            } else {
+                                Mir::WriteRegister(a, Either::Right(b))
+                            }
+                        }
+                        Either::Left(b) => Mir::WriteRegister(a, Either::Left(b)),
+                    },
+                    Mir::Skip => Mir::Skip,
+                    Mir::Block(a) => Mir::Block(apply_static_vars(a, &vars)),
+                    Mir::Match(a, b) => {
+                        // TODO
+                        Mir::Match(a, b)
+                    }
+                }]
+            })
+            .collect(),
+    )
 }
 
 impl OptContext {
@@ -106,11 +226,19 @@ enum VariableStatus {
     Ref(u32),
 }
 
-pub fn optimize_code(mir: MirCodeBlock) -> MirCodeBlock {
+pub fn optimize_code(mir: MirCodeBlock, current_count: usize) -> MirCodeBlock {
     let mut context = OptContext::new();
     let k = MirCodeBlock(optimize_block(mir, &mut context));
+    let statics = get_static_vars(&k);
+    let k = apply_static_vars(k, &statics);
     let j = k.get_reads();
-    remove_unread(k, &j)
+    let k = remove_unread(k, &j);
+    let ic = k.instr_count();
+    if ic == current_count {
+        k
+    } else {
+        optimize_code(k, ic)
+    }
 }
 
 fn optimize_block(mir: MirCodeBlock, context: &mut OptContext) -> Vec<Mir> {
@@ -182,6 +310,52 @@ fn optimize(mir: Mir, context: &mut OptContext) -> Vec<Mir> {
                 vec![Mir::If0(a, b, c)]
             }
         },
+        Mir::Match(a, b) => match context.get_flatten(a) {
+            Some(VariableStatus::Ref(e)) => {
+                let mut cur_state: Option<OptContext> = None;
+                let m: Vec<_> = b
+                    .into_iter()
+                    .map(|(x, y)| {
+                        let mut cb = context.clone();
+                        let x = MirCodeBlock(optimize_block(x, &mut cb));
+                        cur_state = match &mut cur_state {
+                            Some(a) => Some(a.merge(&mut cb)),
+                            None => Some(cb),
+                        };
+                        (x, y)
+                    })
+                    .collect();
+
+                *context = cur_state.unwrap();
+                vec![Mir::Match(e, m)]
+            }
+            Some(VariableStatus::Value(e)) => {
+                for j in b {
+                    if j.1.contains(&e) {
+                        return optimize_block(j.0, context);
+                    }
+                }
+                return vec![];
+            }
+            None => {
+                let mut cur_state: Option<OptContext> = None;
+                let m: Vec<_> = b
+                    .into_iter()
+                    .map(|(x, y)| {
+                        let mut cb = context.clone();
+                        let x = MirCodeBlock(optimize_block(x, &mut cb));
+                        cur_state = match &mut cur_state {
+                            Some(a) => Some(a.merge(&mut cb)),
+                            None => Some(cb),
+                        };
+                        (x, y)
+                    })
+                    .collect();
+
+                *context = cur_state.unwrap();
+                vec![Mir::Match(a, m)]
+            }
+        },
         Mir::Loop(a) => {
             for w in a.get_writes() {
                 context.remove(w);
@@ -209,7 +383,9 @@ fn optimize(mir: Mir, context: &mut OptContext) -> Vec<Mir> {
         Mir::Skip => vec![Mir::Skip],
         Mir::Block(a) => {
             let mut cb = context.clone();
+            let muts = a.get_writes();
             let a = MirCodeBlock(optimize_block(a, &mut cb));
+            muts.iter().for_each(|x| context.remove(*x));
             vec![Mir::Block(a)]
         }
     }

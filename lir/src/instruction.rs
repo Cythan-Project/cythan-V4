@@ -1,12 +1,13 @@
 use std::{borrow::Cow, collections::HashSet, fmt::Display};
 
-use crate::{label::Label, number::Number, optimizer, value::AsmValue, var::Var};
+use crate::{label::Label, number::Number, optimizer, value::AsmValue, var::Var, Counter};
 
 use super::template::Template;
 
 #[derive(Default)]
 pub struct Context {
     variables: HashSet<usize>,
+    counter: Counter,
 }
 
 #[derive(Debug, Clone)]
@@ -18,8 +19,39 @@ pub enum CompilableInstruction {
     Label(Label),        // Defines a label
     If0(Var, Label),     // Jumps to the label if the thing is equals to 0
     Stop,
+    Match(Var, [Option<Label>; 16]),
     ReadRegister(Var, Number),
     WriteRegister(Number, AsmValue),
+}
+
+#[test]
+fn test_v3() {
+    let mut ctx = Context::default();
+    let mut template = Template::default();
+    let mut counter = crate::Counter::default();
+    CompilableInstruction::Match(
+        Var(10),
+        [
+            Some(Label::alloc(&mut counter, crate::LabelType::BlockEnd)),
+            Some(Label::alloc(&mut counter, crate::LabelType::BlockEnd)),
+            Some(Label::alloc(&mut counter, crate::LabelType::BlockEnd)),
+            Some(Label::alloc(&mut counter, crate::LabelType::BlockEnd)),
+            Some(Label::alloc(&mut counter, crate::LabelType::BlockEnd)),
+            Some(Label::alloc(&mut counter, crate::LabelType::BlockEnd)),
+            Some(Label::alloc(&mut counter, crate::LabelType::BlockEnd)),
+            Some(Label::alloc(&mut counter, crate::LabelType::BlockEnd)),
+            Some(Label::alloc(&mut counter, crate::LabelType::BlockEnd)),
+            Some(Label::alloc(&mut counter, crate::LabelType::BlockEnd)),
+            Some(Label::alloc(&mut counter, crate::LabelType::BlockEnd)),
+            Some(Label::alloc(&mut counter, crate::LabelType::BlockEnd)),
+            Some(Label::alloc(&mut counter, crate::LabelType::BlockEnd)),
+            Some(Label::alloc(&mut counter, crate::LabelType::BlockEnd)),
+            Some(Label::alloc(&mut counter, crate::LabelType::BlockEnd)),
+            Some(Label::alloc(&mut counter, crate::LabelType::BlockEnd)),
+        ],
+    )
+    .compile_inner(&mut template, &mut ctx);
+    println!("{}", template.build());
 }
 
 impl CompilableInstruction {
@@ -35,7 +67,9 @@ impl CompilableInstruction {
         compile_state.build()
     }
     pub fn compile_to_binary(instrs: Vec<Self>) -> Vec<usize> {
-        cythan_compiler::compile(&Self::compile_to_string(instrs)).unwrap()
+        let ks = Self::compile_to_string(instrs);
+        std::fs::write("target/v3.ct", &ks);
+        cythan_compiler::compile(&ks).unwrap()
     }
     fn check_compile_var(var: &Var, template: &mut Template, ctx: &mut Context) {
         if !ctx.variables.contains(&var.0) {
@@ -72,6 +106,29 @@ impl CompilableInstruction {
                 Self::check_compile_var(a, template, ctx);
                 template.add_code(Cow::Owned(format!("if_0({} {})", a, b)))
             }
+            Self::Match(a, b) => {
+                let k = ctx.counter.count();
+                Self::check_compile_var(a, template, ctx);
+                template.add_code(Cow::Owned(format!(
+                    "{a} 'test_{k} \n{}\n'test_{k}:earasable 0\njump('end1_{k})\n{}\n'end_{k}:~+1\n'end1_{k}:no_op",
+                    b.iter()
+                        .enumerate()
+                        .map(|(i, x)| match x {
+                            Some(_) => format!("'pt{}_{k} {}", i, if i == 0 { 16 } else { i }),
+                            None => format!("'end_{k} {}", i),
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    b.iter()
+                        .enumerate()
+                        .map(|(i, x)| match x {
+                            Some(x) => format!("'pt{}_{k}:{}", i, x),
+                            None => format!("'pt{}_{k}:'end_{k}", i),
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                )))
+            }
             Self::Stop => template.add_code(Cow::Borrowed("stop")),
             Self::ReadRegister(a, b) => {
                 template.add_code(Cow::Owned(format!("'#return_{} {}", b.0, a)));
@@ -106,6 +163,20 @@ impl Display for CompilableInstruction {
             Self::Jump(a) => write!(f, "jmp {}", a),
             Self::Label(a) => write!(f, "{}", a),
             Self::If0(a, b) => write!(f, "if ${} {}", a.0, b),
+            Self::Match(a, b) => write!(
+                f,
+                "match ${} ({})",
+                a.0,
+                b.iter()
+                    .enumerate()
+                    .map(|(i, x)| format!(
+                        "{}={}",
+                        i,
+                        x.as_ref().map(|x| x.to_string()).unwrap_or_default()
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             Self::Stop => write!(f, "stop"),
             Self::ReadRegister(a, b) => write!(f, "${} = @{}", a.0, b.0),
             Self::WriteRegister(a, b) => write!(

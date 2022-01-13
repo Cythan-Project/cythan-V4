@@ -1,7 +1,7 @@
 use std::fmt::Display;
 
 use either::Either;
-use lir::{AsmValue, Label, LabelType, Number, Var};
+use lir::{AsmValue, CompilableInstruction, Label, LabelType, Number, Var};
 
 use crate::{block::MirCodeBlock, skip_status::SkipStatus, state::MirState};
 
@@ -21,6 +21,7 @@ pub enum Mir {
     WriteRegister(u8, Either<u8, u32>),
     Skip,
     Block(MirCodeBlock),
+    Match(u32, Vec<(MirCodeBlock, Vec<u8>)>),
 }
 
 impl Display for Mir {
@@ -103,6 +104,23 @@ impl Display for Mir {
                     .join("\n")
                     .replace("\n", "\n  ")
             ),
+            Self::Match(a, b) => {
+                let mut s = String::new();
+                s.push_str(&format!("match v{} {{\n", a));
+                for (_, (c, v)) in b.iter().enumerate() {
+                    s.push_str(&format!("  {:?} => {{\n    ", v));
+                    s.push_str(
+                        &c.0.iter()
+                            .map(|x| x.to_string())
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                            .replace("\n", "\n    "),
+                    );
+                    s.push_str("\n  }\n");
+                }
+                s.push_str("}");
+                write!(f, "{}", s)
+            }
         }
     }
 }
@@ -198,6 +216,41 @@ impl Mir {
                 if matches!(k, SkipStatus::Continue) {
                     return SkipStatus::Continue;
                 }
+            }
+            Self::Match(a, b) => {
+                let end = Label::alloc(&mut state.count, LabelType::Match);
+                let mut g = [
+                    None, None, None, None, None, None, None, None, None, None, None, None, None,
+                    None, None, None,
+                ];
+                let mut k = Vec::new();
+                for (_, b) in b {
+                    let lbl = Label::alloc(&mut state.count, LabelType::Match);
+                    for k in b {
+                        g[*k as usize] = Some(lbl.clone());
+                    }
+                    k.push(lbl);
+                }
+                state
+                    .instructions
+                    .push(CompilableInstruction::Match(Var(*a as usize), g));
+
+                state.jump(end.clone());
+
+                let mut sk: Option<SkipStatus> = None;
+
+                for ((a, _), p) in b.iter().zip(k.iter()) {
+                    state.label(p.clone());
+                    let k = a.to_asm(state);
+                    sk = match sk {
+                        Some(e) => Some(e.lightest(&k)),
+                        None => Some(k),
+                    };
+                    state.jump(end.clone());
+                }
+
+                state.label(end);
+                return sk.unwrap_or(SkipStatus::None);
             }
         }
         SkipStatus::None

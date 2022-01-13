@@ -12,6 +12,7 @@ pub enum LabelType {
     IfStart,
     IfEnd,
     BlockEnd,
+    Match,
 }
 
 impl Display for LabelType {
@@ -25,6 +26,7 @@ impl Display for LabelType {
                 LabelType::IfStart => 'D',
                 LabelType::IfEnd => 'F',
                 LabelType::BlockEnd => 'G',
+                LabelType::Match => 'H',
             }
         )
     }

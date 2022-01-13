@@ -2,23 +2,9 @@ class Pendu1 {
 
 
     Val main() {
-        Array<Byte, 2> string = "ge";
-        Array<Byte, 2> currentLetters = "__";
-        Byte input = Byte.input();
-        Val slen = 2;
-        loop {
-            slen.dec();
-            Byte kdyn = string.getDyn(slen);
-            if kdyn.equals(input) {
-                currentLetters.setDyn(slen, kdyn);
-            };
-            if slen.equalsZero() {
-                break;
-            };
-        };
-        if currentLetters.contains('_').not() {
-            'A'.print();
-        };
+        Array<Byte, 2, Val> string = "ge";
+        string.setDyn(1, 'f');
+        string.get<1>().print();
         return 0;
     }
 }
