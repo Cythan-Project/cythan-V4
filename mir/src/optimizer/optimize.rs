@@ -1,11 +1,5 @@
-use either::Either;
-
-use crate::optimizer::old::{contains_skip, does_skip_in_all_cases, remove_skips};
-use crate::optimizer::state::{OptimizerState, VarState};
-use crate::{
-    optimizer::old::{improve_code_flow, OptConfig},
-    Mir, MirCodeBlock,
-};
+use crate::optimizer::state::OptimizerState;
+use crate::{optimizer::old::OptConfig, MirCodeBlock};
 
 pub trait Optimize {
     fn optimize(&self, state: &mut OptimizerState, opt: &OptConfig) -> MirCodeBlock;

@@ -1,4 +1,4 @@
-use std::fmt::Display;
+use std::{fmt::Display, collections::HashSet};
 
 use either::Either;
 use lir::{AsmValue, CompilableInstruction, Label, LabelType, Number, Var};
@@ -25,6 +25,7 @@ pub enum Mir {
 }
 
 impl Display for Mir {
+    
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Copy(a, b) => write!(f, "v{} = v{}", *a, *b),
@@ -126,6 +127,54 @@ impl Display for Mir {
 }
 
 impl Mir {
+    pub fn get_acesses(&self) -> HashSet<u32> {
+        let mut set = HashSet::new();
+        match self {
+            Mir::Set(a, _) => {
+                set.insert(*a);
+            }
+            Mir::Copy(a, b) => {
+                set.insert(*a);
+                set.insert(*b);
+            }
+            Mir::Increment(a) => {
+                set.insert(*a);
+            }
+            Mir::Decrement(a) => {
+                set.insert(*a);
+            }
+            Mir::If0(a, b, c) => {
+                set.insert(*a);
+                set.extend(b.iter().flat_map(|x| x.get_acesses()));
+                set.extend(c.iter().flat_map(|x| x.get_acesses()));
+            }
+            Mir::Loop(a) => {
+                set.extend(a.iter().flat_map(|x| x.get_acesses()));
+            }
+            Mir::Break => {}
+            Mir::Continue => {}
+            Mir::Stop => {}
+            Mir::ReadRegister(a, _) => {
+                set.insert(*a);
+            }
+            Mir::WriteRegister(_, b) => {
+                if let Either::Right(a) = b {
+                    set.insert(*a);
+                }
+            }
+            Mir::Skip => {}
+            Mir::Block(a) => {
+                set.extend(a.iter().flat_map(|x| x.get_acesses()));
+            }
+            Mir::Match(a, b) => {
+                set.insert(*a);
+                for (_, (c, _)) in b.iter().enumerate() {
+                    set.extend(c.iter().flat_map(|x| x.get_acesses()));
+                }
+            }
+        }
+        set
+    }
     pub fn to_asm(&self, state: &mut MirState) -> SkipStatus {
         match self {
             Self::Copy(a, b) => {

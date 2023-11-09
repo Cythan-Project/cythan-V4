@@ -5,14 +5,9 @@ use std::{
 
 use errors::{invalid_length_asm, Error, Span};
 
-use crate::optimizer::state::OptimizerState;
 
 use crate::{
     mir::Mir,
-    optimizer::{
-        old::{keep_block, OptConfig},
-        optimize::Optimize,
-    },
     skip_status::SkipStatus,
     state::MirState,
 };

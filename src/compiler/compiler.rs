@@ -472,7 +472,7 @@ pub fn compile(
                                 rv,
                                 Type::simple(&m.to_string(), a.clone()),
                                 Type::simple(
-                                    if b.1.len() < 15 { "Val" } else { "Byte" }.clone(),
+                                    if b.1.len() < 15 { "Val" } else { "Byte" },
                                     a.clone(),
                                 ),
                             ],

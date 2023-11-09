@@ -18,9 +18,10 @@ impl<S> MirrorLabel<S> {
 
 pub struct MirrorReport<S: ariadne::Span = Range<usize>> {
     _kind: ReportKind,
-    _code: Option<u32>,
+    _code: Option<String>,
     _msg: Option<String>,
     _note: Option<String>,
+    _help: Option<String>,
     pub location: (<S::SourceId as ToOwned>::Owned, usize),
     pub labels: Vec<Label<S>>,
     _config: Config,

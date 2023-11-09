@@ -55,6 +55,48 @@ impl InterruptedCythan {
 
 use crate::cythan::Cythan;
 
+impl InterruptedCythan {
+
+    #[inline]
+    pub fn next_get_interupt(&mut self) -> bool {
+        unsafe {
+            let index = if self.cases.is_empty() {
+                self.cases.push(2);
+                0
+            } else {
+                let index = self.cases.get_unchecked_mut(0);
+                let o = *index;
+                *index += 2;
+                o
+            };
+
+            let (c2, c1) = {
+                let mut i = self.cases.iter().skip(index);
+                (*i.next().unwrap_or(&0), *i.next().unwrap_or(&0))
+            };
+
+            self.set_value_interupt(c1, self.get_value(c2))
+        }
+    }
+    #[inline]
+    fn set_value_interupt(&mut self, index: usize, value: usize) -> bool{
+        if index == self.interrupt_place {
+            return true;
+        }
+        if self.cases.len() <= index {
+            if value != 0 {
+                self.cases.extend((self.cases.len()..index).map(|_| 0));
+                self.cases.push(value);
+            }
+        } else {
+            unsafe {
+                *self.cases.get_unchecked_mut(index) = value;
+            }
+        }
+        false
+    }
+}
+
 impl Cythan for InterruptedCythan {
     #[inline]
     fn next(&mut self) {

@@ -3,7 +3,6 @@ use std::collections::HashSet;
 use crate::{
     block::MirCodeBlock,
     mir::Mir,
-    optimizer::{optimize::Optimize, state::OptimizerState},
 };
 
 pub struct OptConfig {

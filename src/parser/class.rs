@@ -247,7 +247,7 @@ impl TemplateFixer {
                 or_else,
             } => Expr::If {
                 span,
-                condition: box self.expr(*condition),
+                condition: Box::new( self.expr(*condition)),
                 then: SpannedVector(then.0, then.1.into_iter().map(|x| self.expr(x)).collect()),
                 or_else: or_else
                     .map(|x| SpannedVector(x.0, x.1.into_iter().map(|x| self.expr(x)).collect())),
@@ -257,7 +257,7 @@ impl TemplateFixer {
             Expr::Type(span, a) => Expr::Type(span, self.ty(a)),
             Expr::Field { span, source, name } => Expr::Field {
                 span,
-                source: box self.expr(*source),
+                source: Box::new( self.expr(*source)),
                 name,
             },
             Expr::Method {
@@ -268,7 +268,7 @@ impl TemplateFixer {
                 template,
             } => Expr::Method {
                 span,
-                source: box self.expr(*source),
+                source: Box::new( self.expr(*source)),
                 name,
                 arguments: SpannedVector(
                     arguments.0,
@@ -281,7 +281,7 @@ impl TemplateFixer {
                 span,
                 SpannedVector(a.0, a.1.into_iter().map(|x| self.expr(x)).collect()),
             ),
-            Expr::Return(span, a) => Expr::Return(span, a.map(|x| box self.expr(*x))),
+            Expr::Return(span, a) => Expr::Return(span, a.map(|x| Box::new( self.expr(*x)))),
             Expr::NamedResource { span, vtype, name } => Expr::NamedResource {
                 span,
                 vtype: self.ty(vtype),
@@ -289,8 +289,8 @@ impl TemplateFixer {
             },
             Expr::Assignement { span, target, to } => Expr::Assignement {
                 span,
-                target: box self.expr(*target),
-                to: box self.expr(*to),
+                target: Box::new( self.expr(*target)),
+                to: Box::new( self.expr(*to)),
             },
             Expr::Cast {
                 span,
@@ -298,7 +298,7 @@ impl TemplateFixer {
                 target,
             } => Expr::Cast {
                 span,
-                source: box self.expr(*source),
+                source: Box::new(self.expr(*source)),
                 target: self.ty(target),
             },
             Expr::Loop(span, a) => Expr::Loop(
@@ -308,7 +308,7 @@ impl TemplateFixer {
             Expr::Break(span) => Expr::Break(span),
             Expr::Continue(span) => Expr::Continue(span),
             Expr::BooleanExpression(span, a, b, c) => {
-                Expr::BooleanExpression(span, box self.expr(*a), b, box self.expr(*c))
+                Expr::BooleanExpression(span, Box::new(self.expr(*a)), b, Box::new(self.expr(*c)))
             }
             Expr::ArrayDefinition(a, b) => Expr::ArrayDefinition(
                 a,

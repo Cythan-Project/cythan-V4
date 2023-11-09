@@ -108,7 +108,7 @@ fn chain_expression(tokens: &mut VecDeque<Token>, exp: Expr, types: &Type) -> Re
         }
         Some(Token::BooleanOperator(span, e)) => Expr::BooleanExpression(
             span,
-            box exp,
+            Box::new(exp),
             e,
             Box::new(tokens.drain(0..).collect::<VecDeque<_>>().parse(types)?),
         ),
@@ -119,7 +119,7 @@ fn chain_expression(tokens: &mut VecDeque<Token>, exp: Expr, types: &Type) -> Re
                         Expr::Method {
                             name: SpannedObject(name_span, name),
                             span: exp.span().merge(&arguments_span),
-                            source: box exp,
+                            source: Box::new(exp),
                             arguments: SpannedVector(
                                 arguments_span,
                                 split_complex(arguments, |a| {
@@ -145,7 +145,7 @@ fn chain_expression(tokens: &mut VecDeque<Token>, exp: Expr, types: &Type) -> Re
                         {
                             Expr::Method {
                                 span: exp.span().merge(&arguments_span),
-                                source: box exp,
+                                source: Box::new(exp),
                                 name: SpannedObject(name_span, name),
                                 arguments: SpannedVector(
                                     arguments_span,
@@ -203,10 +203,10 @@ fn parse_if(
     if_token_span: Span,
     types: &Type,
 ) -> Result<Expr, Error> {
-    let k = box take_until(tokens, |e| {
+    let k = Box::new( take_until(tokens, |e| {
         matches!(e, Token::Block(_, ClosableType::Brace, _))
     })
-    .parse(types)?;
+    .parse(types)?);
     let if_b = match tokens.get_token() {
         Some(Token::Block(span, ClosableType::Brace, e)) => SpannedVector(span, e.parse(types)?),
         Some(e) => {
@@ -275,7 +275,7 @@ impl TokenParser<Expr> for VecDeque<Token> {
             Token::Keyword(span, a) => match a {
                 Keyword::Return => {
                     let out: Expr = self.parse(types)?;
-                    return Ok(Expr::Return(span.merge(out.span()), Some(box out)));
+                    return Ok(Expr::Return(span.merge(out.span()), Some(Box::new(out))));
                 }
                 Keyword::If => parse_if(&mut self, span, types)?,
                 Keyword::Else => panic!("Unexpected else"),

@@ -21,6 +21,19 @@ pub fn run<T: RunContext + 'static>(mir: &MirCodeBlock, car: T) -> (usize, Rc<Mu
     }
 }
 
+pub fn compute_max_bin(k: &[usize]) -> (usize, Vec<usize>) {
+    let mut machine =
+        InterruptedCythan::new_stdio(k.to_vec(), 4, 2 * 2_usize.pow(4 /* base */) + 3);
+    let mut k = 0;
+    loop {
+        k += 1;
+        let a = machine.cases.clone();
+        if machine.next_get_interupt() || a == machine.cases {
+            return (k, a);
+        }
+    }
+}
+
 pub fn run_bin<T: RunContext + 'static>(k: &[usize], car: T) -> (usize, Rc<Mutex<T>>) {
     let car = Rc::new(Mutex::new(car));
     let car1 = car.clone();

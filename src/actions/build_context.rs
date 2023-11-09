@@ -13,7 +13,7 @@ use crate::{
     STACK_SIZE,
 };
 
-pub fn compile(class_name: String) -> MirCodeBlock {
+pub fn compile(class_name: String, optimize: bool) -> MirCodeBlock {
     let child = std::thread::Builder::new()
         .stack_size(STACK_SIZE)
         .spawn(move || generate_mir(&class_name))
@@ -27,7 +27,8 @@ pub fn compile(class_name: String) -> MirCodeBlock {
             .join("\n"),
     )
     .expect("Could not write file");
-    let k = k.optimize_code_new();
+    let count = k.instr_count();
+    let k = if optimize { k.optimize_code_new() } else { k };
     std::fs::write(
         "after.mir",
         k.0.iter()
@@ -36,6 +37,13 @@ pub fn compile(class_name: String) -> MirCodeBlock {
             .join("\n"),
     )
     .expect("Could not write file");
+    let ncount = k.instr_count();
+    println!(
+        "Optimized from {} to {} ({:.02}%)",
+        count,
+        ncount,
+        (count - ncount) as f64 / count as f64 * 100.
+    );
     k
 }
 
