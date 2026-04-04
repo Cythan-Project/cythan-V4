@@ -145,12 +145,15 @@ impl Cythan for InterruptedCythan {
                 //print!("{}", char as u8 as char);
             }
             if value == 2 {
-                // println!("INPUT");
-                //let o: u8 = std::io::stdin().bytes().next().unwrap().unwrap();
                 let o: u8 = (self.input_provider)();
-                let a = o % self.base_as_pow as u8;
-                let b = o / self.base_as_pow as u8;
-                // println!("vals:{} {}",a,b);
+                let base = self.base_as_pow as u8;
+                let a_raw = o % base;
+                let b_raw = o / base;
+                // In the Cythan machine, 0 is represented as base_as_pow (e.g. 16 for base 4).
+                // The digit pointer '#0 has value base_as_pow, so register values must follow
+                // this convention, otherwise inc/dec/if_0 templates read from address 0 (the PC).
+                let a = if a_raw == 0 { base } else { a_raw };
+                let b = if b_raw == 0 { base } else { b_raw };
                 self.set_value(self.interrupt_place + 1, b as usize);
                 self.set_value(self.interrupt_place + 2, a as usize);
             }

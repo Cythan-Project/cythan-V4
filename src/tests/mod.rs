@@ -1,30 +1,23 @@
 use std::time::Instant;
 
-use crate::{actions::test_context::TestContext, compile, actions::run_context::run_with_limit};
+use mir::MemoryState;
+use crate::{actions::test_context::TestContext, compile};
 
 // TODO: Create test using Annotations
 /*
 @Test("Test 1", "test,\ntest")
 */
-const MAX_STEPS: usize = 100_000_000;
-
 fn execute(file: &str, input: &str, output: &str) {
-    let (normal, ctx) = time("run_unoptimized", || {
-        run_with_limit(
-            &time("compile_unoptimized", || {
-                compile(file.to_owned(), false)
-            }),
-            TestContext::new(input),
-            MAX_STEPS,
-        )
-    });
-    let prt = ctx.lock().unwrap().print.clone();
-    if prt != output {
+    let mir = time("compile", || compile(file.to_owned(), false));
+    let mut ctx = TestContext::new(input);
+    let mut ms = MemoryState::new(2048, 8);
+    time("run_mir", || ms.execute_block(&mir, &mut ctx));
+    if ctx.print != output {
         println!("Expected: {:?}", output);
-        println!("Found: {:?}", prt);
-        panic!("Test failed for unoptimized invalid output");
+        println!("Found: {:?}", ctx.print);
+        panic!("Test failed: output mismatch");
     }
-    println!("{}ops", get_format(normal));
+    println!("{}ops", get_format(ms.instr_count));
 }
 #[test]
 pub fn run_test_morpion() {
@@ -125,6 +118,12 @@ pub fn test_nested() {
 #[test]
 pub fn test_io() {
     execute("TestIO", "AB", "enter:\n1\n2\n");
+}
+
+#[test]
+pub fn test_pendu_with_p() {
+    // Reproducer: entering 'p' (not in "grammaire") should behave like any other wrong letter
+    execute("Pendu", "pppppp", "\n\n\n\n------\n\n\n_________\n\nTu n'as pas trouvé de lettre -1 vie\n |\n |\n |\n |\n------\n\n_________\n\nTu n'as pas trouvé de lettre -1 vie\n |--\n |\n |\n |\n------\n\n_________\n\nTu n'as pas trouvé de lettre -1 vie\n |--|\n |  O\n |  |\n |\n------\n\n_________\n\nTu n'as pas trouvé de lettre -1 vie\n |--|\n |  O\n | /|\n |\n------\n\n_________\n\nTu n'as pas trouvé de lettre -1 vie\n |--|\n |  O\n | /|\\\n |\n------\n\n_________\n\nTu n'as pas trouvé de lettre -1 vie\n |--|\n |  O\n | /|\\\n | / \\\n------\n\n_________\n\nGROSSE MERDE!\n");
 }
 
 pub fn get_format(n: usize) -> String {
