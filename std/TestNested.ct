@@ -1,0 +1,31 @@
+class TestNested {
+
+    Val a;
+    Val b;
+
+    Self new(Val a, Val b) {
+        return Self {
+            a = a,
+            b = b
+        };
+    }
+
+    Val main() {
+        Option<Self> wrapped = Option.some<Self>(Self.new(4, 6));
+        if wrapped.is_none {
+            "fail".println();
+        } else {
+            "ok".println();
+        };
+        wrapped.t.a.print();
+        wrapped.t.b.print();
+        '\n'.print();
+        Option<Self> empty = Option.none<Self>();
+        if empty.is_none {
+            "empty_ok".println();
+        } else {
+            "empty_fail".println();
+        };
+        return 0;
+    }
+}

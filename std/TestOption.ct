@@ -1,0 +1,26 @@
+class TestOption {
+
+    Val main() {
+        Option<Val> a = Option.none<Val>();
+        if a.is_none {
+            "none_ok".println();
+        } else {
+            "none_fail".println();
+        };
+        Option<Val> b = Option.some<Val>(7);
+        if b.is_none {
+            "some_fail".println();
+        } else {
+            "some_ok".println();
+        };
+        b.t.print();
+        '\n'.print();
+        Option<Bool> c = Option.some<Bool>(true);
+        if c.t {
+            "bool_true".println();
+        } else {
+            "bool_false".println();
+        };
+        return 0;
+    }
+}

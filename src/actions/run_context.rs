@@ -7,6 +7,10 @@ use mir::{MemoryState, MirCodeBlock, MirState, RunContext};
 use crate::MIR_MODE;
 
 pub fn run<T: RunContext + 'static>(mir: &MirCodeBlock, car: T) -> (usize, Rc<Mutex<T>>) {
+    run_with_limit(mir, car, 0)
+}
+
+pub fn run_with_limit<T: RunContext + 'static>(mir: &MirCodeBlock, car: T, max_steps: usize) -> (usize, Rc<Mutex<T>>) {
     if MIR_MODE {
         let car = Rc::new(Mutex::new(car));
         let mut ms = MemoryState::new(2048, 8);
@@ -17,7 +21,7 @@ pub fn run<T: RunContext + 'static>(mir: &MirCodeBlock, car: T) -> (usize, Rc<Mu
         mir.to_asm(&mut mirstate);
         mirstate.opt_asm();
         let k = CompilableInstruction::compile_to_binary(mirstate.instructions);
-        run_bin(&k, car)
+        run_bin_with_limit(&k, car, max_steps)
     }
 }
 
@@ -35,6 +39,10 @@ pub fn compute_max_bin(k: &[usize]) -> (usize, Vec<usize>) {
 }
 
 pub fn run_bin<T: RunContext + 'static>(k: &[usize], car: T) -> (usize, Rc<Mutex<T>>) {
+    run_bin_with_limit(k, car, 0)
+}
+
+pub fn run_bin_with_limit<T: RunContext + 'static>(k: &[usize], car: T, max_steps: usize) -> (usize, Rc<Mutex<T>>) {
     let car = Rc::new(Mutex::new(car));
     let car1 = car.clone();
     let car2 = car.clone();
@@ -50,6 +58,9 @@ pub fn run_bin<T: RunContext + 'static>(k: &[usize], car: T) -> (usize, Rc<Mutex
     let mut k = 0;
     loop {
         k += 1;
+        if max_steps > 0 && k > max_steps {
+            panic!("Execution exceeded step limit of {} steps", max_steps);
+        }
         let a = machine.cases.clone();
         machine.next();
         if a == machine.cases {

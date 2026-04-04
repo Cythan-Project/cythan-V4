@@ -1,0 +1,46 @@
+class TestBool {
+
+    Val main() {
+        Bool a = true;
+        Bool b = false;
+        a.print();
+        '\n'.print();
+        b.print();
+        '\n'.print();
+        a.not().print();
+        '\n'.print();
+        b.not().print();
+        '\n'.print();
+        if a {
+            "a_true".println();
+        } else {
+            "a_false".println();
+        };
+        if b {
+            "b_true".println();
+        } else {
+            "b_false".println();
+        };
+        if a && a {
+            "tt".println();
+        } else {
+            "ntt".println();
+        };
+        if a && b {
+            "tf".println();
+        } else {
+            "ntf".println();
+        };
+        if b || a {
+            "or_ba".println();
+        } else {
+            "nor_ba".println();
+        };
+        if b || b {
+            "or_bb".println();
+        } else {
+            "nor_bb".println();
+        };
+        return 0;
+    }
+}

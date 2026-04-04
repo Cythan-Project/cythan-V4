@@ -1,0 +1,11 @@
+class TestString {
+
+    Val main() {
+        "hello".println();
+        "world".println();
+        'A'.print();
+        '\n'.print();
+        "test 123".println();
+        return 0;
+    }
+}

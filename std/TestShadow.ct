@@ -1,0 +1,21 @@
+class TestShadow {
+
+    Val main() {
+        Val x = 3;
+        x.print();
+        Val x = 7;
+        x.print();
+        '\n'.print();
+        Byte x = Byte.fromVal(2);
+        x.print();
+        '\n'.print();
+        Val y = 5;
+        if true {
+            Val y = 9;
+            y.print();
+        };
+        y.print();
+        '\n'.print();
+        return 0;
+    }
+}

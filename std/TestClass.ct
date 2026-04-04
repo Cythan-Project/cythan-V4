@@ -1,0 +1,50 @@
+class TestClass {
+
+    Val x;
+    Val y;
+
+    Self new(Val x, Val y) {
+        return Self {
+            x = x,
+            y = y
+        };
+    }
+
+    Val sum(self) {
+        Val result = self.x;
+        loop {
+            if self.y.equalsZero() {
+                break;
+            };
+            result.inc();
+            self.y.dec();
+        };
+        return result;
+    }
+
+    setX(self, Val v) {
+        self.x = v;
+    }
+
+    print(self) {
+        self.x.print();
+        ','.print();
+        self.y.print();
+    }
+
+    Val main() {
+        Self p = Self.new(3, 5);
+        p.print();
+        '\n'.print();
+        Val s = p.sum();
+        s.print();
+        '\n'.print();
+        p.setX(9);
+        p.x.print();
+        '\n'.print();
+        Self q = Self.new(1, 2);
+        q.print();
+        '\n'.print();
+        return 0;
+    }
+}

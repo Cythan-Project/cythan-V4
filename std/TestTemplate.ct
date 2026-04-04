@@ -1,0 +1,47 @@
+class TestTemplate {
+
+    Val value;
+
+    Self wrap(Val v) {
+        return Self {
+            value = v
+        };
+    }
+
+    Val unwrap(self) {
+        return self.value;
+    }
+
+    Val main() {
+        Option<Val> a = Option.some<Val>(3);
+        Option<Bool> b = Option.some<Bool>(true);
+        Option<Val> c = Option.none<Val>();
+        a.t.print();
+        '\n'.print();
+        if b.t {
+            "btrue".println();
+        } else {
+            "bfalse".println();
+        };
+        if c.is_none {
+            "cnone".println();
+        } else {
+            "csome".println();
+        };
+        Array<Val, 3, Val> arr1 = Array tmp;
+        arr1.set<0>(1);
+        arr1.set<1>(2);
+        arr1.set<2>(3);
+        Array<Bool, 2, Val> arr2 = Array tmp;
+        arr2.set<0>(true);
+        arr2.set<1>(false);
+        arr1.get<1>().print();
+        '\n'.print();
+        if arr2.get<0>() {
+            "arr_true".println();
+        } else {
+            "arr_false".println();
+        };
+        return 0;
+    }
+}

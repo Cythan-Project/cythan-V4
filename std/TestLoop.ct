@@ -1,0 +1,45 @@
+class TestLoop {
+
+    Val main() {
+        Val i = 0;
+        loop {
+            if i.equals(5) {
+                break;
+            };
+            i.print();
+            i.inc();
+        };
+        '\n'.print();
+        Val j = 0;
+        loop {
+            if j.equals(8) {
+                break;
+            };
+            j.inc();
+            if j.equals(3) || j.equals(6) {
+                continue;
+            };
+            j.print();
+        };
+        '\n'.print();
+        Val outer = 0;
+        loop {
+            if outer.equals(3) {
+                break;
+            };
+            Val inner = 0;
+            loop {
+                if inner.equals(3) {
+                    break;
+                };
+                outer.print();
+                inner.print();
+                ' '.print();
+                inner.inc();
+            };
+            outer.inc();
+        };
+        '\n'.print();
+        return 0;
+    }
+}

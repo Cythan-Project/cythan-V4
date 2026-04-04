@@ -1,0 +1,54 @@
+class TestVal {
+
+    Val main() {
+        Val a = 0;
+        a.print();
+        Val b = 5;
+        b.print();
+        '\n'.print();
+        b.inc();
+        b.print();
+        b.dec();
+        b.print();
+        '\n'.print();
+        if a.equalsZero() {
+            "yes".println();
+        } else {
+            "no".println();
+        };
+        if b.equalsZero() {
+            "yes".println();
+        } else {
+            "no".println();
+        };
+        if b.equals(5) {
+            "eq5".println();
+        } else {
+            "neq5".println();
+        };
+        if b.equals(3) {
+            "eq3".println();
+        } else {
+            "neq3".println();
+        };
+        if b.greater(3) {
+            "gt3".println();
+        } else {
+            "ngt3".println();
+        };
+        if b.greater(5) {
+            "gt5".println();
+        } else {
+            "ngt5".println();
+        };
+        if b.greater(8) {
+            "gt8".println();
+        } else {
+            "ngt8".println();
+        };
+        Val c = 12;
+        c.printDec();
+        '\n'.print();
+        return 0;
+    }
+}
