@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use crate::actions::{build_context::compile, test_context::TestContext};
+use cythan_driver::{build_context::compile, test_context::TestContext};
 use mir::MemoryState;
 
 // TODO: Create test using Annotations

@@ -5,15 +5,10 @@ use cythan::format;
 use lir::CompilableInstruction;
 use mir::{MirState, StdIoContext};
 
-use crate::actions::run_context::{compute_max_bin, run, run_bin};
+use cythan_driver::run_context::{compute_max_bin, run, run_bin};
 
-mod actions;
-mod compiler;
-mod parser;
 #[cfg(test)]
 mod tests;
-
-const STACK_SIZE: usize = 1024 * 1024 * 1024;
 
 #[derive(Parser)]
 #[command(name = "cythan", about = "Cythan V4 compiler and runtime")]
@@ -86,67 +81,7 @@ enum Command {
 }
 
 fn compile_to_mir(file: String, optimize: bool) -> mir::MirCodeBlock {
-    let child = std::thread::Builder::new()
-        .stack_size(STACK_SIZE)
-        .spawn(move || {
-            use crate::{
-                actions::natives::load_natives,
-                compiler::{
-                    class_loader::ClassLoader,
-                    state::{code_manager::CodeManager, local_state::LocalState},
-                },
-                parser::ty::Type,
-            };
-            use errors::{report, Span, SpannedObject};
-            use mir::Mir;
-
-            let mut cl = ClassLoader::new();
-            for file in std::fs::read_dir("std").unwrap() {
-                cl.load_string(
-                    &std::fs::read_to_string(file.as_ref().unwrap().path()).unwrap(),
-                    &file
-                        .as_ref()
-                        .unwrap()
-                        .path()
-                        .as_os_str()
-                        .to_str()
-                        .unwrap()
-                        .to_owned(),
-                )
-                .unwrap_or_else(|e| {
-                    report(e);
-                    std::process::exit(1);
-                });
-            }
-            load_natives(&mut cl);
-
-            let rs = cl
-                .view(&Type::simple(&file, Span::default()))
-                .unwrap_or_else(|e| {
-                    report(e);
-                    std::process::exit(1);
-                })
-                .method_view(&SpannedObject(Span::default(), "main".to_owned()), &None)
-                .unwrap_or_else(|e| {
-                    report(e);
-                    std::process::exit(1);
-                })
-                .execute(&mut LocalState::new(), &mut CodeManager::new(cl), vec![])
-                .unwrap_or_else(|e| {
-                    report(e);
-                    std::process::exit(1);
-                });
-            let mut mir = rs.mir;
-            mir.add_mir(Mir::Stop);
-            mir
-        })
-        .unwrap();
-    let mir = child.join().unwrap();
-    if optimize {
-        mir.optimize_code_new()
-    } else {
-        mir
-    }
+    cythan_driver::build_context::compile(file, optimize)
 }
 
 fn dump_mir(mir: &mir::MirCodeBlock, path: &PathBuf) {
@@ -309,5 +244,3 @@ fn main() {
         }
     }
 }
-
-const MIR_MODE: bool = false;

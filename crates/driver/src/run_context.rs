@@ -4,7 +4,7 @@ use cythan::{Cythan, InterruptedCythan};
 use lir::CompilableInstruction;
 use mir::{MemoryState, MirCodeBlock, MirState, RunContext};
 
-use crate::MIR_MODE;
+const MIR_MODE: bool = false;
 
 pub fn run<T: RunContext + 'static>(mir: &MirCodeBlock, car: T) -> (usize, Rc<Mutex<T>>) {
     run_with_limit(mir, car, 0)

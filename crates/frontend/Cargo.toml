@@ -1,0 +1,9 @@
+[package]
+name = "cythan-frontend"
+version = "0.1.0"
+edition = "2018"
+
+[dependencies]
+errors = { path = "../errors" }
+mir = { path = "../mir" }
+either = "*"

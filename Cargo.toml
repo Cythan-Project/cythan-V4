@@ -6,16 +6,14 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-either = "*"
-lir = { path = "lir" }
-mir = { path = "mir" }
-errors = { path = "errors" }
-cythan = { path = "Cythan-V2" }
-varuint = "*"
+lir = { path = "crates/lir" }
+mir = { path = "crates/mir" }
+cythan = { path = "crates/vm" }
+cythan-driver = { path = "crates/driver" }
 clap = { version = "4", features = ["derive"] }
 
 [profile.release]
 debug = true
 
 [workspace]
-members = ["lir", "Cythan-V2", "mir", "errors"]
+members = ["crates/lir", "crates/vm", "crates/mir", "crates/errors", "crates/frontend", "crates/driver"]
