@@ -3,15 +3,15 @@ use std::process::exit;
 use errors::{report, Error, Span, SpannedObject};
 use mir::{Mir, MirCodeBlock};
 
+use crate::STACK_SIZE;
 use cythan_frontend::{
-    natives::load_natives,
     compiler::{
         class_loader::ClassLoader,
         state::{code_manager::CodeManager, local_state::LocalState},
     },
+    natives::load_natives,
     parser::ty::Type,
 };
-use crate::STACK_SIZE;
 
 pub fn compile(class_name: String, optimize: bool) -> MirCodeBlock {
     let child = std::thread::Builder::new()
