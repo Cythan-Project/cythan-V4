@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 use cythan::format;
@@ -15,14 +15,17 @@ mod tests;
 struct Cli {
     #[command(subcommand)]
     command: Command,
+    /// Standard library directory (default: std/)
+    #[arg(long, global = true, default_value = "std")]
+    std_dir: PathBuf,
 }
 
 #[derive(Subcommand)]
 enum Command {
     /// Compile and run a Cythan program
     Run {
-        /// Source file name (without .ct extension, looked up in std/)
-        file: String,
+        /// Source file path (e.g. std/Morpion.ct)
+        file: PathBuf,
         /// Enable MIR optimization
         #[arg(short, long)]
         optimize: bool,
@@ -35,8 +38,8 @@ enum Command {
     },
     /// Compile a Cythan program to binary
     Build {
-        /// Source file name (without .ct extension, looked up in std/)
-        file: String,
+        /// Source file path (e.g. std/Morpion.ct)
+        file: PathBuf,
         /// Output binary file path
         #[arg(short, long)]
         output: PathBuf,
@@ -80,8 +83,8 @@ enum Command {
     },
 }
 
-fn compile_to_mir(file: String, optimize: bool) -> mir::MirCodeBlock {
-    cythan_driver::build_context::compile(file, optimize)
+fn compile_to_mir(file: &Path, std_dir: &Path, optimize: bool) -> mir::MirCodeBlock {
+    cythan_driver::build_context::compile(file, std_dir, optimize)
 }
 
 fn dump_mir(mir: &mir::MirCodeBlock, path: &PathBuf) {
@@ -99,6 +102,7 @@ fn dump_mir(mir: &mir::MirCodeBlock, path: &PathBuf) {
 fn main() {
     let cli = Cli::parse();
 
+    let std_dir = cli.std_dir;
     match cli.command {
         Command::Run {
             file,
@@ -106,7 +110,7 @@ fn main() {
             dump_mir_before,
             dump_mir_after,
         } => {
-            let raw_mir = compile_to_mir(file.clone(), false);
+            let raw_mir = compile_to_mir(&file, &std_dir, false);
             if let Some(path) = &dump_mir_before {
                 dump_mir(&raw_mir, path);
             }
@@ -141,7 +145,7 @@ fn main() {
             dump_lir,
             dump_asm,
         } => {
-            let raw_mir = compile_to_mir(file.clone(), false);
+            let raw_mir = compile_to_mir(&file, &std_dir, false);
             if let Some(path) = &dump_mir_before {
                 dump_mir(&raw_mir, path);
             }

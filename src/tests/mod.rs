@@ -1,14 +1,14 @@
+use std::path::Path;
 use std::time::Instant;
 
 use cythan_driver::{build_context::compile, test_context::TestContext};
 use mir::MemoryState;
 
-// TODO: Create test using Annotations
-/*
-@Test("Test 1", "test,\ntest")
-*/
+const STD_DIR: &str = "std";
+
 fn execute(file: &str, input: &str, output: &str) {
-    let mir = time("compile", || compile(file.to_owned(), false));
+    let file_path = Path::new(STD_DIR).join(format!("{}.ct", file));
+    let mir = time("compile", || compile(&file_path, Path::new(STD_DIR), false));
     let mut ctx = TestContext::new(input);
     let mut ms = MemoryState::new(2048, 8);
     time("run_mir", || ms.execute_block(&mir, &mut ctx));
@@ -145,7 +145,7 @@ pub fn test_pendu_with_p() {
 #[test]
 pub fn test_game2048() {
     // Play a full game with deterministic input (cycling 1234 = left/right/up/down)
-    let mir = compile("Game2048".to_owned(), false);
+    let mir = compile(Path::new("std/Game2048.ct"), Path::new(STD_DIR), false);
     let input = "1234".repeat(50);
     let mut ctx = TestContext::new(&input);
     let mut ms = MemoryState::new(4096, 8);
@@ -189,7 +189,7 @@ pub fn test_chess() {
     // Then black needs to move: say a7→a6: "1716"
     // Then white queen takes black king at e8: wait, queen is already there after first move.
     // No: first move "4158" moves queen from d1 to e8 which has the black king. King captured!
-    let mir = compile("Chess".to_owned(), false);
+    let mir = compile(Path::new("std/Chess.ct"), Path::new(STD_DIR), false);
     let mut ctx = TestContext::new("4158");
     let mut ms = MemoryState::new(4096, 8);
     ms.execute_block(&mir, &mut ctx);
