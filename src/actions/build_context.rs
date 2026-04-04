@@ -47,35 +47,39 @@ pub fn compile(class_name: String, optimize: bool) -> MirCodeBlock {
     k
 }
 
-fn generate_mir(class_name: &str) -> MirCodeBlock {
-    let r: Result<(), Error> = try {
-        let mut cl = ClassLoader::new();
-        for file in std::fs::read_dir("std").unwrap() {
-            cl.load_string(
-                &std::fs::read_to_string(file.as_ref().unwrap().path()).unwrap(),
-                &file
-                    .as_ref()
-                    .unwrap()
-                    .path()
-                    .as_os_str()
-                    .to_str()
-                    .unwrap()
-                    .to_owned(),
-            )?;
-        }
-        load_natives(&mut cl);
+fn generate_mir_(class_name: &str) -> Result<MirCodeBlock, Error> {
+    let mut cl = ClassLoader::new();
+    for file in std::fs::read_dir("std").unwrap() {
+        cl.load_string(
+            &std::fs::read_to_string(file.as_ref().unwrap().path()).unwrap(),
+            &file
+                .as_ref()
+                .unwrap()
+                .path()
+                .as_os_str()
+                .to_str()
+                .unwrap()
+                .to_owned(),
+        )?;
+    }
+    load_natives(&mut cl);
 
-        let rs = cl
-            .view(&Type::simple(class_name, Span::default()))?
-            .method_view(&SpannedObject(Span::default(), "main".to_owned()), &None)?
-            .execute(&mut LocalState::new(), &mut CodeManager::new(cl), vec![])?;
-        let mut mir = rs.mir;
-        mir.add_mir(Mir::Stop);
-        return mir;
-    };
-    if let Err(e) = r {
+    let rs = cl
+        .view(&Type::simple(class_name, Span::default()))?
+        .method_view(&SpannedObject(Span::default(), "main".to_owned()), &None)?
+        .execute(&mut LocalState::new(), &mut CodeManager::new(cl), vec![])?;
+    let mut mir = rs.mir;
+    mir.add_mir(Mir::Stop);
+    Ok(mir)
+}
+
+fn generate_mir(class_name: &str) -> MirCodeBlock {
+    let r = generate_mir_(class_name);
+    match r {
+        Ok(e) => e,
+        Err(e) => {
         report(e);
         exit(0);
-    };
-    panic!();
+        }
+    }
 }

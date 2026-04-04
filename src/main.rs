@@ -1,5 +1,3 @@
-#![feature(try_blocks)]
-
 use cythan::format;
 use lir::CompilableInstruction;
 use mir::{MirState, StdIoContext};
