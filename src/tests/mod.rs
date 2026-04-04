@@ -139,6 +139,48 @@ pub fn test_game2048() {
     println!("{}ops", get_format(ms.instr_count));
 }
 
+#[test]
+pub fn test_chess() {
+    // Input: srcCol srcRow dstCol dstRow (1-based, 'a'=1...'h'=8)
+    // Scholar's mate-style: White moves e-pawn, bishop, queen, then queen takes f7
+    // Move format: col(a-h=1-8) row(1-8) col row
+    // e2e4 e7e5 f1c4 b8c6 d1h5 a7a6 h5f7 = queen captures pawn next to king
+    // But f7 pawn isn't the king. Let's just play until a king is captured.
+    // Simplified: move pieces until one side captures the other's king.
+    // White: e2→e4, Black: f7→f5, White: d1→h5 (queen), Black: g7→g6, White: h5→e8 (capture king!)
+    // Encoded: e=5,2=2 → "5254" then f=6,7=7,f=6,5=5 → "6765" etc.
+    // Actually Val.input returns lower nibble of char. '5'=0x35→5, '2'=0x32→2
+    let input = concat!(
+        "5254",  // White: e2→e4
+        "6765",  // Black: f7→f5
+        "4185",  // White: d1→h5 (queen to h5)
+        "7776",  // Black: g7→g6
+        "8558",  // White: h5→e8 (queen captures next to king... actually e8 has nothing)
+    );
+    // Actually this is hard to predict without seeing the board. Let me use a direct
+    // king capture: remove blocking pieces then take the king.
+    // Simpler: White e2e4, Black e7e5, White d1f3, Black a7a6, White f3f7 (takes pawn near king),
+    // Black a6a5, White f7e8 (not king). Hmm.
+    // Let me just do a very direct test: move white queen diagonally to capture black king.
+    // With no move validation, we can cheat:
+    // White: e1→e8 (king jumps to rank 8?). No, we want to capture black king at e8.
+    // Black king is at e8 = col 5, row 8 (index col=4, row=7 in 0-based).
+    // White queen at d1 = col 4, row 1 (0-based: col=3, row=0).
+    // Move white queen d1→e8: input "4158" (d=4,1,e=5,8)
+    // Then black needs to move: say a7→a6: "1716"
+    // Then white queen takes black king at e8: wait, queen is already there after first move.
+    // No: first move "4158" moves queen from d1 to e8 which has the black king. King captured!
+    let mir = compile("Chess".to_owned(), false);
+    let mut ctx = TestContext::new("4158");
+    let mut ms = MemoryState::new(4096, 8);
+    ms.execute_block(&mir, &mut ctx);
+    assert!(ctx.print.contains("White wins!"), "White should win by capturing black king");
+    // Verify the initial board display is present
+    assert!(ctx.print.contains("R N B Q K B N R"), "Initial board should show white back rank");
+    assert!(ctx.print.contains("r n b q k b n r"), "Initial board should show black back rank");
+    println!("{}ops", get_format(ms.instr_count));
+}
+
 pub fn get_format(n: usize) -> String {
     if n > 1_000_000 {
         format!("{}M", (n / 100_000) as f64 / 10.0)

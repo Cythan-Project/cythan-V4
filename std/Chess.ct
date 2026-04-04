@@ -1,0 +1,198 @@
+class Chess {
+
+    Array<Val, 8, Val> r0;
+    Array<Val, 8, Val> r1;
+    Array<Val, 8, Val> r2;
+    Array<Val, 8, Val> r3;
+    Array<Val, 8, Val> r4;
+    Array<Val, 8, Val> r5;
+    Array<Val, 8, Val> r6;
+    Array<Val, 8, Val> r7;
+    Bool whiteTurn;
+
+    Self new() {
+        return Self {
+            r0 = Array tmp,
+            r1 = Array tmp,
+            r2 = Array tmp,
+            r3 = Array tmp,
+            r4 = Array tmp,
+            r5 = Array tmp,
+            r6 = Array tmp,
+            r7 = Array tmp,
+            whiteTurn = true
+        };
+    }
+
+    init(self) {
+        self.r0.set<0>(2);
+        self.r0.set<1>(3);
+        self.r0.set<2>(4);
+        self.r0.set<3>(5);
+        self.r0.set<4>(6);
+        self.r0.set<5>(4);
+        self.r0.set<6>(3);
+        self.r0.set<7>(2);
+        self.r1.set<0>(1);
+        self.r1.set<1>(1);
+        self.r1.set<2>(1);
+        self.r1.set<3>(1);
+        self.r1.set<4>(1);
+        self.r1.set<5>(1);
+        self.r1.set<6>(1);
+        self.r1.set<7>(1);
+        self.r6.set<0>(7);
+        self.r6.set<1>(7);
+        self.r6.set<2>(7);
+        self.r6.set<3>(7);
+        self.r6.set<4>(7);
+        self.r6.set<5>(7);
+        self.r6.set<6>(7);
+        self.r6.set<7>(7);
+        self.r7.set<0>(8);
+        self.r7.set<1>(9);
+        self.r7.set<2>(10);
+        self.r7.set<3>(11);
+        self.r7.set<4>(12);
+        self.r7.set<5>(10);
+        self.r7.set<6>(9);
+        self.r7.set<7>(8);
+    }
+
+    Val getCell(self, Val row, Val col) {
+        if row.equalsZero() { return self.r0.getDyn(col); }
+        else if row.equals(1) { return self.r1.getDyn(col); }
+        else if row.equals(2) { return self.r2.getDyn(col); }
+        else if row.equals(3) { return self.r3.getDyn(col); }
+        else if row.equals(4) { return self.r4.getDyn(col); }
+        else if row.equals(5) { return self.r5.getDyn(col); }
+        else if row.equals(6) { return self.r6.getDyn(col); }
+        else { return self.r7.getDyn(col); };
+    }
+
+    setCell(self, Val row, Val col, Val piece) {
+        if row.equalsZero() { self.r0.setDyn(col, piece); }
+        else if row.equals(1) { self.r1.setDyn(col, piece); }
+        else if row.equals(2) { self.r2.setDyn(col, piece); }
+        else if row.equals(3) { self.r3.setDyn(col, piece); }
+        else if row.equals(4) { self.r4.setDyn(col, piece); }
+        else if row.equals(5) { self.r5.setDyn(col, piece); }
+        else if row.equals(6) { self.r6.setDyn(col, piece); }
+        else { self.r7.setDyn(col, piece); };
+    }
+
+    printPiece(Val p) {
+        if p.equalsZero() { '.'.print(); }
+        else if p.equals(1) { 'P'.print(); }
+        else if p.equals(2) { 'R'.print(); }
+        else if p.equals(3) { 'N'.print(); }
+        else if p.equals(4) { 'B'.print(); }
+        else if p.equals(5) { 'Q'.print(); }
+        else if p.equals(6) { 'K'.print(); }
+        else if p.equals(7) { 'p'.print(); }
+        else if p.equals(8) { 'r'.print(); }
+        else if p.equals(9) { 'n'.print(); }
+        else if p.equals(10) { 'b'.print(); }
+        else if p.equals(11) { 'q'.print(); }
+        else { 'k'.print(); };
+    }
+
+    display(self) {
+        "  a b c d e f g h".println();
+        Val row = 7;
+        loop {
+            Val d = row;
+            d.inc();
+            d.print();
+            ' '.print();
+            Val col = 0;
+            loop {
+                Self.printPiece(self.getCell(row, col));
+                ' '.print();
+                if col.equals(7) {
+                    break;
+                };
+                col.inc();
+            };
+            '\n'.print();
+            if row.equalsZero() {
+                break;
+            };
+            row.dec();
+        };
+        "  a b c d e f g h".println();
+    }
+
+    play(self) {
+        loop {
+            self.display();
+            if self.whiteTurn {
+                "White> ".print();
+            } else {
+                "Black> ".print();
+            };
+            Val sc = Val.input();
+            Val sr = Val.input();
+            Val dc = Val.input();
+            Val dr = Val.input();
+            sc.dec();
+            sr.dec();
+            dc.dec();
+            dr.dec();
+            if sc.greater(7) || sr.greater(7) || dc.greater(7) || dr.greater(7) {
+                "Bad input".println();
+                continue;
+            };
+            Val piece = self.getCell(sr, sc);
+            Bool valid = false;
+            if self.whiteTurn {
+                if piece.equalsZero().not() && piece.greater(6).not() {
+                    valid = true;
+                };
+            } else {
+                if piece.greater(6) {
+                    valid = true;
+                };
+            };
+            if valid.not() {
+                "Not your piece".println();
+                continue;
+            };
+            Val target = self.getCell(dr, dc);
+            Bool ownTarget = false;
+            if self.whiteTurn {
+                if target.equalsZero().not() && target.greater(6).not() {
+                    ownTarget = true;
+                };
+            } else {
+                if target.greater(6) {
+                    ownTarget = true;
+                };
+            };
+            if ownTarget {
+                "Can't capture own piece".println();
+                continue;
+            };
+            self.setCell(dr, dc, piece);
+            self.setCell(sr, sc, 0);
+            if target.equals(6) {
+                self.display();
+                "Black wins!".println();
+                break;
+            };
+            if target.equals(12) {
+                self.display();
+                "White wins!".println();
+                break;
+            };
+            self.whiteTurn = self.whiteTurn.not();
+        };
+    }
+
+    Val main() {
+        Self game = Self.new();
+        game.init();
+        game.play();
+        return 0;
+    }
+}
