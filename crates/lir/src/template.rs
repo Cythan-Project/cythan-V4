@@ -70,10 +70,6 @@ impl<'a> Template<'a> {
     }
 }
 
-pub trait Instruction {
-    fn apply(&self, template: &mut Template);
-}
-
 pub enum TemplatePiece<'a> {
     Section(Vec<Cow<'a, str>>),
     NamedSection(Cow<'a, str>, Vec<Cow<'a, str>>),

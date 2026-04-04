@@ -7,11 +7,11 @@ use std::fmt::Debug;
 use super::mirrors::{MirrorLabel, MirrorReport};
 
 #[allow(clippy::ptr_arg)]
-fn provider(x: &String) -> Result<String, Box<(dyn Debug + 'static)>> {
+fn provider(x: &String) -> Result<String, Box<dyn Debug + 'static>> {
     if x == "<internal>" || x == "<native>" {
         Ok("Error originated from native context".to_owned())
     } else {
-        std::fs::read_to_string(x).map_err(|x| Box::new(x) as Box<(dyn Debug + 'static)>)
+        std::fs::read_to_string(x).map_err(|x| Box::new(x) as Box<dyn Debug + 'static>)
     }
 }
 

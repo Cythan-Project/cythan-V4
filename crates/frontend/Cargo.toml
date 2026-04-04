@@ -7,3 +7,6 @@ edition = "2018"
 errors = { path = "../errors" }
 mir = { path = "../mir" }
 either = "*"
+
+[lints]
+workspace = true

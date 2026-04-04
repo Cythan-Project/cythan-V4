@@ -96,7 +96,7 @@ fn chain_expression(tokens: &mut VecDeque<Token>, exp: Expr, types: &Type) -> Re
         Some(Token::Equals(span)) => Expr::Assignement {
             span,
             target: Box::new(exp),
-            to: Box::new(tokens.drain(0..).collect::<VecDeque<_>>().parse(types)?),
+            to: Box::new(std::mem::take(tokens).parse(types)?),
         },
         Some(Token::Keyword(span, Keyword::As)) => {
             let t = tokens.extract(types)?;
@@ -110,7 +110,7 @@ fn chain_expression(tokens: &mut VecDeque<Token>, exp: Expr, types: &Type) -> Re
             span,
             Box::new(exp),
             e,
-            Box::new(tokens.drain(0..).collect::<VecDeque<_>>().parse(types)?),
+            Box::new(std::mem::take(tokens).parse(types)?),
         ),
         Some(Token::Dot(_)) => {
             if let Some(Token::Literal(name_span, name)) = tokens.get_token() {

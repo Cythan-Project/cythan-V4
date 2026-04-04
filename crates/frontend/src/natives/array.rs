@@ -33,7 +33,7 @@ pub fn implement(cl: &mut ClassLoader) {
 
         if mpos.len() == 1 {
             mircb.add_mir(Mir::Match(
-                mpos[0].clone(),
+                mpos[0],
                 (0..size)
                     .map(|x| {
                         Ok((
@@ -202,7 +202,7 @@ pub fn implement(cl: &mut ClassLoader) {
     cl.implement_native("Array", "len", |_ls, cm, mv| {
         let mut len: usize = mv.arguments[0].0.get_template()?.1[1].as_number()? as usize;
         let ltylen = &mv.arguments[0].0.get_template()?.1[2];
-        let mpos = cm.alloc_block(cm.cl.view(&ltylen)?.size(&cm.cl)? as usize);
+        let mpos = cm.alloc_block(cm.cl.view(ltylen)?.size(&cm.cl)? as usize);
         let mut k = MirCodeBlock::default();
         mpos.iter().for_each(|v| {
             k.set(*v, (len % 16) as u8);

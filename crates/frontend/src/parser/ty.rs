@@ -65,7 +65,7 @@ impl Type {
     }
     pub fn apply_expected(&self, expected: &Option<Type>) -> Self {
         if let Some(e) = expected {
-            if matches!(self.template, None) {
+            if self.template.is_none() {
                 Type {
                     span: self.span.clone(),
                     name: self.name.clone(),

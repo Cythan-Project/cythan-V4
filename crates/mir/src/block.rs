@@ -7,7 +7,7 @@ use errors::{invalid_length_asm, Error, Span};
 
 use crate::{mir::Mir, skip_status::SkipStatus, state::MirState};
 
-#[derive(PartialEq, Clone, Hash, Debug)]
+#[derive(PartialEq, Clone, Hash, Debug, Default)]
 pub struct MirCodeBlock(pub Vec<Mir>);
 
 impl From<Mir> for MirCodeBlock {
@@ -57,12 +57,6 @@ impl MirCodeBlock {
             }
         }
         SkipStatus::None
-    }
-}
-
-impl Default for MirCodeBlock {
-    fn default() -> Self {
-        Self(Vec::new())
     }
 }
 

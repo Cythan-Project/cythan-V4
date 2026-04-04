@@ -22,6 +22,12 @@ pub struct ClassLoader {
     pub constants: HashMap<String, (Type, Vec<u8>)>,
 }
 
+impl Default for ClassLoader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ClassLoader {
     pub fn new() -> ClassLoader {
         ClassLoader {

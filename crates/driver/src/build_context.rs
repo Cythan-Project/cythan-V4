@@ -40,14 +40,7 @@ fn generate_mir_(class_name: &str) -> Result<MirCodeBlock, Error> {
     for file in std::fs::read_dir("std").unwrap() {
         cl.load_string(
             &std::fs::read_to_string(file.as_ref().unwrap().path()).unwrap(),
-            &file
-                .as_ref()
-                .unwrap()
-                .path()
-                .as_os_str()
-                .to_str()
-                .unwrap()
-                .to_owned(),
+            file.as_ref().unwrap().path().as_os_str().to_str().unwrap(),
         )?;
     }
     load_natives(&mut cl);

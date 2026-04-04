@@ -76,7 +76,8 @@ pub fn in_method(template_def: &Span, er: Error) -> Error {
 pub fn invalid_type_template(template_def: &Span, span: &Span) -> Error {
     let mut colors = ColorGenerator::new();
     let b = colors.next();
-    let er = Report::build(ReportKind::Error, span.file.to_owned(), span.start)
+
+    Report::build(ReportKind::Error, span.file.to_owned(), span.start)
         .with_code(15)
         .with_message("Invalid template")
         .with_label(
@@ -88,8 +89,7 @@ pub fn invalid_type_template(template_def: &Span, span: &Span) -> Error {
             Label::new(template_def.as_span())
                 .with_message("Should match this template")
                 .with_color(b),
-        );
-    er
+        )
 }
 
 pub fn index_out_of_bounds(len: usize, alen: usize, access: &Span, listdef: &Span) -> Error {
@@ -127,15 +127,15 @@ pub fn index_out_of_bounds(len: usize, alen: usize, access: &Span, listdef: &Spa
 pub fn expected_number_as_type(span: &Span) -> Error {
     let mut colors = ColorGenerator::new();
     let b = colors.next();
-    let er = Report::build(ReportKind::Error, span.file.to_owned(), span.start)
+
+    Report::build(ReportKind::Error, span.file.to_owned(), span.start)
         .with_code(17)
         .with_message("Expected number as type")
         .with_label(
             Label::new(span.as_span())
                 .with_message("Should be a number")
                 .with_color(b),
-        );
-    er
+        )
 }
 
 pub fn report_similar(

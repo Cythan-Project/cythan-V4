@@ -7,7 +7,15 @@ use either::Either;
 
 use crate::{Mir, MirCodeBlock};
 
-use super::old::does_break_in_all_cases;
+fn does_break_in_all_cases(mir: &Mir) -> bool {
+    match mir {
+        Mir::If0(_, a, b) => {
+            a.iter().any(does_break_in_all_cases) && b.iter().any(does_break_in_all_cases)
+        }
+        Mir::Break | Mir::Stop => true,
+        _ => false,
+    }
+}
 
 #[derive(Clone)]
 struct OptContext {
@@ -33,10 +41,8 @@ pub fn get_static_vars(cb: &MirCodeBlock) -> HashMap<u32, u8> {
     fn remove_inner(cb: &MirCodeBlock, vars: &mut HashMap<u32, u8>, in_rm: bool) {
         cb.iter().for_each(|x| match x {
             Mir::Set(a, b) => {
-                if in_rm {
-                    if vars.get(a) != Some(b) {
-                        vars.remove(a);
-                    }
+                if in_rm && vars.get(a) != Some(b) {
+                    vars.remove(a);
                 }
             }
             Mir::Copy(a, _) => {
@@ -98,15 +104,15 @@ fn apply_static_vars(cb: MirCodeBlock, vars: &HashMap<u32, u8>) -> MirCodeBlock 
                     Mir::If0(a, b, c) => {
                         if let Some(e) = vars.get(&a) {
                             if e == &0 {
-                                return apply_static_vars(b, &vars).0;
+                                return apply_static_vars(b, vars).0;
                             } else {
-                                return apply_static_vars(c, &vars).0;
+                                return apply_static_vars(c, vars).0;
                             }
                         } else {
-                            Mir::If0(a, apply_static_vars(b, &vars), apply_static_vars(c, &vars))
+                            Mir::If0(a, apply_static_vars(b, vars), apply_static_vars(c, vars))
                         }
                     }
-                    Mir::Loop(a) => Mir::Loop(apply_static_vars(a, &vars)),
+                    Mir::Loop(a) => Mir::Loop(apply_static_vars(a, vars)),
                     Mir::Break => Mir::Break,
                     Mir::Continue => Mir::Continue,
                     Mir::Stop => Mir::Stop,
@@ -122,7 +128,7 @@ fn apply_static_vars(cb: MirCodeBlock, vars: &HashMap<u32, u8>) -> MirCodeBlock 
                         Either::Left(b) => Mir::WriteRegister(a, Either::Left(b)),
                     },
                     Mir::Skip => Mir::Skip,
-                    Mir::Block(a) => Mir::Block(apply_static_vars(a, &vars)),
+                    Mir::Block(a) => Mir::Block(apply_static_vars(a, vars)),
                     Mir::Match(a, b) => {
                         // TODO
                         Mir::Match(a, b)
@@ -247,8 +253,7 @@ pub fn optimize_code(mir: MirCodeBlock, current_count: usize) -> MirCodeBlock {
 fn optimize_block(mir: MirCodeBlock, context: &mut OptContext) -> Vec<Mir> {
     mir.0
         .into_iter()
-        .map(|x| optimize(x, context))
-        .flatten()
+        .flat_map(|x| optimize(x, context))
         .collect()
 }
 /*
@@ -262,23 +267,23 @@ if v89 {
       }
     }
 */
-pub fn unwrap_if(mut code: MirCodeBlock) -> MirCodeBlock {
+pub fn unwrap_if(code: MirCodeBlock) -> MirCodeBlock {
     MirCodeBlock(
         code.into_iter()
             .flat_map(|x| match x {
                 Mir::If0(a, b, c) => {
-                    if b.iter().any(|x| does_break_in_all_cases(x)) {
+                    if b.iter().any(does_break_in_all_cases) {
                         let mut vec = Vec::with_capacity(1 + c.len());
                         vec.push(Mir::If0(a, b, MirCodeBlock(vec![])));
-                        vec.extend(c.into_iter());
-                        return vec;
-                    } else if c.iter().any(|x| does_break_in_all_cases(x)) {
+                        vec.extend(c);
+                        vec
+                    } else if c.iter().any(does_break_in_all_cases) {
                         let mut vec = Vec::with_capacity(1 + b.len());
                         vec.push(Mir::If0(a, MirCodeBlock(vec![]), c));
-                        vec.extend(b.into_iter());
-                        return vec;
+                        vec.extend(b);
+                        vec
                     } else {
-                        return vec![Mir::If0(a, b, c)];
+                        vec![Mir::If0(a, b, c)]
                     }
                 }
                 Mir::Block(a) => {
@@ -383,7 +388,7 @@ pub fn opt_not_read(mut code: MirCodeBlock) -> MirCodeBlock {
 }
 pub fn opt_lower_interupts_calls(code: MirCodeBlock) -> MirCodeBlock {
     let (mut code, to_exe) = lower_interupts_calls(code, Vec::new());
-    code.0.extend(to_exe.into_iter());
+    code.0.extend(to_exe);
     code
 }
 fn lower_interupts_calls(code: MirCodeBlock, mut to_lower: Vec<Mir>) -> (MirCodeBlock, Vec<Mir>) {
@@ -743,7 +748,7 @@ fn optimize(mir: Mir, context: &mut OptContext) -> Vec<Mir> {
                         return optimize_block(j.0, context);
                     }
                 }
-                return vec![];
+                vec![]
             }
             None => {
                 let mut cur_state: Option<OptContext> = None;

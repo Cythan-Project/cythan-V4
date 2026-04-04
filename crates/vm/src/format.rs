@@ -34,13 +34,13 @@ fn encode_str(encoder: &mut Cursor<Vec<u8>>, data: &str) -> Result<(), Error> {
 fn decode_str(encoder: &mut Cursor<Vec<u8>>) -> Result<String, Error> {
     let len = decode_u32(encoder)?;
     let mut buf = vec![0; len as usize];
-    encoder.read(&mut buf)?;
+    encoder.read_exact(&mut buf)?;
     Ok(String::from_utf8_lossy(&buf).to_string())
 }
 
 fn decode_u8(encoder: &mut Cursor<Vec<u8>>) -> Result<u8, Error> {
     let mut k = [0];
-    encoder.read(&mut k)?;
+    encoder.read_exact(&mut k)?;
     Ok(k[0])
 }
 
@@ -72,7 +72,7 @@ pub fn encode_to_bytes(header: HeaderData, cythan_memory: &[u32]) -> Result<Vec<
     encode_u32(&mut encoded, header.header_version)?;
     encode_u32(&mut encoded, header.version)?;
     encode_u32(&mut encoded, header.interupt_configuration)?;
-    encoded.write(&[header.base])?;
+    encoded.write_all(&[header.base])?;
     encode_str(&mut encoded, &header.info_string)?;
     encode_u32(&mut encoded, cythan_memory.len() as u32)?;
     for x in cythan_memory {

@@ -28,3 +28,6 @@ criterion = "0.3"
 [[bench]]
 name = "cythan-benchmark"
 harness = false
+
+[lints]
+workspace = true

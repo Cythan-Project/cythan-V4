@@ -12,6 +12,12 @@ pub struct LocalState {
     pub return_loc: Option<TypedMemory>,
 }
 
+impl Default for LocalState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LocalState {
     pub fn new() -> LocalState {
         LocalState {

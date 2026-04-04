@@ -21,10 +21,9 @@ pub fn compile_code_block(
     cm: &mut CodeManager,
     span: Span,
 ) -> Result<OutputData, Error> {
-    expr.1.iter().fold(
-        Ok(OutputData::new(MirCodeBlock::default(), span, None)),
-        |acc, expr| {
-            let mut acc = acc?;
+    expr.1.iter().try_fold(
+        OutputData::new(MirCodeBlock::default(), span, None),
+        |mut acc, expr| {
             let expr = compile(expr, ls, cm, None)?;
             acc.mir.add(expr.mir);
             acc.return_value = expr.return_value;
@@ -97,8 +96,7 @@ pub fn compile(
                 MirCodeBlock::from(
                     fields
                         .into_iter()
-                        .map(|x| x.1.mir.0)
-                        .flatten()
+                        .flat_map(|x| x.1.mir.0)
                         .collect::<Vec<_>>(),
                 ),
                 span.clone(),
@@ -215,7 +213,7 @@ pub fn compile(
             panic!("Expected something else than Type in expression")
         }
         Expr::Field { span, source, name } => {
-            let out = compile(&*source, ls, cm, None)?;
+            let out = compile(source, ls, cm, None)?;
             let rtv = out
                 .return_value
                 .as_ref()
@@ -320,7 +318,7 @@ pub fn compile(
             }
             mir.add(ret1.mir);
             mir.add(ret.mir);
-            mir.copy_bulk(&rt.locations, &rt1.locations, &span)?;
+            mir.copy_bulk(&rt.locations, &rt1.locations, span)?;
             Ok(OutputData::new(mir, span.clone(), None))
         }
         Expr::Block(span, a) => compile_code_block(a, &mut ls.shadow(), cm, span.clone()),
@@ -342,7 +340,7 @@ pub fn compile(
                     ));
                 }
                 mir.add(ret.mir);
-                mir.copy_bulk(&rl.locations, &rt.locations, &span)?;
+                mir.copy_bulk(&rl.locations, &rt.locations, span)?;
                 mir.add_mir(Mir::Skip);
                 Ok(OutputData::new(mir, span.clone(), None))
             } else if ls.return_loc.is_some() {

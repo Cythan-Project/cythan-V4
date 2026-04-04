@@ -7,3 +7,6 @@ edition = "2018"
 
 [dependencies]
 cythan-compiler = { git = "https://github.com/Cythan-Project/cythan-compiler" }
+
+[lints]
+workspace = true

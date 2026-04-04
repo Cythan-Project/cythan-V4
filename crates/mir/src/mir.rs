@@ -107,7 +107,7 @@ impl Display for Mir {
             Self::Match(a, b) => {
                 let mut s = String::new();
                 s.push_str(&format!("match v{} {{\n", a));
-                for (_, (c, v)) in b.iter().enumerate() {
+                for (c, v) in b.iter() {
                     s.push_str(&format!("  {:?} => {{\n    ", v));
                     s.push_str(
                         &c.0.iter()
@@ -118,7 +118,7 @@ impl Display for Mir {
                     );
                     s.push_str("\n  }\n");
                 }
-                s.push_str("}");
+                s.push('}');
                 write!(f, "{}", s)
             }
         }
@@ -167,7 +167,7 @@ impl Mir {
             }
             Mir::Match(a, b) => {
                 set.insert(*a);
-                for (_, (c, _)) in b.iter().enumerate() {
+                for (c, _) in b.iter() {
                     set.extend(c.iter().flat_map(|x| x.get_acesses()));
                 }
             }

@@ -47,7 +47,7 @@ impl CodeManager {
             }
             offset += self.cl.view(&f.ty)?.size(&self.cl)? as usize;
         }
-        return Err(report_similar(
+        Err(report_similar(
             "field",
             "fields",
             &name.0,
@@ -58,6 +58,6 @@ impl CodeManager {
                 .map(|x| x.name.1.clone())
                 .collect::<Vec<_>>(),
             14,
-        ));
+        ))
     }
 }

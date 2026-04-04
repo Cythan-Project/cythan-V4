@@ -48,7 +48,11 @@ impl InterruptedCythan {
                 print!("{}", a as char);
                 std::io::stdout().flush().unwrap();
             },
-            || std::io::stdin().bytes().next().unwrap().unwrap(),
+            || {
+                let mut buf = [0u8; 1];
+                std::io::stdin().read_exact(&mut buf).unwrap();
+                buf[0]
+            },
         )
     }
 }

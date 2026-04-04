@@ -325,7 +325,7 @@ pub fn parse(
                     a,
                 ));
             }
-            Some(Token::Number(span, a, t)) if matches!(c, '0'..='9') => {
+            Some(Token::Number(span, a, t)) if c.is_ascii_digit() => {
                 current_token = Some(Token::Number(
                     Span::new(file.to_owned(), current, initial_size - char.len()).merge(&span),
                     a * 10 + c.to_digit(10).unwrap() as i32,
