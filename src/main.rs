@@ -1,11 +1,11 @@
+use std::path::PathBuf;
+
+use clap::{Parser, Subcommand};
 use cythan::format;
 use lir::CompilableInstruction;
 use mir::{MirState, StdIoContext};
 
-use crate::actions::{
-    build_context::compile,
-    run_context::{run, run_bin, compute_max_bin},
-};
+use crate::actions::run_context::{compute_max_bin, run, run_bin};
 
 mod actions;
 mod compiler;
@@ -15,98 +15,297 @@ mod tests;
 
 const STACK_SIZE: usize = 1024 * 1024 * 1024;
 
-fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    match args.get(1).map(|x| x.as_str()) {
-        Some("run") => {
-            let fname = args.get(2).expect("No file name given");
-            let pg: mir::MirCodeBlock = compile(fname.to_owned(), args.get(3).is_some());
-            println!("Compiled successfully!");
-            println!("Now running...");
-            run(&pg, StdIoContext);
-        }
-        Some("inspect") => {
-            let fname = args.get(2).expect("No file name given");
-            let foname = args.get(3).expect("No output file name given");
-            let pg = format::decode_bytes(&std::fs::read(fname).unwrap())
-                .unwrap()
-                .1;
-            std::fs::write(
-                foname,
-                pg.iter()
-                    .map(|x| x.to_string())
-                    .collect::<Vec<_>>()
-                    .join(" "),
-            ).unwrap();
-            println!("Decoded successfully!");
-        }
-        Some("precomp") => {
-            let fname = args.get(2).expect("No file name given");
-            let foname = args.get(3).expect("No output file name given");
-            let pg = format::decode_bytes(&std::fs::read(fname).unwrap())
-                .unwrap()
-                .1;
+#[derive(Parser)]
+#[command(name = "cythan", about = "Cythan V4 compiler and runtime")]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
 
-            println!("Now running...");
-            let output = compute_max_bin(
-                &pg.into_iter().map(|x| x as usize).collect::<Vec<_>>(),
-            );
-            println!("Advanced machine by: {}steps", output.0);
-            std::fs::write(
-                foname,
-                cythan::format::encode_to_bytes(cythan::format::HeaderData::default(), &output.1.iter().map(|x| *x as _).collect::<Vec<_>>())
-                    .expect("Could not create binary"),
-            )
-            .expect("Could not write file");
+#[derive(Subcommand)]
+enum Command {
+    /// Compile and run a Cythan program
+    Run {
+        /// Source file name (without .ct extension, looked up in std/)
+        file: String,
+        /// Enable MIR optimization
+        #[arg(short, long)]
+        optimize: bool,
+        /// Dump MIR before optimization
+        #[arg(long, value_name = "FILE")]
+        dump_mir_before: Option<PathBuf>,
+        /// Dump MIR after optimization
+        #[arg(long, value_name = "FILE")]
+        dump_mir_after: Option<PathBuf>,
+    },
+    /// Compile a Cythan program to binary
+    Build {
+        /// Source file name (without .ct extension, looked up in std/)
+        file: String,
+        /// Output binary file path
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Enable MIR optimization
+        #[arg(short = 'O', long)]
+        optimize: bool,
+        /// Dump MIR (after optimization if enabled)
+        #[arg(long, value_name = "FILE")]
+        dump_mir: Option<PathBuf>,
+        /// Dump MIR before optimization
+        #[arg(long, value_name = "FILE")]
+        dump_mir_before: Option<PathBuf>,
+        /// Dump MIR after optimization
+        #[arg(long, value_name = "FILE")]
+        dump_mir_after: Option<PathBuf>,
+        /// Dump LIR (low-level IR) instructions
+        #[arg(long, value_name = "FILE")]
+        dump_lir: Option<PathBuf>,
+        /// Dump V3 assembly text
+        #[arg(long, value_name = "FILE")]
+        dump_asm: Option<PathBuf>,
+    },
+    /// Decode and inspect a compiled binary
+    Inspect {
+        /// Input binary file
+        input: PathBuf,
+        /// Output text file
+        output: PathBuf,
+    },
+    /// Pre-compute machine state from a binary
+    Precomp {
+        /// Input binary file
+        input: PathBuf,
+        /// Output binary file
+        output: PathBuf,
+    },
+    /// Execute a pre-compiled binary
+    Exe {
+        /// Input binary file
+        input: PathBuf,
+    },
+}
+
+fn compile_to_mir(file: String, optimize: bool) -> mir::MirCodeBlock {
+    let child = std::thread::Builder::new()
+        .stack_size(STACK_SIZE)
+        .spawn(move || {
+            use crate::{
+                actions::natives::load_natives,
+                compiler::{
+                    class_loader::ClassLoader,
+                    state::{code_manager::CodeManager, local_state::LocalState},
+                },
+                parser::ty::Type,
+            };
+            use errors::{report, Span, SpannedObject};
+            use mir::Mir;
+
+            let mut cl = ClassLoader::new();
+            for file in std::fs::read_dir("std").unwrap() {
+                cl.load_string(
+                    &std::fs::read_to_string(file.as_ref().unwrap().path()).unwrap(),
+                    &file
+                        .as_ref()
+                        .unwrap()
+                        .path()
+                        .as_os_str()
+                        .to_str()
+                        .unwrap()
+                        .to_owned(),
+                )
+                .unwrap_or_else(|e| {
+                    report(e);
+                    std::process::exit(1);
+                });
+            }
+            load_natives(&mut cl);
+
+            let rs = cl
+                .view(&Type::simple(&file, Span::default()))
+                .unwrap_or_else(|e| {
+                    report(e);
+                    std::process::exit(1);
+                })
+                .method_view(&SpannedObject(Span::default(), "main".to_owned()), &None)
+                .unwrap_or_else(|e| {
+                    report(e);
+                    std::process::exit(1);
+                })
+                .execute(&mut LocalState::new(), &mut CodeManager::new(cl), vec![])
+                .unwrap_or_else(|e| {
+                    report(e);
+                    std::process::exit(1);
+                });
+            let mut mir = rs.mir;
+            mir.add_mir(Mir::Stop);
+            mir
+        })
+        .unwrap();
+    let mir = child.join().unwrap();
+    if optimize {
+        mir.optimize_code_new()
+    } else {
+        mir
+    }
+}
+
+fn dump_mir(mir: &mir::MirCodeBlock, path: &PathBuf) {
+    std::fs::write(
+        path,
+        mir.0
+            .iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+    .expect("Could not write MIR file");
+}
+
+fn main() {
+    let cli = Cli::parse();
+
+    match cli.command {
+        Command::Run {
+            file,
+            optimize,
+            dump_mir_before,
+            dump_mir_after,
+        } => {
+            let raw_mir = compile_to_mir(file.clone(), false);
+            if let Some(path) = &dump_mir_before {
+                dump_mir(&raw_mir, path);
+            }
+            let mir = if optimize {
+                let count = raw_mir.instr_count();
+                let optimized = raw_mir.optimize_code_new();
+                let ncount = optimized.instr_count();
+                eprintln!(
+                    "Optimized from {} to {} ({:.02}%)",
+                    count,
+                    ncount,
+                    (count - ncount) as f64 / count as f64 * 100.
+                );
+                optimized
+            } else {
+                raw_mir
+            };
+            if let Some(path) = &dump_mir_after {
+                dump_mir(&mir, path);
+            }
+            eprintln!("Compiled successfully!");
+            eprintln!("Now running...");
+            run(&mir, StdIoContext);
         }
-        Some("exe") => {
-            let fname = args.get(2).expect("No file name given");
-            let pg = format::decode_bytes(&std::fs::read(fname).unwrap())
-                .unwrap()
-                .1;
-            println!("Now running...");
-            let (k, _) = run_bin(
-                &pg.into_iter().map(|x| x as usize).collect::<Vec<_>>(),
-                StdIoContext,
-            );
-            println!("Took {}steps", k);
-        }
-        Some("build") => {
-            let fname = args.get(2).expect("No file name given");
-            let oname = args.get(3).expect("No file name given");
-            let compiled = compile(fname.to_owned(), args.get(4).is_some());
-            if let Some(e) = args.get(4) {
+        Command::Build {
+            file,
+            output,
+            optimize,
+            dump_mir: dump_mir_path,
+            dump_mir_before,
+            dump_mir_after,
+            dump_lir,
+            dump_asm,
+        } => {
+            let raw_mir = compile_to_mir(file.clone(), false);
+            if let Some(path) = &dump_mir_before {
+                dump_mir(&raw_mir, path);
+            }
+            let compiled = if optimize {
+                let count = raw_mir.instr_count();
+                let optimized = raw_mir.optimize_code_new();
+                let ncount = optimized.instr_count();
+                eprintln!(
+                    "Optimized from {} to {} ({:.02}%)",
+                    count,
+                    ncount,
+                    (count - ncount) as f64 / count as f64 * 100.
+                );
+                optimized
+            } else {
+                raw_mir
+            };
+            if let Some(path) = &dump_mir_after {
+                dump_mir(&compiled, path);
+            }
+            if let Some(path) = &dump_mir_path {
+                dump_mir(&compiled, path);
+            }
+
+            let mut mirstate = MirState::default();
+            compiled.to_asm(&mut mirstate);
+            mirstate.opt_asm();
+
+            if let Some(path) = &dump_lir {
                 std::fs::write(
-                    e,
-                    compiled
-                        .0
+                    path,
+                    mirstate
+                        .instructions
                         .iter()
                         .map(|x| x.to_string())
                         .collect::<Vec<_>>()
                         .join("\n"),
                 )
-                .expect("Could not write file");
+                .expect("Could not write LIR file");
             }
-            let mut mirstate = MirState::default();
-            compiled.to_asm(&mut mirstate);
-            mirstate.opt_asm();
+
+            let asm_text = CompilableInstruction::compile_to_string(mirstate.instructions.clone());
+            if let Some(path) = &dump_asm {
+                std::fs::write(path, &asm_text).expect("Could not write ASM file");
+            }
+
             let k: Vec<u32> = CompilableInstruction::compile_to_binary(mirstate.instructions)
                 .into_iter()
                 .map(|x| x as u32)
                 .collect();
             std::fs::write(
-                oname,
+                &output,
                 cythan::format::encode_to_bytes(cythan::format::HeaderData::default(), &k)
                     .expect("Could not create binary"),
             )
+            .expect("Could not write binary file");
+            eprintln!("Compiled successfully!");
+        }
+        Command::Inspect { input, output } => {
+            let pg = format::decode_bytes(&std::fs::read(&input).unwrap())
+                .unwrap()
+                .1;
+            std::fs::write(
+                &output,
+                pg.iter()
+                    .map(|x| x.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            )
+            .unwrap();
+            eprintln!("Decoded successfully!");
+        }
+        Command::Precomp { input, output } => {
+            let pg = format::decode_bytes(&std::fs::read(&input).unwrap())
+                .unwrap()
+                .1;
+            eprintln!("Now running...");
+            let result = compute_max_bin(&pg.into_iter().map(|x| x as usize).collect::<Vec<_>>());
+            eprintln!("Advanced machine by: {} steps", result.0);
+            std::fs::write(
+                &output,
+                cythan::format::encode_to_bytes(
+                    cythan::format::HeaderData::default(),
+                    &result.1.iter().map(|x| *x as _).collect::<Vec<_>>(),
+                )
+                .expect("Could not create binary"),
+            )
             .expect("Could not write file");
-            println!("Compiled successfully!")
         }
-        Some("test") => {
-            unimplemented!()
-        }
-        _ => {
-            println!("Invalid command expected run, test or build");
+        Command::Exe { input } => {
+            let pg = format::decode_bytes(&std::fs::read(&input).unwrap())
+                .unwrap()
+                .1;
+            eprintln!("Now running...");
+            let (k, _) = run_bin(
+                &pg.into_iter().map(|x| x as usize).collect::<Vec<_>>(),
+                StdIoContext,
+            );
+            eprintln!("Took {} steps", k);
         }
     }
 }

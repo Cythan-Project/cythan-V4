@@ -10,7 +10,11 @@ pub fn run<T: RunContext + 'static>(mir: &MirCodeBlock, car: T) -> (usize, Rc<Mu
     run_with_limit(mir, car, 0)
 }
 
-pub fn run_with_limit<T: RunContext + 'static>(mir: &MirCodeBlock, car: T, max_steps: usize) -> (usize, Rc<Mutex<T>>) {
+pub fn run_with_limit<T: RunContext + 'static>(
+    mir: &MirCodeBlock,
+    car: T,
+    max_steps: usize,
+) -> (usize, Rc<Mutex<T>>) {
     if MIR_MODE {
         let car = Rc::new(Mutex::new(car));
         let mut ms = MemoryState::new(2048, 8);
@@ -42,7 +46,11 @@ pub fn run_bin<T: RunContext + 'static>(k: &[usize], car: T) -> (usize, Rc<Mutex
     run_bin_with_limit(k, car, 0)
 }
 
-pub fn run_bin_with_limit<T: RunContext + 'static>(k: &[usize], car: T, max_steps: usize) -> (usize, Rc<Mutex<T>>) {
+pub fn run_bin_with_limit<T: RunContext + 'static>(
+    k: &[usize],
+    car: T,
+    max_steps: usize,
+) -> (usize, Rc<Mutex<T>>) {
     let car = Rc::new(Mutex::new(car));
     let car1 = car.clone();
     let car2 = car.clone();

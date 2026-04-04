@@ -19,30 +19,18 @@ pub fn compile(class_name: String, optimize: bool) -> MirCodeBlock {
         .spawn(move || generate_mir(&class_name))
         .unwrap();
     let k = child.join().unwrap();
-    std::fs::write(
-        "before.mir",
-        k.0.iter()
-            .map(|x| x.to_string())
-            .collect::<Vec<_>>()
-            .join("\n"),
-    )
-    .expect("Could not write file");
     let count = k.instr_count();
     let k = if optimize { k.optimize_code_new() } else { k };
-    std::fs::write(
-        "after.mir",
-        k.0.iter()
-            .map(|x| x.to_string())
-            .collect::<Vec<_>>()
-            .join("\n"),
-    )
-    .expect("Could not write file");
     let ncount = k.instr_count();
-    println!(
+    eprintln!(
         "Optimized from {} to {} ({:.02}%)",
         count,
         ncount,
-        (count - ncount) as f64 / count as f64 * 100.
+        if count > 0 {
+            (count - ncount) as f64 / count as f64 * 100.
+        } else {
+            0.0
+        }
     );
     k
 }
@@ -78,8 +66,8 @@ fn generate_mir(class_name: &str) -> MirCodeBlock {
     match r {
         Ok(e) => e,
         Err(e) => {
-        report(e);
-        exit(0);
+            report(e);
+            exit(0);
         }
     }
 }

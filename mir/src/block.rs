@@ -5,12 +5,7 @@ use std::{
 
 use errors::{invalid_length_asm, Error, Span};
 
-
-use crate::{
-    mir::Mir,
-    skip_status::SkipStatus,
-    state::MirState,
-};
+use crate::{mir::Mir, skip_status::SkipStatus, state::MirState};
 
 #[derive(PartialEq, Clone, Hash, Debug)]
 pub struct MirCodeBlock(pub Vec<Mir>);

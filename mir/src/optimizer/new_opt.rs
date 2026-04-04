@@ -263,41 +263,40 @@ if v89 {
     }
 */
 pub fn unwrap_if(mut code: MirCodeBlock) -> MirCodeBlock {
-    MirCodeBlock(code.into_iter().flat_map(|x| {
-        match x {
-            Mir::If0(a, b, c) => {
-                if b.iter().any(|x| does_break_in_all_cases(x)) {
-                    let mut vec = Vec::with_capacity(1 + c.len());
-                    vec.push(Mir::If0(a, b, MirCodeBlock(vec![])));
-                    vec.extend(c.into_iter());
-                    return vec;
-                } else if c.iter().any(|x| does_break_in_all_cases(x)) {
-                    let mut vec = Vec::with_capacity(1 + b.len());
-                    vec.push(Mir::If0(a, MirCodeBlock(vec![]), c));
-                    vec.extend(b.into_iter());
-                    return vec;
-                } else {
-                    return vec![Mir::If0(a, b, c)];
+    MirCodeBlock(
+        code.into_iter()
+            .flat_map(|x| match x {
+                Mir::If0(a, b, c) => {
+                    if b.iter().any(|x| does_break_in_all_cases(x)) {
+                        let mut vec = Vec::with_capacity(1 + c.len());
+                        vec.push(Mir::If0(a, b, MirCodeBlock(vec![])));
+                        vec.extend(c.into_iter());
+                        return vec;
+                    } else if c.iter().any(|x| does_break_in_all_cases(x)) {
+                        let mut vec = Vec::with_capacity(1 + b.len());
+                        vec.push(Mir::If0(a, MirCodeBlock(vec![]), c));
+                        vec.extend(b.into_iter());
+                        return vec;
+                    } else {
+                        return vec![Mir::If0(a, b, c)];
+                    }
                 }
-            }
-            Mir::Block(a) => {
-                let a = unwrap_if(a);
-                vec![Mir::Block(a)]
-            }
-            Mir::Loop(a) => {
-                let a = unwrap_if(a);
-                vec![Mir::Loop(a)]
-            }
-            Mir::Match(a, b) => {
-                let b: Vec<_> = b
-                    .into_iter()
-                    .map(|(a, b)| (unwrap_if(a), b))
-                    .collect();
-                vec![Mir::Match(a, b)]
-            }
-            x => vec![x],
-        }
-    }).collect())
+                Mir::Block(a) => {
+                    let a = unwrap_if(a);
+                    vec![Mir::Block(a)]
+                }
+                Mir::Loop(a) => {
+                    let a = unwrap_if(a);
+                    vec![Mir::Loop(a)]
+                }
+                Mir::Match(a, b) => {
+                    let b: Vec<_> = b.into_iter().map(|(a, b)| (unwrap_if(a), b)).collect();
+                    vec![Mir::Match(a, b)]
+                }
+                x => vec![x],
+            })
+            .collect(),
+    )
 }
 pub fn opt_not_read(mut code: MirCodeBlock) -> MirCodeBlock {
     let mut wrote = HashSet::new();
@@ -356,7 +355,6 @@ pub fn opt_not_read(mut code: MirCodeBlock) -> MirCodeBlock {
                 vec![Mir::Stop]
             }
             Mir::ReadRegister(a, b) => {
-
                 wrote.insert(a);
                 vec![Mir::ReadRegister(a, b)]
             }

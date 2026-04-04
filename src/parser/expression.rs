@@ -203,10 +203,12 @@ fn parse_if(
     if_token_span: Span,
     types: &Type,
 ) -> Result<Expr, Error> {
-    let k = Box::new( take_until(tokens, |e| {
-        matches!(e, Token::Block(_, ClosableType::Brace, _))
-    })
-    .parse(types)?);
+    let k = Box::new(
+        take_until(tokens, |e| {
+            matches!(e, Token::Block(_, ClosableType::Brace, _))
+        })
+        .parse(types)?,
+    );
     let if_b = match tokens.get_token() {
         Some(Token::Block(span, ClosableType::Brace, e)) => SpannedVector(span, e.parse(types)?),
         Some(e) => {

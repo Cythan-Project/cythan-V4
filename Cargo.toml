@@ -12,6 +12,7 @@ mir = { path = "mir" }
 errors = { path = "errors" }
 cythan = { path = "Cythan-V2" }
 varuint = "*"
+clap = { version = "4", features = ["derive"] }
 
 [profile.release]
 debug = true

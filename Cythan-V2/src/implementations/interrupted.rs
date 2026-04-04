@@ -56,7 +56,6 @@ impl InterruptedCythan {
 use crate::cythan::Cythan;
 
 impl InterruptedCythan {
-
     #[inline]
     pub fn next_get_interupt(&mut self) -> bool {
         unsafe {
@@ -79,7 +78,7 @@ impl InterruptedCythan {
         }
     }
     #[inline]
-    fn set_value_interupt(&mut self, index: usize, value: usize) -> bool{
+    fn set_value_interupt(&mut self, index: usize, value: usize) -> bool {
         if index == self.interrupt_place {
             return true;
         }

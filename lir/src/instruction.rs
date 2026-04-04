@@ -68,7 +68,6 @@ impl CompilableInstruction {
     }
     pub fn compile_to_binary(instrs: Vec<Self>) -> Vec<usize> {
         let ks = Self::compile_to_string(instrs);
-        std::fs::write("target/v3.ct", &ks);
         cythan_compiler::compile(&ks).unwrap()
     }
     fn check_compile_var(var: &Var, template: &mut Template, ctx: &mut Context) {

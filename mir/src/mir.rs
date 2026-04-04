@@ -1,4 +1,4 @@
-use std::{fmt::Display, collections::HashSet};
+use std::{collections::HashSet, fmt::Display};
 
 use either::Either;
 use lir::{AsmValue, CompilableInstruction, Label, LabelType, Number, Var};
@@ -25,7 +25,6 @@ pub enum Mir {
 }
 
 impl Display for Mir {
-    
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Copy(a, b) => write!(f, "v{} = v{}", *a, *b),

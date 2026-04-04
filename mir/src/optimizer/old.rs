@@ -1,9 +1,6 @@
 use std::collections::HashSet;
 
-use crate::{
-    block::MirCodeBlock,
-    mir::Mir,
-};
+use crate::{block::MirCodeBlock, mir::Mir};
 
 pub struct OptConfig {
     pub inline_loops: bool,

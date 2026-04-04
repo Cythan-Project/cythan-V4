@@ -1,10 +1,10 @@
 mod block;
 mod interpreter;
 mod mir;
+mod no;
 mod optimizer;
 mod skip_status;
 mod state;
-mod no;
 
 pub use block::MirCodeBlock;
 pub use interpreter::*;

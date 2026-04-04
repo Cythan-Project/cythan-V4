@@ -1,7 +1,7 @@
 use std::time::Instant;
 
+use crate::actions::{build_context::compile, test_context::TestContext};
 use mir::MemoryState;
-use crate::{actions::test_context::TestContext, compile};
 
 // TODO: Create test using Annotations
 /*
@@ -52,17 +52,29 @@ pub fn test_string() {
 
 #[test]
 pub fn test_val() {
-    execute("TestVal", "", "05\n65\nyes\nno\neq5\nneq3\ngt3\nngt5\nngt8\n12\n");
+    execute(
+        "TestVal",
+        "",
+        "05\n65\nyes\nno\neq5\nneq3\ngt3\nngt5\nngt8\n12\n",
+    );
 }
 
 #[test]
 pub fn test_bool() {
-    execute("TestBool", "", "true\nfalse\nfalse\ntrue\na_true\nb_false\ntt\nntf\nor_ba\nnor_bb\n");
+    execute(
+        "TestBool",
+        "",
+        "true\nfalse\nfalse\ntrue\na_true\nb_false\ntt\nntf\nor_ba\nnor_bb\n",
+    );
 }
 
 #[test]
 pub fn test_byte() {
-    execute("TestByte", "", "zero_ok\ninc_ok\ndec_ok\nnz_ok\nadd_ok\nsub_ok\n5\n");
+    execute(
+        "TestByte",
+        "",
+        "zero_ok\ninc_ok\ndec_ok\nnz_ok\nadd_ok\nsub_ok\n5\n",
+    );
 }
 
 #[test]
@@ -72,7 +84,11 @@ pub fn test_cast() {
 
 #[test]
 pub fn test_loop() {
-    execute("TestLoop", "", "01234\n124578\n00 01 02 10 11 12 20 21 22 \n");
+    execute(
+        "TestLoop",
+        "",
+        "01234\n124578\n00 01 02 10 11 12 20 21 22 \n",
+    );
 }
 
 #[test]
@@ -135,7 +151,10 @@ pub fn test_game2048() {
     let mut ms = MemoryState::new(4096, 8);
     ms.execute_block(&mir, &mut ctx);
     assert!(ctx.print.starts_with("2048"), "Should start with banner");
-    assert!(ctx.print.ends_with("Game over!\n"), "Game should end with Game over!");
+    assert!(
+        ctx.print.ends_with("Game over!\n"),
+        "Game should end with Game over!"
+    );
     println!("{}ops", get_format(ms.instr_count));
 }
 
@@ -151,11 +170,11 @@ pub fn test_chess() {
     // Encoded: e=5,2=2 → "5254" then f=6,7=7,f=6,5=5 → "6765" etc.
     // Actually Val.input returns lower nibble of char. '5'=0x35→5, '2'=0x32→2
     let input = concat!(
-        "5254",  // White: e2→e4
-        "6765",  // Black: f7→f5
-        "4185",  // White: d1→h5 (queen to h5)
-        "7776",  // Black: g7→g6
-        "8558",  // White: h5→e8 (queen captures next to king... actually e8 has nothing)
+        "5254", // White: e2→e4
+        "6765", // Black: f7→f5
+        "4185", // White: d1→h5 (queen to h5)
+        "7776", // Black: g7→g6
+        "8558", // White: h5→e8 (queen captures next to king... actually e8 has nothing)
     );
     // Actually this is hard to predict without seeing the board. Let me use a direct
     // king capture: remove blocking pieces then take the king.
@@ -174,10 +193,19 @@ pub fn test_chess() {
     let mut ctx = TestContext::new("4158");
     let mut ms = MemoryState::new(4096, 8);
     ms.execute_block(&mir, &mut ctx);
-    assert!(ctx.print.contains("White wins!"), "White should win by capturing black king");
+    assert!(
+        ctx.print.contains("White wins!"),
+        "White should win by capturing black king"
+    );
     // Verify the initial board display is present
-    assert!(ctx.print.contains("R N B Q K B N R"), "Initial board should show white back rank");
-    assert!(ctx.print.contains("r n b q k b n r"), "Initial board should show black back rank");
+    assert!(
+        ctx.print.contains("R N B Q K B N R"),
+        "Initial board should show white back rank"
+    );
+    assert!(
+        ctx.print.contains("r n b q k b n r"),
+        "Initial board should show black back rank"
+    );
     println!("{}ops", get_format(ms.instr_count));
 }
 
