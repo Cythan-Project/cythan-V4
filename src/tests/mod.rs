@@ -126,6 +126,19 @@ pub fn test_pendu_with_p() {
     execute("Pendu", "pppppp", "\n\n\n\n------\n\n\n_________\n\nTu n'as pas trouvé de lettre -1 vie\n |\n |\n |\n |\n------\n\n_________\n\nTu n'as pas trouvé de lettre -1 vie\n |--\n |\n |\n |\n------\n\n_________\n\nTu n'as pas trouvé de lettre -1 vie\n |--|\n |  O\n |  |\n |\n------\n\n_________\n\nTu n'as pas trouvé de lettre -1 vie\n |--|\n |  O\n | /|\n |\n------\n\n_________\n\nTu n'as pas trouvé de lettre -1 vie\n |--|\n |  O\n | /|\\\n |\n------\n\n_________\n\nTu n'as pas trouvé de lettre -1 vie\n |--|\n |  O\n | /|\\\n | / \\\n------\n\n_________\n\nGROSSE MERDE!\n");
 }
 
+#[test]
+pub fn test_game2048() {
+    // Play a full game with deterministic input (cycling 1234 = left/right/up/down)
+    let mir = compile("Game2048".to_owned(), false);
+    let input = "1234".repeat(50);
+    let mut ctx = TestContext::new(&input);
+    let mut ms = MemoryState::new(4096, 8);
+    ms.execute_block(&mir, &mut ctx);
+    assert!(ctx.print.starts_with("2048"), "Should start with banner");
+    assert!(ctx.print.ends_with("Game over!\n"), "Game should end with Game over!");
+    println!("{}ops", get_format(ms.instr_count));
+}
+
 pub fn get_format(n: usize) -> String {
     if n > 1_000_000 {
         format!("{}M", (n / 100_000) as f64 / 10.0)

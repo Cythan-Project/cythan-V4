@@ -1,0 +1,254 @@
+class Game2048 {
+
+    Array<Val, 16, Val> grid;
+    Val seed;
+    Bool changed;
+
+    Self new() {
+        return Self {
+            grid = Array tmp,
+            seed = 0,
+            changed = false
+        };
+    }
+
+    printCell(Val v) {
+        if v.equalsZero() {
+            "   .".print();
+        } else if v.equals(1) {
+            "   2".print();
+        } else if v.equals(2) {
+            "   4".print();
+        } else if v.equals(3) {
+            "   8".print();
+        } else if v.equals(4) {
+            "  16".print();
+        } else if v.equals(5) {
+            "  32".print();
+        } else if v.equals(6) {
+            "  64".print();
+        } else if v.equals(7) {
+            " 128".print();
+        } else if v.equals(8) {
+            " 256".print();
+        } else if v.equals(9) {
+            " 512".print();
+        } else if v.equals(10) {
+            "1024".print();
+        } else {
+            "2048".print();
+        };
+    }
+
+    display(self) {
+        Val i = 0;
+        loop {
+            Self.printCell(self.grid.getDyn(i));
+            Val col = i;
+            col.inc();
+            if col.equals(4) || col.equals(8) || col.equals(12) || col.equalsZero() {
+                '\n'.print();
+            };
+            if i.equals(15) {
+                break;
+            };
+            i.inc();
+        };
+    }
+
+    slideLine(self, Val i0, Val i1, Val i2, Val i3) {
+        Val a = self.grid.getDyn(i0);
+        Val b = self.grid.getDyn(i1);
+        Val c = self.grid.getDyn(i2);
+        Val d = self.grid.getDyn(i3);
+        Val oa = a;
+        Val ob = b;
+        Val oc = c;
+        Val od = d;
+
+        if a.equalsZero() { a = b; b = 0; };
+        if b.equalsZero() { b = c; c = 0; };
+        if c.equalsZero() { c = d; d = 0; };
+        if a.equalsZero() { a = b; b = 0; };
+        if b.equalsZero() { b = c; c = 0; };
+        if a.equalsZero() { a = b; b = 0; };
+
+        if a.equalsZero().not() && a.equals(b) {
+            a.inc();
+            b = 0;
+        };
+        if b.equalsZero().not() && b.equals(c) {
+            b.inc();
+            c = 0;
+        };
+        if c.equalsZero().not() && c.equals(d) {
+            c.inc();
+            d = 0;
+        };
+
+        if b.equalsZero() { b = c; c = 0; };
+        if c.equalsZero() { c = d; d = 0; };
+        if b.equalsZero() { b = c; c = 0; };
+
+        if oa.equals(a).not() || ob.equals(b).not() || oc.equals(c).not() || od.equals(d).not() {
+            self.changed = true;
+        };
+
+        self.grid.setDyn(i0, a);
+        self.grid.setDyn(i1, b);
+        self.grid.setDyn(i2, c);
+        self.grid.setDyn(i3, d);
+    }
+
+    slideLeft(self) {
+        self.slideLine(0, 1, 2, 3);
+        self.slideLine(4, 5, 6, 7);
+        self.slideLine(8, 9, 10, 11);
+        self.slideLine(12, 13, 14, 15);
+    }
+
+    slideRight(self) {
+        self.slideLine(3, 2, 1, 0);
+        self.slideLine(7, 6, 5, 4);
+        self.slideLine(11, 10, 9, 8);
+        self.slideLine(15, 14, 13, 12);
+    }
+
+    slideUp(self) {
+        self.slideLine(0, 4, 8, 12);
+        self.slideLine(1, 5, 9, 13);
+        self.slideLine(2, 6, 10, 14);
+        self.slideLine(3, 7, 11, 15);
+    }
+
+    slideDown(self) {
+        self.slideLine(12, 8, 4, 0);
+        self.slideLine(13, 9, 5, 1);
+        self.slideLine(14, 10, 6, 2);
+        self.slideLine(15, 11, 7, 3);
+    }
+
+    placeTile(self) {
+        Val target = self.seed;
+        Val i = 0;
+        Bool placed = false;
+        loop {
+            if self.grid.getDyn(i).equalsZero() {
+                if target.equalsZero() {
+                    self.grid.setDyn(i, 1);
+                    placed = true;
+                    break;
+                };
+                target.dec();
+            };
+            if i.equals(15) {
+                break;
+            };
+            i.inc();
+        };
+        if placed.not() {
+            Val j = 0;
+            loop {
+                if self.grid.getDyn(j).equalsZero() {
+                    self.grid.setDyn(j, 1);
+                    break;
+                };
+                if j.equals(15) {
+                    break;
+                };
+                j.inc();
+            };
+        };
+        self.seed.inc();
+        self.seed.inc();
+        self.seed.inc();
+    }
+
+    Bool hasWon(self) {
+        Val i = 0;
+        loop {
+            if self.grid.getDyn(i).equals(11) {
+                return true;
+            };
+            if i.equals(15) {
+                break;
+            };
+            i.inc();
+        };
+        return false;
+    }
+
+    Bool canMove(self) {
+        Val i = 0;
+        loop {
+            if self.grid.getDyn(i).equalsZero() {
+                return true;
+            };
+            if i.equals(15) {
+                break;
+            };
+            i.inc();
+        };
+        if self.grid.get<0>().equals(self.grid.get<1>()) { return true; };
+        if self.grid.get<1>().equals(self.grid.get<2>()) { return true; };
+        if self.grid.get<2>().equals(self.grid.get<3>()) { return true; };
+        if self.grid.get<4>().equals(self.grid.get<5>()) { return true; };
+        if self.grid.get<5>().equals(self.grid.get<6>()) { return true; };
+        if self.grid.get<6>().equals(self.grid.get<7>()) { return true; };
+        if self.grid.get<8>().equals(self.grid.get<9>()) { return true; };
+        if self.grid.get<9>().equals(self.grid.get<10>()) { return true; };
+        if self.grid.get<10>().equals(self.grid.get<11>()) { return true; };
+        if self.grid.get<12>().equals(self.grid.get<13>()) { return true; };
+        if self.grid.get<13>().equals(self.grid.get<14>()) { return true; };
+        if self.grid.get<14>().equals(self.grid.get<15>()) { return true; };
+        if self.grid.get<0>().equals(self.grid.get<4>()) { return true; };
+        if self.grid.get<1>().equals(self.grid.get<5>()) { return true; };
+        if self.grid.get<2>().equals(self.grid.get<6>()) { return true; };
+        if self.grid.get<3>().equals(self.grid.get<7>()) { return true; };
+        if self.grid.get<4>().equals(self.grid.get<8>()) { return true; };
+        if self.grid.get<5>().equals(self.grid.get<9>()) { return true; };
+        if self.grid.get<6>().equals(self.grid.get<10>()) { return true; };
+        if self.grid.get<7>().equals(self.grid.get<11>()) { return true; };
+        if self.grid.get<8>().equals(self.grid.get<12>()) { return true; };
+        if self.grid.get<9>().equals(self.grid.get<13>()) { return true; };
+        if self.grid.get<10>().equals(self.grid.get<14>()) { return true; };
+        if self.grid.get<11>().equals(self.grid.get<15>()) { return true; };
+        return false;
+    }
+
+    play(self) {
+        "2048 - 1:left 2:right 3:up 4:down".println();
+        self.placeTile();
+        self.placeTile();
+        loop {
+            self.display();
+            if self.hasWon() {
+                "You won!".println();
+                break;
+            };
+            if self.canMove().not() {
+                "Game over!".println();
+                break;
+            };
+            Val input = Val.input();
+            self.changed = false;
+            if input.equals(1) {
+                self.slideLeft();
+            } else if input.equals(2) {
+                self.slideRight();
+            } else if input.equals(3) {
+                self.slideUp();
+            } else if input.equals(4) {
+                self.slideDown();
+            };
+            if self.changed {
+                self.placeTile();
+            };
+        };
+    }
+
+    Val main() {
+        Self.new().play();
+        return 0;
+    }
+}
