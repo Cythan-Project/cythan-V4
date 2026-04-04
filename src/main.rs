@@ -15,8 +15,8 @@ mod tests;
 struct Cli {
     #[command(subcommand)]
     command: Command,
-    /// Standard library directory (default: std/)
-    #[arg(long, global = true, default_value = "std")]
+    /// Standard library directory
+    #[arg(long, global = true, default_value = "cythan/std")]
     std_dir: PathBuf,
 }
 

@@ -4,11 +4,11 @@ use std::time::Instant;
 use cythan_driver::{build_context::compile, test_context::TestContext};
 use mir::MemoryState;
 
-const STD_DIR: &str = "std";
+const STD_DIR: &str = "cythan/std";
 
-fn execute(file: &str, input: &str, output: &str) {
-    let file_path = Path::new(STD_DIR).join(format!("{}.ct", file));
-    let mir = time("compile", || compile(&file_path, Path::new(STD_DIR), false));
+fn execute(file_path: &str, input: &str, output: &str) {
+    let file_path = Path::new(file_path);
+    let mir = time("compile", || compile(file_path, Path::new(STD_DIR), false));
     let mut ctx = TestContext::new(input);
     let mut ms = MemoryState::new(2048, 8);
     time("run_mir", || ms.execute_block(&mir, &mut ctx));
@@ -21,19 +21,19 @@ fn execute(file: &str, input: &str, output: &str) {
 }
 #[test]
 pub fn run_test_morpion() {
-    execute("Morpion","1234567", "---\n---\n---\nO--\n---\n---\nOX-\n---\n---\nOXO\n---\n---\nOXO\nX--\n---\nOXO\nXO-\n---\nOXO\nXOX\n---\nOXO\nXOX\nO--\nO won!\n");
-    execute("Morpion","956787821122189576321456987", "---\n---\n---\n---\n---\n--O\n---\n-X-\n--O\n---\n-XO\n--O\n---\n-XO\nX-O\n---\n-XO\nXOO\nInvalid input!\nInvalid input!\n-X-\n-XO\nXOO\nOX-\n-XO\nXOO\nInvalid input!\nInvalid input!\nInvalid input!\nInvalid input!\nInvalid input!\nInvalid input!\nInvalid input!\nInvalid input!\nInvalid input!\nOXX\n-XO\nXOO\nX won!\n");
-    execute("Morpion", "123546789", "---\n---\n---\nO--\n---\n---\nOX-\n---\n---\nOXO\n---\n---\nOXO\n-X-\n---\nOXO\nOX-\n---\nOXO\nOXX\n---\nOXO\nOXX\nO--\nO won!\n");
-    execute("Morpion", "123547698", "---\n---\n---\nO--\n---\n---\nOX-\n---\n---\nOXO\n---\n---\nOXO\n-X-\n---\nOXO\nOX-\n---\nOXO\nOX-\nX--\nOXO\nOXO\nX--\nOXO\nOXO\nX-X\nOXO\nOXO\nXOX\nEquality!\n");
+    execute("cythan/examples/Morpion.ct","1234567", "---\n---\n---\nO--\n---\n---\nOX-\n---\n---\nOXO\n---\n---\nOXO\nX--\n---\nOXO\nXO-\n---\nOXO\nXOX\n---\nOXO\nXOX\nO--\nO won!\n");
+    execute("cythan/examples/Morpion.ct","956787821122189576321456987", "---\n---\n---\n---\n---\n--O\n---\n-X-\n--O\n---\n-XO\n--O\n---\n-XO\nX-O\n---\n-XO\nXOO\nInvalid input!\nInvalid input!\n-X-\n-XO\nXOO\nOX-\n-XO\nXOO\nInvalid input!\nInvalid input!\nInvalid input!\nInvalid input!\nInvalid input!\nInvalid input!\nInvalid input!\nInvalid input!\nInvalid input!\nOXX\n-XO\nXOO\nX won!\n");
+    execute("cythan/examples/Morpion.ct", "123546789", "---\n---\n---\nO--\n---\n---\nOX-\n---\n---\nOXO\n---\n---\nOXO\n-X-\n---\nOXO\nOX-\n---\nOXO\nOXX\n---\nOXO\nOXX\nO--\nO won!\n");
+    execute("cythan/examples/Morpion.ct", "123547698", "---\n---\n---\nO--\n---\n---\nOX-\n---\n---\nOXO\n---\n---\nOXO\n-X-\n---\nOXO\nOX-\n---\nOXO\nOX-\nX--\nOXO\nOXO\nX--\nOXO\nOXO\nX-X\nOXO\nOXO\nXOX\nEquality!\n");
 }
 
 #[test]
 pub fn run_test_pendu() {
-    execute("Pendu","gramire", "\n\n\n\n------\n\n\n_________\n\n\n\n\n\n------\n\n\ng________\n\n\n\n\n\n------\n\n\ngr_____r_\n\n\n\n\n\n------\n\n\ngra__a_r_\n\n\n\n\n\n------\n\n\ngramma_r_\n\n\n\n\n\n------\n\n\ngrammair_\n\n\n\n\n\n------\n\n\ngrammair_\n\nVous avez gagné!\n");
-    execute("Pendu","migrare", "\n\n\n\n------\n\n\n_________\n\n\n\n\n\n------\n\n\n___mm____\n\n\n\n\n\n------\n\n\n___mm_i__\n\n\n\n\n\n------\n\n\ng__mm_i__\n\n\n\n\n\n------\n\n\ngr_mm_ir_\n\n\n\n\n\n------\n\n\ngrammair_\n\n\n\n\n\n------\n\n\ngrammair_\n\nVous avez gagné!\n");
-    execute("Pendu", "hhhhhhhhhhhhhhhhhh", "\n\n\n\n------\n\n\n_________\n\nTu n'as pas trouvé de lettre -1 vie\n |\n |\n |\n |\n------\n\n_________\n\nTu n'as pas trouvé de lettre -1 vie\n |--\n |\n |\n |\n------\n\n_________\n\nTu n'as pas trouvé de lettre -1 vie\n |--|\n |  O\n |  |\n |\n------\n\n_________\n\nTu n'as pas trouvé de lettre -1 vie\n |--|\n |  O\n | /|\n |\n------\n\n_________\n\nTu n'as pas trouvé de lettre -1 vie\n |--|\n |  O\n | /|\\\n |\n------\n\n_________\n\nTu n'as pas trouvé de lettre -1 vie\n |--|\n |  O\n | /|\\\n | / \\\n------\n\n_________\n\nGROSSE MERDE!\n");
-    execute("Pendu", "graghhmirei", "\n\n\n\n------\n\n\n_________\n\n\n\n\n\n------\n\n\ng________\n\n\n\n\n\n------\n\n\ngr_____r_\n\n\n\n\n\n------\n\n\ngra__a_r_\n\n\n\n\n\n------\n\n\ngra__a_r_\n\nTu n'as pas trouvé de lettre -1 vie\n |\n |\n |\n |\n------\n\ngra__a_r_\n\nTu n'as pas trouvé de lettre -1 vie\n |--\n |\n |\n |\n------\n\ngra__a_r_\n\n |--\n |\n |\n |\n------\n\ngramma_r_\n\n |--\n |\n |\n |\n------\n\ngrammair_\n\n |--\n |\n |\n |\n------\n\ngrammair_\n\nVous avez gagné!\n");
-    execute("Pendu", "gramihjkkkjkjkhjkhjkre", "\n\n\n\n------\n\n\n_________\n\n\n\n\n\n------\n\n\ng________\n\n\n\n\n\n------\n\n\ngr_____r_\n\n\n\n\n\n------\n\n\ngra__a_r_\n\n\n\n\n\n------\n\n\ngramma_r_\n\n\n\n\n\n------\n\n\ngrammair_\n\nTu n'as pas trouvé de lettre -1 vie\n |\n |\n |\n |\n------\n\ngrammair_\n\nTu n'as pas trouvé de lettre -1 vie\n |--\n |\n |\n |\n------\n\ngrammair_\n\nTu n'as pas trouvé de lettre -1 vie\n |--|\n |  O\n |  |\n |\n------\n\ngrammair_\n\nTu n'as pas trouvé de lettre -1 vie\n |--|\n |  O\n | /|\n |\n------\n\ngrammair_\n\nTu n'as pas trouvé de lettre -1 vie\n |--|\n |  O\n | /|\\\n |\n------\n\ngrammair_\n\nTu n'as pas trouvé de lettre -1 vie\n |--|\n |  O\n | /|\\\n | / \\\n------\n\ngrammair_\n\nGROSSE MERDE!\n");
+    execute("cythan/examples/Pendu.ct","gramire", "\n\n\n\n------\n\n\n_________\n\n\n\n\n\n------\n\n\ng________\n\n\n\n\n\n------\n\n\ngr_____r_\n\n\n\n\n\n------\n\n\ngra__a_r_\n\n\n\n\n\n------\n\n\ngramma_r_\n\n\n\n\n\n------\n\n\ngrammair_\n\n\n\n\n\n------\n\n\ngrammair_\n\nVous avez gagné!\n");
+    execute("cythan/examples/Pendu.ct","migrare", "\n\n\n\n------\n\n\n_________\n\n\n\n\n\n------\n\n\n___mm____\n\n\n\n\n\n------\n\n\n___mm_i__\n\n\n\n\n\n------\n\n\ng__mm_i__\n\n\n\n\n\n------\n\n\ngr_mm_ir_\n\n\n\n\n\n------\n\n\ngrammair_\n\n\n\n\n\n------\n\n\ngrammair_\n\nVous avez gagné!\n");
+    execute("cythan/examples/Pendu.ct", "hhhhhhhhhhhhhhhhhh", "\n\n\n\n------\n\n\n_________\n\nTu n'as pas trouvé de lettre -1 vie\n |\n |\n |\n |\n------\n\n_________\n\nTu n'as pas trouvé de lettre -1 vie\n |--\n |\n |\n |\n------\n\n_________\n\nTu n'as pas trouvé de lettre -1 vie\n |--|\n |  O\n |  |\n |\n------\n\n_________\n\nTu n'as pas trouvé de lettre -1 vie\n |--|\n |  O\n | /|\n |\n------\n\n_________\n\nTu n'as pas trouvé de lettre -1 vie\n |--|\n |  O\n | /|\\\n |\n------\n\n_________\n\nTu n'as pas trouvé de lettre -1 vie\n |--|\n |  O\n | /|\\\n | / \\\n------\n\n_________\n\nGROSSE MERDE!\n");
+    execute("cythan/examples/Pendu.ct", "graghhmirei", "\n\n\n\n------\n\n\n_________\n\n\n\n\n\n------\n\n\ng________\n\n\n\n\n\n------\n\n\ngr_____r_\n\n\n\n\n\n------\n\n\ngra__a_r_\n\n\n\n\n\n------\n\n\ngra__a_r_\n\nTu n'as pas trouvé de lettre -1 vie\n |\n |\n |\n |\n------\n\ngra__a_r_\n\nTu n'as pas trouvé de lettre -1 vie\n |--\n |\n |\n |\n------\n\ngra__a_r_\n\n |--\n |\n |\n |\n------\n\ngramma_r_\n\n |--\n |\n |\n |\n------\n\ngrammair_\n\n |--\n |\n |\n |\n------\n\ngrammair_\n\nVous avez gagné!\n");
+    execute("cythan/examples/Pendu.ct", "gramihjkkkjkjkhjkhjkre", "\n\n\n\n------\n\n\n_________\n\n\n\n\n\n------\n\n\ng________\n\n\n\n\n\n------\n\n\ngr_____r_\n\n\n\n\n\n------\n\n\ngra__a_r_\n\n\n\n\n\n------\n\n\ngramma_r_\n\n\n\n\n\n------\n\n\ngrammair_\n\nTu n'as pas trouvé de lettre -1 vie\n |\n |\n |\n |\n------\n\ngrammair_\n\nTu n'as pas trouvé de lettre -1 vie\n |--\n |\n |\n |\n------\n\ngrammair_\n\nTu n'as pas trouvé de lettre -1 vie\n |--|\n |  O\n |  |\n |\n------\n\ngrammair_\n\nTu n'as pas trouvé de lettre -1 vie\n |--|\n |  O\n | /|\n |\n------\n\ngrammair_\n\nTu n'as pas trouvé de lettre -1 vie\n |--|\n |  O\n | /|\\\n |\n------\n\ngrammair_\n\nTu n'as pas trouvé de lettre -1 vie\n |--|\n |  O\n | /|\\\n | / \\\n------\n\ngrammair_\n\nGROSSE MERDE!\n");
 }
 
 pub fn time<T>(legend: &str, f: impl FnOnce() -> T) -> T {
@@ -47,13 +47,13 @@ pub fn time<T>(legend: &str, f: impl FnOnce() -> T) -> T {
 
 #[test]
 pub fn test_string() {
-    execute("TestString", "", "hello\nworld\nA\ntest 123\n");
+    execute("cythan/tests/TestString.ct", "", "hello\nworld\nA\ntest 123\n");
 }
 
 #[test]
 pub fn test_val() {
     execute(
-        "TestVal",
+        "cythan/tests/TestVal.ct",
         "",
         "05\n65\nyes\nno\neq5\nneq3\ngt3\nngt5\nngt8\n12\n",
     );
@@ -62,7 +62,7 @@ pub fn test_val() {
 #[test]
 pub fn test_bool() {
     execute(
-        "TestBool",
+        "cythan/tests/TestBool.ct",
         "",
         "true\nfalse\nfalse\ntrue\na_true\nb_false\ntt\nntf\nor_ba\nnor_bb\n",
     );
@@ -71,7 +71,7 @@ pub fn test_bool() {
 #[test]
 pub fn test_byte() {
     execute(
-        "TestByte",
+        "cythan/tests/TestByte.ct",
         "",
         "zero_ok\ninc_ok\ndec_ok\nnz_ok\nadd_ok\nsub_ok\n5\n",
     );
@@ -79,13 +79,13 @@ pub fn test_byte() {
 
 #[test]
 pub fn test_cast() {
-    execute("TestCast", "", "0_is_true\n1_is_false\n0\n1\n");
+    execute("cythan/tests/TestCast.ct", "", "0_is_true\n1_is_false\n0\n1\n");
 }
 
 #[test]
 pub fn test_loop() {
     execute(
-        "TestLoop",
+        "cythan/tests/TestLoop.ct",
         "",
         "01234\n124578\n00 01 02 10 11 12 20 21 22 \n",
     );
@@ -93,59 +93,59 @@ pub fn test_loop() {
 
 #[test]
 pub fn test_expr() {
-    execute("TestExpr", "", "5\n9\n7\n4\n");
+    execute("cythan/tests/TestExpr.ct", "", "5\n9\n7\n4\n");
 }
 
 #[test]
 pub fn test_shadow() {
-    execute("TestShadow", "", "37\n\x02\n95\n");
+    execute("cythan/tests/TestShadow.ct", "", "37\n\x02\n95\n");
 }
 
 #[test]
 pub fn test_class() {
-    execute("TestClass", "", "3,5\n8\n9\n1,2\n");
+    execute("cythan/tests/TestClass.ct", "", "3,5\n8\n9\n1,2\n");
 }
 
 #[test]
 pub fn test_array() {
-    execute("TestArray", "", "159\n3\n8\nhas5\nno6\n");
+    execute("cythan/tests/TestArray.ct", "", "159\n3\n8\nhas5\nno6\n");
 }
 
 #[test]
 pub fn test_option() {
-    execute("TestOption", "", "none_ok\nsome_ok\n7\nbool_true\n");
+    execute("cythan/tests/TestOption.ct", "", "none_ok\nsome_ok\n7\nbool_true\n");
 }
 
 #[test]
 pub fn test_template() {
-    execute("TestTemplate", "", "3\nbtrue\ncnone\n2\narr_true\n");
+    execute("cythan/tests/TestTemplate.ct", "", "3\nbtrue\ncnone\n2\narr_true\n");
 }
 
 #[test]
 pub fn test_dyn_array() {
-    execute("TestDynArray", "", "371\nlen3\n1\nlen2\nhas7\nno9\n");
+    execute("cythan/tests/TestDynArray.ct", "", "371\nlen3\n1\nlen2\nhas7\nno9\n");
 }
 
 #[test]
 pub fn test_nested() {
-    execute("TestNested", "", "ok\n46\nempty_ok\n");
+    execute("cythan/tests/TestNested.ct", "", "ok\n46\nempty_ok\n");
 }
 
 #[test]
 pub fn test_io() {
-    execute("TestIO", "AB", "enter:\n1\n2\n");
+    execute("cythan/tests/TestIO.ct", "AB", "enter:\n1\n2\n");
 }
 
 #[test]
 pub fn test_pendu_with_p() {
     // Reproducer: entering 'p' (not in "grammaire") should behave like any other wrong letter
-    execute("Pendu", "pppppp", "\n\n\n\n------\n\n\n_________\n\nTu n'as pas trouvé de lettre -1 vie\n |\n |\n |\n |\n------\n\n_________\n\nTu n'as pas trouvé de lettre -1 vie\n |--\n |\n |\n |\n------\n\n_________\n\nTu n'as pas trouvé de lettre -1 vie\n |--|\n |  O\n |  |\n |\n------\n\n_________\n\nTu n'as pas trouvé de lettre -1 vie\n |--|\n |  O\n | /|\n |\n------\n\n_________\n\nTu n'as pas trouvé de lettre -1 vie\n |--|\n |  O\n | /|\\\n |\n------\n\n_________\n\nTu n'as pas trouvé de lettre -1 vie\n |--|\n |  O\n | /|\\\n | / \\\n------\n\n_________\n\nGROSSE MERDE!\n");
+    execute("cythan/examples/Pendu.ct", "pppppp", "\n\n\n\n------\n\n\n_________\n\nTu n'as pas trouvé de lettre -1 vie\n |\n |\n |\n |\n------\n\n_________\n\nTu n'as pas trouvé de lettre -1 vie\n |--\n |\n |\n |\n------\n\n_________\n\nTu n'as pas trouvé de lettre -1 vie\n |--|\n |  O\n |  |\n |\n------\n\n_________\n\nTu n'as pas trouvé de lettre -1 vie\n |--|\n |  O\n | /|\n |\n------\n\n_________\n\nTu n'as pas trouvé de lettre -1 vie\n |--|\n |  O\n | /|\\\n |\n------\n\n_________\n\nTu n'as pas trouvé de lettre -1 vie\n |--|\n |  O\n | /|\\\n | / \\\n------\n\n_________\n\nGROSSE MERDE!\n");
 }
 
 #[test]
 pub fn test_game2048() {
     // Play a full game with deterministic input (cycling 1234 = left/right/up/down)
-    let mir = compile(Path::new("std/Game2048.ct"), Path::new(STD_DIR), false);
+    let mir = compile(Path::new("cythan/games/Game2048.ct"), Path::new(STD_DIR), false);
     let input = "1234".repeat(50);
     let mut ctx = TestContext::new(&input);
     let mut ms = MemoryState::new(4096, 8);
@@ -189,7 +189,7 @@ pub fn test_chess() {
     // Then black needs to move: say a7→a6: "1716"
     // Then white queen takes black king at e8: wait, queen is already there after first move.
     // No: first move "4158" moves queen from d1 to e8 which has the black king. King captured!
-    let mir = compile(Path::new("std/Chess.ct"), Path::new(STD_DIR), false);
+    let mir = compile(Path::new("cythan/games/Chess.ct"), Path::new(STD_DIR), false);
     let mut ctx = TestContext::new("4158");
     let mut ms = MemoryState::new(4096, 8);
     ms.execute_block(&mir, &mut ctx);
