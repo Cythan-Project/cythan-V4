@@ -1,15 +1,15 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     rc::Rc,
 };
 
+use chumsky::Parser as _;
 use either::Either;
 use errors::{report_similar, Error, SpannedObject};
 
 use crate::parser::{
     class::{Class, ClassView},
     method::{Method, MethodView},
-    parse,
     ty::Type,
     Token, TokenParser,
 };
@@ -48,14 +48,36 @@ impl ClassLoader {
     }
 
     pub fn load_string(&mut self, class: &str, filename: &str) -> Result<(), Error> {
-        let mut vdc = VecDeque::new();
-        let mut k: VecDeque<char> = class.chars().filter(|x| *x != '\r').collect();
-        let kl = k.len();
-        parse(&mut vdc, &mut k, kl, filename)?;
-        /* for i in &vdc {
-            display(i, class);
-        } */
-        self.load(vdc.parse(&Type::native_simple("Self provider"))?);
+        // Use new chumsky parser, then convert to old AST types
+        let src = class.replace('\r', "");
+        let tokens = cythan_parser::lexer::lexer()
+            .parse(src.clone())
+            .map_err(|errs| {
+                let e = &errs[0];
+                errors::invalid_token(
+                    &format!("{:?}", e.found()),
+                    &[],
+                    &errors::Span::new(filename.to_owned(), e.span().start, e.span().end),
+                    1,
+                )
+            })?;
+        let len = src.len();
+        let classes = cythan_parser::parser::program_parser()
+            .parse(cythan_parser::parser::token_stream(tokens, len))
+            .map_err(|errs| {
+                let e = &errs[0];
+                eprintln!("Parse error in {}: {:?}", filename, e);
+                errors::invalid_token(
+                    &format!("{:?}", e.found()),
+                    &[],
+                    &errors::Span::new(filename.to_owned(), e.span().start, e.span().end),
+                    2,
+                )
+            })?;
+        for (new_class, _span) in &classes {
+            let old_class = crate::bridge::convert_class(new_class, filename);
+            self.load(old_class);
+        }
         Ok(())
     }
 
