@@ -294,57 +294,984 @@ struct FnRef {
 
 ## Roadmap
 
-### Phase 1: Parser Extensions
+### Phase 1: New Parser (from scratch)
 
-#### Step 1.1 — New tokens
-**Crate:** `crates/parser/src/token.rs`, `crates/parser/src/lexer.rs`
-**What:** Add token variants for the new syntax.
-- Add to `Token` enum: `Struct`, `Enum`, `Extension`, `Impl`, `Trait`, `Fn`, `Mut`, `SelfType` (for `Self`), `SelfValue` (for `self`), `PathSep` (`::`)
-- Update lexer to recognize these keywords
-- **Test:** tokenize snippets containing the new keywords, verify token sequence
+The new parser is a standalone crate `crates/new_parser/` built from scratch — no modifications to the existing `crates/parser/`. The existing parser remains untouched and continues to work for the old pipeline. The acceptance criteria is: **all example `.ct` files in the new syntax parse successfully and produce the expected AST**.
 
-#### Step 1.2 — AST types for new items
-**Crate:** `crates/parser/src/ast.rs`
-**What:** Define the new top-level AST node types.
-- `Item` enum: `Struct(StructDef)`, `Enum(EnumDef)`, `Extension(ExtensionDef)`, `Impl(ImplDef)`, `Trait(TraitDef)`
-- `StructDef`: name, templates, fields
-- `EnumDef`: name, templates, variants (each variant: name, optional data type, optional `= N`)
-- `ExtensionDef`: target type name, file_id, methods
-- `ImplDef`: trait name, target type, associated types, methods
-- `TraitDef`: name, templates, associated types, method signatures
-- `Function`: name, templates, params (with `mut` flag), return type, body
-- Keep existing `Class`, `Method`, `Expr` types alongside — they remain in use during transition
+The steps are ordered: write examples first, review them manually, create the crate structure, build a test harness with expected outputs, then implement the parser piece by piece.
 
-#### Step 1.3 — Struct & enum parsers
-**Crate:** `crates/parser/src/parser.rs`
-**What:** Parse `struct` and `enum` declarations.
-- `struct_parser()`: parses `struct Name<T> { field: Type, ... }`
-- `enum_parser()`: parses `enum Name<T> { Variant, Variant(Type) = N, ... }`
-- **Test:** parse struct with fields and templates, enum with mixed unit/data/explicit-discriminant variants
+---
 
-#### Step 1.4 — Extension & function parsers
-**Crate:** `crates/parser/src/parser.rs`
-**What:** Parse `extension` blocks and `fn` declarations.
-- `function_parser()`: parses `fn name<T>(mut self, arg: Type): RetType { body }`
-  - Handle `mut` on params, `self` as first param, `Self` type references
-- `extension_parser()`: parses `extension TypeName { fn ... fn ... }`
-- Reuse existing `expr_parser()` for function bodies
-- **Test:** parse extension with multiple methods, methods with mut self
+#### Step 1.1 — Write example standard library in new syntax
+**Output:** `examples/new_syntax/std/` directory with `.ct` files
+**What:** Translate the existing standard library (`cythan/std/`) into the new struct/enum/extension/trait/impl syntax. These files define the language's surface syntax and serve as the parser's acceptance test inputs.
 
-#### Step 1.5 — Trait & impl parsers
-**Crate:** `crates/parser/src/parser.rs`
-**What:** Parse `trait` and `impl` blocks.
-- `trait_parser()`: parses `trait Name<T> { type Assoc; fn sig(...): RetType; }`
-  - Method bodies are optional (signatures only in traits)
-- `impl_parser()`: parses `impl TraitName for TypeName { type Assoc = ConcreteType; fn ... }`
-- **Test:** parse trait with associated types and method sigs, impl block with concrete types and bodies
+Files to create:
 
-#### Step 1.6 — Top-level `program_parser()`
-**Crate:** `crates/parser/src/parser.rs`
-**What:** Combine all item parsers into a single top-level parser.
-- `program_parser()` returns `Vec<Item>` — a file is a sequence of items
-- Keep existing `class_parser()` working alongside for backward compatibility during transition
-- **Test:** parse a complete `.ct` file with mixed structs, enums, extensions, traits, impls
+**`Val.ct`** — primitive 4-bit value type:
+```rust
+// Val is a native type (no fields). Its size is 1 cell (u4).
+// inc() and dec() are native methods (empty body = compiler provides impl).
+struct Val {}
+
+extension Val {
+    fn equalsZero(self): Bool {
+        self as Bool
+    }
+
+    fn zero(): Self {
+        0
+    }
+
+    fn input(): Self {
+        System::setRegister<0>(2);
+        System::getRegister<2>()
+    }
+
+    fn equals(self, other: Self): Bool {
+        let copy: Self = self;
+        let copy1: Self = other;
+        loop {
+            if copy.equalsZero() {
+                return copy1.equalsZero();
+            };
+            copy.dec();
+            copy1.dec();
+        }
+    }
+
+    fn greater(self, other: Self): Bool {
+        let copy: Self = self;
+        let copy1: Self = other;
+        loop {
+            if copy.equalsZero() {
+                return false;
+            } else if copy1.equalsZero() {
+                return true;
+            };
+            copy.dec();
+            copy1.dec();
+        }
+    }
+
+    fn sub(mut self, other: Self) {
+        let g: Self = other;
+        loop {
+            if other.equalsZero() {
+                break;
+            };
+            self.dec();
+            other.dec();
+        }
+    }
+
+    fn printDec(self) {
+        if self.greater(9) {
+            '1'.print();
+            let k: Self = self;
+            k.sub(10);
+            k.print();
+        } else {
+            self.print();
+        }
+    }
+
+    fn print(self) {
+        System::setRegister<1>(3);
+        System::setRegister<2>(self);
+        System::setRegister<0>(1);
+    }
+
+    fn inc(mut self) {}
+    fn dec(mut self) {}
+}
+```
+
+**`Bool.ct`** — boolean type (0 = true, 1 = false):
+```rust
+struct Bool {
+    value: Val,
+}
+
+extension Bool {
+    fn true(): Self {
+        Self { value: 0 }
+    }
+
+    fn false(): Self {
+        Self { value: 1 }
+    }
+
+    fn not(self): Self {
+        if self.value as Self {
+            Self::false()
+        } else {
+            Self::true()
+        }
+    }
+
+    fn print(self) {
+        if self {
+            "true".print();
+        } else {
+            "false".print();
+        }
+    }
+}
+```
+
+**`Byte.ct`** — 8-bit type (two Val cells):
+```rust
+struct Byte {
+    lower: Val,
+    higher: Val,
+}
+
+extension Byte {
+    fn new(a: Self): Self {
+        Self { lower: a.lower, higher: a.higher }
+    }
+
+    fn zero(): Self {
+        Self { lower: 0, higher: 0 }
+    }
+
+    fn inc(mut self) {
+        self.lower.inc();
+        if self.lower.equalsZero() {
+            self.higher.inc();
+        }
+    }
+
+    fn dec(mut self) {
+        if self.lower.equalsZero() {
+            self.higher.dec();
+        };
+        self.lower.dec();
+    }
+
+    fn add(mut self, other: Self) {
+        let u: Self = other;
+        loop {
+            if u.equalsZero() {
+                break;
+            };
+            self.inc();
+            u.dec();
+        }
+    }
+
+    fn sub(mut self, other: Self) {
+        let u: Self = other;
+        loop {
+            if u.equalsZero() {
+                break;
+            };
+            self.dec();
+            u.dec();
+        }
+    }
+
+    fn fromVal(a: Val): Self {
+        Self { lower: a, higher: 0 }
+    }
+
+    fn fromValAsNumber(a: Val): Self {
+        Self { lower: a, higher: 3 }
+    }
+
+    fn input(): Self {
+        System::setRegister<0>(2);
+        Self {
+            lower: System::getRegister<2>(),
+            higher: System::getRegister<1>(),
+        }
+    }
+
+    fn print(self) {
+        System::setRegister<2>(self.lower);
+        System::setRegister<1>(self.higher);
+        System::setRegister<0>(1);
+    }
+
+    fn equals(self, other: Self): Bool {
+        self.lower.equals(other.lower) && self.higher.equals(other.higher)
+    }
+
+    fn equalsZero(self): Bool {
+        if self.lower as Bool {
+            if self.higher as Bool {
+                return true;
+            } else {
+                return false;
+            }
+        } else {
+            return false;
+        }
+    }
+
+    fn printDec(self) {
+        let lower: Val = self.lower;
+        let higher: Val = self.higher;
+        if lower.greater(9) {
+            lower.sub(10);
+            lower.printDec();
+            higher.inc();
+        } else {
+            lower.printDec();
+        };
+        if higher.greater(9) {
+            higher.sub(10);
+            higher.printDec();
+            '1'.print();
+        } else {
+            higher.printDec();
+        }
+    }
+
+    fn debug(self) {
+        System::debugInterupt(self.lower);
+        System::debugInterupt(self.higher);
+    }
+}
+```
+
+**`System.ct`** — system I/O (all methods are native):
+```rust
+struct System {}
+
+extension System {
+    fn setRegister<N>(value: Val) {}
+    fn getRegister<N>(): Val {}
+    fn debug<T>(a: T) {}
+    fn debugType<T>() {}
+
+    fn debugInterupt(a: Val) {
+        Self::setRegister<1>(a);
+        Self::setRegister<0>(3);
+    }
+}
+```
+
+**`Array.ct`** — fixed-size array (native setDyn/getDyn/len):
+```rust
+struct Array<T, E, F> {}
+
+extension Array<T, E, F> {
+    fn set<N>(mut self, value: T) {}
+    fn setDyn(mut self, index: F, value: T) {}
+    fn get<N>(self): T {}
+    fn getDyn(self, index: F): T {}
+    fn len(self): F {}
+
+    fn print(self: Self<Byte, E, F>) {
+        let index: F = F::zero();
+        loop {
+            if self.len().greater(index) {
+                self.getDyn(index).print();
+                index.inc();
+            } else {
+                break;
+            };
+        }
+    }
+
+    fn println(self: Self<Byte, E, F>) {
+        let index: F = F::zero();
+        loop {
+            if self.len().equals(index) {
+                break;
+            } else {
+                self.getDyn(index).print();
+                index.inc();
+            };
+        };
+        '\n'.print();
+    }
+
+    fn contains(self, t: T): Bool {
+        let size: F = self.len();
+        loop {
+            if size.equalsZero() {
+                return false;
+            };
+            size.dec();
+            if self.getDyn(size).equals(t) {
+                return true;
+            }
+        }
+    }
+}
+```
+
+**`Option.ct`** — generic option type (as enum):
+```rust
+enum Option<T> {
+    None,
+    Some(T),
+}
+
+extension Option<T> {
+    fn none(): Self {
+        Self::None
+    }
+
+    fn some(t: T): Self {
+        Self::Some(t)
+    }
+
+    fn is_none(self): Bool {
+        match self {
+            Self::None => true,
+            Self::Some(_) => false,
+        }
+    }
+}
+```
+
+**`DynArray.ct`** — dynamic-length array backed by a fixed-size array:
+```rust
+struct DynArray<T, N, F> {
+    array: Array<T, N, F>,
+    length: F,
+}
+
+extension DynArray<T, N, F> {
+    fn new(): Self {
+        Self { array: Array::new(), length: F::zero() }
+    }
+
+    fn from<Number>(input: Array<T, Number, F>): Self {
+        let dyn: Self = Self::new();
+        dyn.addAll<Number>(input);
+        dyn
+    }
+
+    fn add(mut self, t: T) {
+        self.array.setDyn(self.length, t);
+        self.length.inc();
+    }
+
+    fn addAll<Ng>(mut self, arr: Array<T, Ng, F>) {
+        let l: F = arr.len();
+        let c: F = F::zero();
+        loop {
+            if l.equalsZero() {
+                break;
+            };
+            self.add(arr.getDyn(c));
+            c.inc();
+            l.dec();
+        }
+    }
+
+    fn pop(mut self): T {
+        self.length.dec();
+        self.getDyn(self.length)
+    }
+
+    fn len(self): F {
+        self.length
+    }
+
+    fn capacity(self): F {
+        self.array.len()
+    }
+
+    fn getDyn(self, pos: F): T {
+        self.array.getDyn(pos)
+    }
+
+    fn setDyn(mut self, pos: F, t: T) {
+        self.array.setDyn(pos, t);
+    }
+
+    fn get<Number>(self): T {
+        self.array.get<Number>()
+    }
+
+    fn set<Number>(mut self, t: T) {
+        self.array.set<Number>(t);
+    }
+
+    fn last(self): T {
+        let k: F = self.len();
+        k.dec();
+        self.getDyn(k)
+    }
+
+    fn println(self: Self<Byte, N, F>) {
+        let index: F = F::zero();
+        loop {
+            if self.len().equals(index) {
+                break;
+            } else {
+                self.getDyn(index).print();
+                index.inc();
+            };
+        };
+        '\n'.print();
+    }
+
+    fn contains(self, t: T): Bool {
+        let size: F = self.len();
+        loop {
+            if size.equalsZero() {
+                return false;
+            };
+            size.dec();
+            if self.getDyn(size).equals(t) {
+                return true;
+            }
+        }
+    }
+}
+```
+
+#### Step 1.2 — Write example Morpion game in new syntax
+**Output:** `examples/new_syntax/Morpion.ct`
+**What:** Translate the Morpion (tic-tac-toe) game to the new syntax. This is the primary end-to-end example: it exercises structs, extensions, method calls, control flow, expressions-as-values, templates, and string/char literals.
+
+```rust
+struct Morpion {
+    grid: Array<Val, 9, Val>,
+}
+
+extension Morpion {
+    fn new(): Self {
+        Self { grid: Array::new() }
+    }
+
+    fn set(mut self, pos: Val, val: Val) {
+        self.grid.setDyn(pos, val);
+    }
+
+    fn getDyn(self, pos: Val): Val {
+        self.grid.getDyn(pos)
+    }
+
+    fn get<TE>(self): Val {
+        self.grid.get<TE>()
+    }
+
+    fn display(self) {
+        let count: Val = 0;
+        loop {
+            if count.equals(9) {
+                '\n'.print();
+                break;
+            };
+            if count.equals(3) || count.equals(6) {
+                '\n'.print();
+            };
+            let j: Val = self.getDyn(count);
+            if j.equalsZero() {
+                '-'
+            } else if j.equals(1) {
+                'O'
+            } else {
+                'X'
+            }.print();
+            count.inc();
+        }
+    }
+
+    fn play(mut self) {
+        let currentPlayer: Val = 1;
+        let count: Val = 9;
+        self.display();
+        loop {
+            let pos: Val = Val::input();
+            pos.dec();
+            if pos.greater(8) {
+                continue;
+            };
+            if self.getDyn(pos).equalsZero() {
+                self.set(pos, currentPlayer);
+                count.dec();
+                self.display();
+                if self.winner(currentPlayer) {
+                    if currentPlayer.equals(1) {
+                        'O'
+                    } else {
+                        'X'
+                    }.print();
+                    " won!".println();
+                    break;
+                };
+                if count.equalsZero() {
+                    "Equality!".println();
+                    break;
+                };
+                currentPlayer = if currentPlayer.equals(1) {
+                    2
+                } else {
+                    1
+                };
+            } else {
+                "Invalid input!".println();
+            };
+        }
+    }
+
+    fn winner(self, tocheck: Val): Bool {
+        if self.get<0>().equals(tocheck) {
+            if self.get<1>().equals(tocheck) && self.get<2>().equals(tocheck) {
+                return true;
+            };
+            if self.get<3>().equals(tocheck) && self.get<6>().equals(tocheck) {
+                return true;
+            };
+            if self.get<4>().equals(tocheck) && self.get<8>().equals(tocheck) {
+                return true;
+            };
+        };
+        if self.get<1>().equals(tocheck) && self.get<4>().equals(tocheck) && self.get<7>().equals(tocheck) {
+            return true;
+        };
+        if self.get<2>().equals(tocheck) && self.get<4>().equals(tocheck) && self.get<6>().equals(tocheck) {
+            return true;
+        };
+        if self.get<3>().equals(tocheck) && self.get<4>().equals(tocheck) && self.get<5>().equals(tocheck) {
+            return true;
+        };
+        if self.get<6>().equals(tocheck) && self.get<7>().equals(tocheck) && self.get<8>().equals(tocheck) {
+            return true;
+        };
+        false
+    }
+
+    fn main(): Val {
+        let morpion: Self = Self::new();
+        morpion.play();
+        0
+    }
+}
+```
+
+#### Step 1.3 — Manual review of example files
+**What:** Review all example files for syntax consistency before building the parser.
+Checklist:
+- [ ] All struct fields use `name: Type` syntax (colon, not `=`)
+- [ ] All struct construction uses `Self { field: value }` (colon, not `=`)
+- [ ] All `fn` declarations use `fn name(params): ReturnType { body }` format
+- [ ] Mutating methods use `mut self` or `mut` on parameters
+- [ ] Static methods (no `self`) use `Self::method()` or `TypeName::method()` call syntax
+- [ ] Template parameters use `<T>` on declarations, `<ConcreteType>` on calls
+- [ ] Extensions on generic types use `extension TypeName<T, U>` syntax
+- [ ] Variable declarations use `let name: Type = expr;` (not `Type name = expr;`)
+- [ ] Enum variants use `Variant`, `Variant(Type)`, `Variant = N` syntax
+- [ ] Enum construction uses `Self::Variant` or `Self::Variant(value)`
+- [ ] Match arms use `Self::Variant => expr` with `_` for wildcard
+- [ ] Native methods have empty bodies `{}`
+- [ ] Expression-based returns: last expression in block (no semicolon) = return value
+- [ ] Explicit `return expr;` allowed for early returns
+- [ ] `self as Type` cast syntax preserved
+- [ ] String literals (`"..."`) and char literals (`'...'`) have `.print()` and `.println()` methods
+- [ ] `&&` and `||` operators work as before
+- [ ] Semicolons terminate statements; missing semicolon on last expression = return value
+
+**Deliverable:** Finalized example files, checked into the repo under `examples/new_syntax/`.
+
+#### Step 1.4 — Create `crates/new_parser/` crate structure
+**What:** Set up the new parser crate with module stubs and dependencies.
+```
+crates/new_parser/
+├── Cargo.toml          # deps: chumsky 0.9, ariadne
+├── src/
+│   ├── lib.rs          # pub mod lexer, token, ast, parser; pub fn parse(src) -> Result<Vec<Item>>
+│   ├── token.rs        # Token enum
+│   ├── lexer.rs        # fn lexer() -> impl Parser<char, Vec<(Token, Span)>>
+│   ├── ast.rs          # AST node types (Item, StructDef, EnumDef, etc.)
+│   ├── parser.rs       # fn parser() -> impl Parser<Token, Vec<Item>>
+│   └── tests/          # test module
+│       ├── mod.rs
+│       ├── lexer_tests.rs
+│       ├── parser_tests.rs
+│       └── integration_tests.rs
+```
+- Add `crates/new_parser` to workspace `Cargo.toml`
+- All source files start as stubs (empty types, `todo!()` parsers)
+- **Deliverable:** `cargo check -p new_parser` compiles (with `todo!()` bodies)
+
+#### Step 1.5 — Test harness: expected AST for each example file
+**What:** Write tests that parse each example file and assert the resulting AST structure.
+
+Tests in `crates/new_parser/src/tests/integration_tests.rs`:
+- `test_parse_val()` — parses `examples/new_syntax/std/Val.ct`, asserts: 1 struct item (Val, no fields), 1 extension item on Val with N methods (equalsZero, zero, input, equals, greater, sub, printDec, print, inc, dec)
+- `test_parse_bool()` — parses `Bool.ct`, asserts: 1 struct (Bool, 1 field `value: Val`), 1 extension with 4 methods
+- `test_parse_byte()` — parses `Byte.ct`, asserts: 1 struct (Byte, 2 fields), 1 extension with N methods
+- `test_parse_system()` — parses `System.ct`, asserts: 1 struct, 1 extension, methods have template params
+- `test_parse_array()` — parses `Array.ct`, asserts: 1 struct with 3 template params, 1 extension with template params on the extension itself
+- `test_parse_option()` — parses `Option.ct`, asserts: 1 enum with 2 variants (None unit, Some with data), 1 extension with match expression in a method body
+- `test_parse_dynarray()` — parses `DynArray.ct`, asserts: 1 struct with 2 fields (one generic), 1 extension
+- `test_parse_morpion()` — parses `Morpion.ct`, asserts: 1 struct, 1 extension, 7 methods including `main() -> Val`
+
+Tests in `crates/new_parser/src/tests/lexer_tests.rs`:
+- `test_lex_keywords()` — tokenize `struct enum extension impl trait fn mut let match` → correct token variants
+- `test_lex_symbols()` — tokenize `:: => { } ( ) < > , : ; .` → correct tokens
+- `test_lex_string_char()` — tokenize `"hello" '\n'` → String and Char tokens
+- `test_lex_full_function()` — tokenize a complete `fn` declaration, verify token sequence
+
+Tests in `crates/new_parser/src/tests/parser_tests.rs` (unit tests for individual parsers):
+- `test_parse_type_simple()` — `Val` → Type { name: "Val", templates: [] }
+- `test_parse_type_generic()` — `Array<Val, 9, Val>` → Type with 3 template args
+- `test_parse_struct_empty()` — `struct Val {}` → StructDef with no fields
+- `test_parse_struct_fields()` — `struct Byte { lower: Val, higher: Val }` → 2 fields
+- `test_parse_enum_unit()` — `enum Color { Red, Green, Blue }` → 3 unit variants
+- `test_parse_enum_mixed()` — `enum Option<T> { None, Some(T) }` → unit + data variant
+- `test_parse_enum_explicit_discr()` — `enum X { A = 0, B(u4) = 2, C }` → explicit + auto discriminants
+- `test_parse_fn_no_params()` — `fn zero(): Self { 0 }` → no params, return type Self, body = number literal
+- `test_parse_fn_self()` — `fn inc(mut self) {}` → mut self param, no return, empty body
+- `test_parse_fn_params()` — `fn set(mut self, pos: Val, val: Val) { ... }` → 3 params with mut
+- `test_parse_fn_template()` — `fn get<N>(self): T {}` → template param N
+- `test_parse_extension_simple()` — `extension Val { fn inc(mut self) {} }` → 1 method
+- `test_parse_extension_generic()` — `extension Array<T, E, F> { ... }` → extension with type params
+- `test_parse_trait()` — `trait Add { type Other; fn add(self, other: Self::Other): Self::Result; }` → associated types + method sigs
+- `test_parse_impl()` — `impl Add for MyType { type Other = MyType; fn add(...) { ... } }` → concrete types + body
+- `test_parse_expr_number()` — `42` → Expr::Number(42)
+- `test_parse_expr_variable()` — `count` → Expr::Variable("count")
+- `test_parse_expr_field()` — `self.grid` → Expr::Field(self, "grid")
+- `test_parse_expr_method_call()` — `self.grid.getDyn(pos)` → chained method call
+- `test_parse_expr_static_call()` — `Self::new()` → Expr::StaticCall
+- `test_parse_expr_template_call()` — `self.get<0>()` → method call with template arg
+- `test_parse_expr_if_else()` — `if cond { a } else { b }` → Expr::If
+- `test_parse_expr_if_else_chain()` — `if a { } else if b { } else { }` → nested If
+- `test_parse_expr_if_as_expr()` — `let x = if cond { 1 } else { 2 };` → if used as expression
+- `test_parse_expr_loop()` — `loop { break; }` → Expr::Loop
+- `test_parse_expr_return()` — `return false;` → Expr::Return
+- `test_parse_expr_let()` — `let x: Val = 5;` → Expr::Declaration
+- `test_parse_expr_assign()` — `x = 5;` → Expr::Assign
+- `test_parse_expr_bool_ops()` — `a && b || c` → Expr::BinaryOp chain
+- `test_parse_expr_struct_literal()` — `Self { lower: a, higher: b }` → Expr::StructLiteral
+- `test_parse_expr_enum_variant()` — `Self::None` → Expr::EnumVariant
+- `test_parse_expr_enum_variant_data()` — `Self::Some(x)` → Expr::EnumVariant with data
+- `test_parse_expr_match()` — `match self { Self::None => true, Self::Some(_) => false }` → Expr::Match
+- `test_parse_expr_cast()` — `self as Bool` → Expr::Cast
+- `test_parse_expr_string_method()` — `"hello".print()` → method call on string literal
+- `test_parse_expr_char_method()` — `'\n'.print()` → method call on char literal
+- `test_parse_expr_chained_method_on_if()` — `if a { '-' } else { 'X' }.print()` → method call on if-expression result
+
+**Deliverable:** All tests written (they will fail/panic since parsers are stubs). `cargo test -p new_parser` compiles but tests fail.
+
+#### Step 1.6 — Token enum
+**File:** `crates/new_parser/src/token.rs`
+**What:** Define the complete Token enum.
+
+```rust
+enum Token {
+    // Literals
+    Number(i64),
+    Ident(String),          // lowercase identifiers: variable names, field names
+    TypeName(String),       // uppercase identifiers: type names (Val, Bool, Self)
+    String(String),         // "hello"
+    Char(char),             // '\n'
+
+    // Keywords
+    Struct,
+    Enum,
+    Extension,
+    Impl,
+    Trait,
+    Fn,
+    Mut,
+    Let,
+    If,
+    Else,
+    Loop,
+    Break,
+    Continue,
+    Return,
+    Match,
+    True,
+    False,
+    For,                    // reserved
+    As,
+    SelfValue,              // `self` (the value)
+
+    // Symbols
+    Dot,                    // .
+    Comma,                  // ,
+    Colon,                  // :
+    Semicolon,              // ;
+    Eq,                     // =
+    PathSep,                // ::
+    FatArrow,               // =>
+    Underscore,             // _
+    And,                    // &&
+    Or,                     // ||
+    LParen, RParen,         // ( )
+    LBrace, RBrace,         // { }
+    LAngle, RAngle,         // < >
+    LBracket, RBracket,     // [ ]
+}
+```
+
+Note: `Self` is parsed as `TypeName("Self")`, not a separate keyword. This keeps type parsing uniform.
+
+#### Step 1.7 — Lexer
+**File:** `crates/new_parser/src/lexer.rs`
+**What:** Implement the chumsky lexer: `fn lexer() -> impl Parser<char, Vec<(Token, Span)>, Error = Simple<char>>`
+
+Lexing rules (in priority order):
+1. Whitespace and `//` line comments → skip
+2. `::` → PathSep (must come before single `:`)
+3. `=>` → FatArrow (must come before single `=`)
+4. `&&` → And
+5. `||` → Or
+6. Single-char symbols: `.` `,` `:` `;` `=` `(` `)` `{` `}` `<` `>` `[` `]` `_`
+7. String literals: `"..."` with `\n`, `\t`, `\\`, `\"` escapes
+8. Char literals: `'...'` with same escapes
+9. Integer literals: `[0-9]+` → Number
+10. Identifiers/keywords: `[a-zA-Z_][a-zA-Z0-9_]*`
+    - Keyword check: `struct`, `enum`, `extension`, `impl`, `trait`, `fn`, `mut`, `let`, `if`, `else`, `loop`, `break`, `continue`, `return`, `match`, `true`, `false`, `for`, `as`, `self`
+    - If starts with uppercase and not a keyword → TypeName
+    - Otherwise → Ident
+
+**Test:** all `test_lex_*` tests pass.
+
+#### Step 1.8 — AST types
+**File:** `crates/new_parser/src/ast.rs`
+**What:** Define all AST node types.
+
+```rust
+// Spans are attached to every node for error reporting.
+type Span = Range<usize>;
+type Spanned<T> = (T, Span);
+
+// Top-level items
+enum Item {
+    Struct(StructDef),
+    Enum(EnumDef),
+    Extension(ExtensionDef),
+    Trait(TraitDef),
+    Impl(ImplDef),
+}
+
+struct StructDef {
+    name: Spanned<String>,
+    templates: Vec<Spanned<String>>,
+    fields: Vec<FieldDef>,
+}
+
+struct FieldDef {
+    name: Spanned<String>,
+    ty: Spanned<Type>,
+}
+
+struct EnumDef {
+    name: Spanned<String>,
+    templates: Vec<Spanned<String>>,
+    variants: Vec<EnumVariant>,
+}
+
+struct EnumVariant {
+    name: Spanned<String>,
+    data: Option<Spanned<Type>>,       // None = unit variant
+    discriminant: Option<Spanned<i64>>, // None = auto-assigned
+}
+
+struct ExtensionDef {
+    target: Spanned<Type>,             // e.g. Val or Array<T, E, F>
+    methods: Vec<Spanned<Function>>,
+}
+
+struct TraitDef {
+    name: Spanned<String>,
+    templates: Vec<Spanned<String>>,
+    associated_types: Vec<Spanned<String>>,
+    methods: Vec<Spanned<FunctionSig>>, // signatures only, no body
+}
+
+struct ImplDef {
+    trait_name: Spanned<Type>,         // e.g. Add or Add<T>
+    target: Spanned<Type>,             // e.g. MyType
+    associated_types: Vec<(Spanned<String>, Spanned<Type>)>, // name = ConcreteType
+    methods: Vec<Spanned<Function>>,
+}
+
+struct FunctionSig {
+    name: Spanned<String>,
+    templates: Vec<Spanned<String>>,
+    params: Vec<Param>,
+    return_type: Option<Spanned<Type>>,
+}
+
+struct Function {
+    sig: FunctionSig,
+    body: Spanned<Block>,
+}
+
+struct Param {
+    name: Spanned<String>,
+    ty: Option<Spanned<Type>>,         // None for `self` (type = Self)
+    mutable: bool,
+}
+
+struct Type {
+    name: String,                       // "Val", "Array", "Self", "Self::Output"
+    templates: Vec<Spanned<TypeOrValue>>,
+}
+
+// Template arguments can be types or integer constants
+enum TypeOrValue {
+    Type(Type),
+    Value(i64),                         // e.g. 9 in Array<Val, 9, Val>
+}
+
+// Expression block
+struct Block {
+    stmts: Vec<Spanned<Expr>>,
+}
+
+enum Expr {
+    // Literals
+    Number(i64),
+    String(String),
+    Char(char),
+    Bool(bool),
+    Variable(String),
+
+    // Access
+    Field(Box<Spanned<Expr>>, Spanned<String>),                        // expr.field
+    MethodCall(Box<Spanned<Expr>>, Spanned<String>, Vec<Spanned<Type>>, Vec<Spanned<Expr>>),
+                                                                       // expr.method<T>(args)
+    StaticCall(Spanned<Type>, Spanned<String>, Vec<Spanned<Type>>, Vec<Spanned<Expr>>),
+                                                                       // Type::method<T>(args)
+
+    // Construction
+    StructLiteral(Spanned<Type>, Vec<(Spanned<String>, Spanned<Expr>)>), // Type { f: v, ... }
+    EnumVariant(Spanned<Type>, Spanned<String>, Option<Box<Spanned<Expr>>>),
+                                                                       // Type::Variant or Type::Variant(expr)
+
+    // Operators
+    BinaryOp(BinOp, Box<Spanned<Expr>>, Box<Spanned<Expr>>),
+
+    // Control flow
+    If(Box<Spanned<Expr>>, Box<Spanned<Block>>, Option<Box<Spanned<Expr>>>),
+                                                                       // if cond { block } else { expr_or_if }
+    Loop(Box<Spanned<Block>>),
+    Break,
+    Continue,
+    Return(Option<Box<Spanned<Expr>>>),
+    Match(Box<Spanned<Expr>>, Vec<MatchArm>),
+
+    // Binding
+    Declaration(Spanned<String>, Spanned<Type>, Box<Spanned<Expr>>),   // let name: Type = expr
+    Assign(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                    // lvalue = expr
+
+    // Cast
+    Cast(Box<Spanned<Expr>>, Spanned<Type>),                           // expr as Type
+}
+
+enum BinOp { And, Or }
+
+struct MatchArm {
+    pattern: Spanned<Pattern>,
+    body: Spanned<Expr>,
+}
+
+enum Pattern {
+    Variant(Spanned<Type>, Spanned<String>, Option<Spanned<String>>),  // Type::Variant(binding)
+    Wildcard,                                                          // _
+}
+```
+
+#### Step 1.9 — Parser: types and struct/enum
+**File:** `crates/new_parser/src/parser.rs`
+**What:** Implement parsers for types, struct definitions, and enum definitions.
+
+Parsers to implement:
+- `type_parser()` — parses `Val`, `Array<T, 9, Val>`, `Self`, `Self::Output`
+  - TypeName, optionally followed by `<` type_or_value_list `>`
+  - `Self::Ident` for associated type references
+- `struct_parser()` — parses `struct Name<T> { field: Type, ... }`
+  - `struct` keyword, TypeName, optional `<` template list `>`, `{` fields `}`
+  - Fields: `name: Type` separated by `,` (trailing comma optional)
+  - Empty struct: `struct Val {}`
+- `enum_parser()` — parses `enum Name<T> { Variant, Variant(Type) = N, ... }`
+  - Variants separated by `,` (trailing comma optional)
+  - Each variant: name, optional `(Type)`, optional `= Number`
+
+**Test:** `test_parse_type_*`, `test_parse_struct_*`, `test_parse_enum_*` tests pass.
+
+#### Step 1.10 — Parser: expressions (core)
+**File:** `crates/new_parser/src/parser.rs`
+**What:** Implement expression parser for literals, variables, field access, method calls, and operators.
+
+Parsers to implement:
+- `expr_parser()` — recursive descent, handles:
+  - **Atoms:** Number, String, Char, `true`, `false`, `self`, Variable
+  - **Struct literal:** `TypeName { field: expr, ... }`
+  - **Enum variant:** `TypeName::VariantName` or `TypeName::VariantName(expr)`
+  - **Static call:** `TypeName::method<T>(args)` — distinguished from enum variant by presence of `(`
+  - **Parenthesized:** `(expr)`
+- `postfix_parser()` — left-to-right chaining after an atom:
+  - `.field` → Field access
+  - `.method<T>(args)` → MethodCall
+  - `as Type` → Cast
+- `binop_parser()` — `&&` and `||` with left-to-right associativity (no precedence difference for now)
+- `block_parser()` — `{ stmt; stmt; expr }` where last expr without `;` is the block's value
+
+**Test:** `test_parse_expr_number`, `test_parse_expr_variable`, `test_parse_expr_field`, `test_parse_expr_method_call`, `test_parse_expr_static_call`, `test_parse_expr_template_call`, `test_parse_expr_bool_ops`, `test_parse_expr_struct_literal`, `test_parse_expr_enum_variant*`, `test_parse_expr_cast`, `test_parse_expr_string_method`, `test_parse_expr_char_method` pass.
+
+#### Step 1.11 — Parser: expressions (control flow)
+**File:** `crates/new_parser/src/parser.rs`
+**What:** Add control flow expressions to the expression parser.
+
+Parsers to implement:
+- `if_parser()` — `if expr { block } else if expr { block } else { block }`
+  - `else` branch is optional; `else if` chains
+  - If-expression as value: `let x = if a { 1 } else { 2 };`
+  - Chained method call on if-expression: `if a { '-' } else { 'X' }.print()`
+- `loop_parser()` — `loop { block }`
+- `match_parser()` — `match expr { Pattern => expr, ... }`
+  - Patterns: `Type::Variant`, `Type::Variant(binding)`, `_`
+  - Arms separated by `,` (trailing comma optional)
+- `return_parser()` — `return expr;` or `return;`
+- `break` and `continue` as expression keywords
+- `let_parser()` — `let name: Type = expr;`
+- Assignment: `lvalue = expr;` where lvalue is Variable or Field chain
+
+**Test:** `test_parse_expr_if_else`, `test_parse_expr_if_else_chain`, `test_parse_expr_if_as_expr`, `test_parse_expr_loop`, `test_parse_expr_return`, `test_parse_expr_let`, `test_parse_expr_assign`, `test_parse_expr_match`, `test_parse_expr_chained_method_on_if` pass.
+
+#### Step 1.12 — Parser: functions, extensions, traits, impls
+**File:** `crates/new_parser/src/parser.rs`
+**What:** Implement parsers for function declarations and top-level item blocks.
+
+Parsers to implement:
+- `param_parser()` — `mut? self` or `mut? name: Type`
+  - `self` has no explicit type annotation (type is `Self`)
+  - `self: Self<Byte, E, F>` for specialized self types (as seen in Array.print)
+- `function_sig_parser()` — `fn name<T>(params): ReturnType`
+  - Template params optional, return type optional
+- `function_parser()` — `fn_sig { block }`
+- `extension_parser()` — `extension Type<T> { fn ... fn ... }`
+- `trait_parser()` — `trait Name<T> { type Assoc; fn sig(); ... }`
+  - Methods are signatures only (no body): `fn name(params): RetType;`
+  - Associated types: `type Name;`
+- `impl_parser()` — `impl Trait for Type { type Name = Type; fn ... }`
+- `program_parser()` — `Vec<Item>` = sequence of struct/enum/extension/trait/impl at top level
+
+**Test:** `test_parse_fn_*`, `test_parse_extension_*`, `test_parse_trait`, `test_parse_impl` pass.
+
+#### Step 1.13 — Integration tests: parse all example files
+**File:** `crates/new_parser/src/tests/integration_tests.rs`
+**What:** Run all integration tests that parse the example `.ct` files.
+- All `test_parse_val`, `test_parse_bool`, ..., `test_parse_morpion` tests pass
+- Each test reads the `.ct` file, calls `parse()`, asserts success, and checks the AST structure (item counts, method counts, field names, template params)
+- **Acceptance criteria:** every example file parses without errors and produces the expected AST
+
+**Deliverable:** `cargo test -p new_parser` — all tests green.
+
+#### Step 1.14 — Documentation
+**File:** `crates/new_parser/README.md`
+**What:** Document the new parser crate.
+- Language syntax reference with EBNF-like grammar
+- Token list
+- AST structure overview
+- How to use: `new_parser::parse(source: &str) -> Result<Vec<Item>, Vec<Error>>`
+- Differences from old syntax (class → struct + extension, old-style declarations → let, etc.)
 
 ---
 
