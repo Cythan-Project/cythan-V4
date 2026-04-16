@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 new-parser = { path = "../new_parser" }
 typer = { path = "../typer" }
+mir = { path = "../mir" }
 either = "1"
 
 [lints]

@@ -7,7 +7,8 @@ mod call_tests;
 mod construction_tests;
 mod mutability_tests;
 mod opt_tests;
-mod interp_tests;
+pub mod interp_tests;
+mod lower_tests;
 
 use new_parser::ast;
 
