@@ -1,0 +1,12 @@
+[package]
+name = "hir"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+new-parser = { path = "../new_parser" }
+typer = { path = "../typer" }
+either = "1"
+
+[lints]
+workspace = true
