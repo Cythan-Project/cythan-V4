@@ -1,0 +1,106 @@
+struct U8 {
+    U4 lower,
+    U4 higher,
+}
+
+extension U8 {
+    fn new(Self a): Self {
+        Self { lower: a.lower, higher: a.higher }
+    }
+
+    fn zero(): Self {
+        Self { lower: 0, higher: 0 }
+    }
+
+    // Single-step increment with carry. Used internally by add.
+    fn inc(mut self) {
+        self.lower += 1;
+        if self.lower == 0 {
+            self.higher += 1;
+        }
+    }
+
+    // Single-step decrement with borrow. Used internally by sub.
+    fn dec(mut self) {
+        if self.lower == 0 {
+            self.higher -= 1;
+        }
+        self.lower -= 1;
+    }
+
+    fn add(mut self, Self other) {
+        mut Self u = other;
+        loop {
+            if u == 0 {
+                break;
+            }
+            self.inc();
+            u.dec();
+        }
+    }
+
+    fn sub(mut self, Self other) {
+        mut Self u = other;
+        loop {
+            if u == 0 {
+                break;
+            }
+            self.dec();
+            u.dec();
+        }
+    }
+
+    fn fromU4(U4 a): Self {
+        Self { lower: a, higher: 0 }
+    }
+
+    fn fromU4AsNumber(U4 a): Self {
+        Self { lower: a, higher: 3 }
+    }
+
+    fn input(): Self {
+        System::setRegister<0>(2);
+        Self {
+            lower: System::getRegister<2>(),
+            higher: System::getRegister<1>(),
+        }
+    }
+
+    fn print(self) {
+        System::setRegister<2>(self.lower);
+        System::setRegister<1>(self.higher);
+        System::setRegister<0>(1);
+    }
+
+    fn equals(self, Self other): Bool {
+        self.lower == other.lower && self.higher == other.higher
+    }
+
+    fn equalsZero(self): Bool {
+        self.lower == 0 && self.higher == 0
+    }
+
+    fn printDec(self) {
+        mut U4 lower = self.lower;
+        mut U4 higher = self.higher;
+        if lower > 9 {
+            lower -= 10;
+            lower.printDec();
+            higher += 1;
+        } else {
+            lower.printDec();
+        }
+        if higher > 9 {
+            higher -= 10;
+            higher.printDec();
+            '1'.print();
+        } else {
+            higher.printDec();
+        }
+    }
+
+    fn debug(self) {
+        System::debugInterupt(self.lower);
+        System::debugInterupt(self.higher);
+    }
+}

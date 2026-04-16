@@ -4,13 +4,34 @@
 
 Everything is by reference, no ownership. Assignment is always COPY (no pointers). Mutability is explicit (`mut self`, `mut param`). Single-threaded. All memory is static. All dispatch is static (monomorphized). Expression-based (last expression = return value in blocks, ifs, matches). No type inference.
 
+**Type renames:** `Val` is renamed to `U4` and `Byte` is renamed to `U8`. These are the standard names for the 4-bit and 8-bit types. All std library files, examples, and compiler references use the new names.
+
+**Bool semantics:** 1 is true, 0 is false (standard convention). The old VM convention (0 = true) is inverted at the compiler boundary — the language uses normal truthiness. `if expr { ... }` branches when expr is nonzero (true = 1). Bool is a struct wrapping a U4; `true` and `false` are built-in constants (`true` = `Bool { value: 1 }`, `false` = `Bool { value: 0 }`).
+
+**Mutability:** Everything is const by default. Variables need `mut` prefix to be mutable (e.g. `mut U4 x = 5`). Parameters need `mut` prefix to be mutable. `mut` propagates to fields: `mut self` means `self.field` is mutable too. Writing to an immutable slot is a compile-time error.
+
+**Operators:** The language supports comparison and arithmetic operators that desugar to trait method calls:
+- `==` `!=` → `Eq::eq()` / negated `Eq::eq()`
+- `>` `<` `>=` `<=` → `Ord::gt()`, `Ord::lt()`, etc.
+- `+` `-` → `Add::add()`, `Sub::sub()` — return new values, do NOT modify operands
+- `+=` `-=` → `AddAssign::add_assign()`, `SubAssign::sub_assign()` — modify left operand in place (left operand must be `mut`)
+- `&&` `||` → short-circuit boolean operators (built-in, not trait-based)
+
+Key distinction: `Sub::sub(self, other): Self` returns a new value without modifying self. `SubAssign::sub_assign(mut self, other)` modifies self in place. Use `-=` when you want in-place modification, `-` when you want a new value.
+
+**Semicolons:** Semicolons terminate expression-statements (`x += 1;`, `return true;`). Block expressions (`if`, `loop`, `match`) do NOT require a trailing `;` when used as statements. Semicolons after closing `}` are optional and not idiomatic.
+
+**Constants:** `const Type name = expr;` declares a compile-time constant. `true` and `false` are built-in constants of type Bool — they are NOT factory methods. Bool is a struct wrapping a U4; the compiler knows `true` = `Bool { value: 1 }` and `false` = `Bool { value: 0 }`.
+
+**Increment/Decrement:** There are no `.inc()` / `.dec()` methods. Use `+= 1` and `-= 1` instead. For U4, these are native operations (compiler emits Inc/Dec ops). For composite types like U8, they call the AddAssign/SubAssign trait implementation.
+
 **Visibility:** No `pub`/`private` keywords — everything is public by default. Scoping comes from the import system: you must import files, traits, and structs to use them. Extensions carry file IDs for future import-based scoping.
 
 ## Syntax Reference
 
 ```rust
 struct Main {
-    grid: Array<Val, 9, Val>       // Array<ElementType, const_size, IndexType>
+    Array<U4, 9, U4> grid,       // Array<ElementType, const_size, IndexType>
 }
 
 enum Option<T> {
@@ -34,11 +55,11 @@ extension Main {
         Self { grid: Array::new() }     // implicit return (expression-based)
     }
 
-    fn set(mut self, pos: u4, val: u4) {
+    fn set(mut self, u4 pos, u4 val) {
         self.grid.setDyn(pos, val);     // mut self required to modify fields
     }
 
-    fn getDyn(self, pos: u4): u4 {
+    fn getDyn(self, u4 pos): u4 {
         self.grid.getDyn(pos)           // implicit return
     }
 }
@@ -46,13 +67,13 @@ extension Main {
 trait Add {
     type Other;
     type Result;
-    fn add(self, other: Self::Other): Self::Result;
+    fn add(self, Self::Other other): Self::Result;
 }
 
 impl Add for MyType {
     type Other = MyType;
     type Result = MyType;
-    fn add(self, other: MyType): MyType { /* ... */ }
+    fn add(self, MyType other): MyType { /* ... */ }
 }
 ```
 
@@ -66,7 +87,7 @@ Source (.ct)
   │
   ├─ Stage 2: Parser ─────── tokens → Vec<Item>
   │                           crates/parser/src/parser.rs
-  │                           Item = Struct | Enum | Extension | Impl | Trait
+  │                           Item = Struct | Enum | Extension | Impl | Trait | Const
   │
   ├─ Stage 3: Type Registry ─ items → TypeRegistry
   │                           NEW crate: crates/typer/
@@ -126,8 +147,8 @@ Source (.ct)
 // All functions (from extensions, impls, standalone) are registered here.
 // Trait methods are inlined: `Self` and associated types become template params.
 //
-// Example: trait Add { type Output; fn add(self, other: Self): Self::Output; }
-//          impl Add for u8 { type Output = u8; fn add(self, other: u8): u8 { ... } }
+// Example: trait Add { type Output; fn add(self, Self other): Self::Output; }
+//          impl Add for u8 { type Output = u8; fn add(self, u8 other): u8 { ... } }
 //
 // Gets registered as:
 //   FnSig { type_name: "u8", method_name: "add", templates: [] }
@@ -195,7 +216,7 @@ struct SimpleFn {
 ### Signature Flattening
 
 ```
-// fn test(self, a: Option<u8>) -> (u4, u8)
+// fn test(self, Option<u8> a) -> (u4, u8)
 // where Self is a u8 (2 cells)
 //
 // Flattened:
@@ -261,8 +282,8 @@ struct FnRef {
 // Traits are compile-time only. No runtime representation.
 // Trait methods are "inlined" into concrete functions at registration time.
 //
-// trait Add { type Output; fn add(self, other: Self): Self::Output; }
-// impl Add for u8 { type Output = u8; fn add(self, other: u8): u8 { ... } }
+// trait Add { type Output; fn add(self, Self other): Self::Output; }
+// impl Add for u8 { type Output = u8; fn add(self, u8 other): u8 { ... } }
 //
 // The impl produces a concrete function registered in FunctionDB:
 //   FnSig { type_name: "u8", method_name: "add" }
@@ -308,17 +329,13 @@ The steps are ordered: write examples first, review them manually, create the cr
 
 Files to create:
 
-**`Val.ct`** — primitive 4-bit value type:
+**`U4.ct`** — primitive 4-bit value type:
 ```rust
-// Val is a native type (no fields). Its size is 1 cell (u4).
-// inc() and dec() are native methods (empty body = compiler provides impl).
-struct Val {}
+// U4 is a native type (no fields). Its size is 1 cell (4 bits).
+// += 1 and -= 1 are native operations (compiler emits Inc/Dec ops).
+struct U4 {}
 
-extension Val {
-    fn equalsZero(self): Bool {
-        self as Bool
-    }
-
+extension U4 {
     fn zero(): Self {
         0
     }
@@ -328,48 +345,47 @@ extension Val {
         System::getRegister<2>()
     }
 
-    fn equals(self, other: Self): Bool {
-        let copy: Self = self;
-        let copy1: Self = other;
+    fn equals(self, Self other): Bool {
+        mut Self copy = self;
+        mut Self copy1 = other;
         loop {
-            if copy.equalsZero() {
-                return copy1.equalsZero();
-            };
-            copy.dec();
-            copy1.dec();
+            if copy == 0 {
+                return copy1 == 0;
+            }
+            copy -= 1;
+            copy1 -= 1;
         }
     }
 
-    fn greater(self, other: Self): Bool {
-        let copy: Self = self;
-        let copy1: Self = other;
+    fn greater(self, Self other): Bool {
+        mut Self copy = self;
+        mut Self copy1 = other;
         loop {
-            if copy.equalsZero() {
+            if copy == 0 {
                 return false;
-            } else if copy1.equalsZero() {
+            } else if copy1 == 0 {
                 return true;
-            };
-            copy.dec();
-            copy1.dec();
+            }
+            copy -= 1;
+            copy1 -= 1;
         }
     }
 
-    fn sub(mut self, other: Self) {
-        let g: Self = other;
+    fn sub(mut self, mut Self other) {
         loop {
-            if other.equalsZero() {
+            if other == 0 {
                 break;
-            };
-            self.dec();
-            other.dec();
+            }
+            self -= 1;
+            other -= 1;
         }
     }
 
     fn printDec(self) {
-        if self.greater(9) {
+        if self > 9 {
             '1'.print();
-            let k: Self = self;
-            k.sub(10);
+            mut Self k = self;
+            k -= 10;
             k.print();
         } else {
             self.print();
@@ -381,32 +397,21 @@ extension Val {
         System::setRegister<2>(self);
         System::setRegister<0>(1);
     }
-
-    fn inc(mut self) {}
-    fn dec(mut self) {}
 }
 ```
 
-**`Bool.ct`** — boolean type (0 = true, 1 = false):
+**`Bool.ct`** — boolean type (1 = true, 0 = false):
 ```rust
 struct Bool {
-    value: Val,
+    U4 value,
 }
 
 extension Bool {
-    fn true(): Self {
-        Self { value: 0 }
-    }
-
-    fn false(): Self {
-        Self { value: 1 }
-    }
-
     fn not(self): Self {
-        if self.value as Self {
-            Self::false()
+        if self {
+            false
         } else {
-            Self::true()
+            true
         }
     }
 
@@ -420,15 +425,15 @@ extension Bool {
 }
 ```
 
-**`Byte.ct`** — 8-bit type (two Val cells):
+**`U8.ct`** — 8-bit type (two U4 cells):
 ```rust
-struct Byte {
-    lower: Val,
-    higher: Val,
+struct U8 {
+    U4 lower,
+    U4 higher,
 }
 
-extension Byte {
-    fn new(a: Self): Self {
+extension U8 {
+    fn new(Self a): Self {
         Self { lower: a.lower, higher: a.higher }
     }
 
@@ -437,46 +442,46 @@ extension Byte {
     }
 
     fn inc(mut self) {
-        self.lower.inc();
-        if self.lower.equalsZero() {
-            self.higher.inc();
+        self.lower += 1;
+        if self.lower == 0 {
+            self.higher += 1;
         }
     }
 
     fn dec(mut self) {
-        if self.lower.equalsZero() {
-            self.higher.dec();
-        };
-        self.lower.dec();
+        if self.lower == 0 {
+            self.higher -= 1;
+        }
+        self.lower -= 1;
     }
 
-    fn add(mut self, other: Self) {
-        let u: Self = other;
+    fn add(mut self, Self other) {
+        mut Self u = other;
         loop {
-            if u.equalsZero() {
+            if u == 0 {
                 break;
-            };
+            }
             self.inc();
             u.dec();
         }
     }
 
-    fn sub(mut self, other: Self) {
-        let u: Self = other;
+    fn sub(mut self, Self other) {
+        mut Self u = other;
         loop {
-            if u.equalsZero() {
+            if u == 0 {
                 break;
-            };
+            }
             self.dec();
             u.dec();
         }
     }
 
-    fn fromVal(a: Val): Self {
+    fn fromU4(U4 a): Self {
         Self { lower: a, higher: 0 }
     }
 
-    fn fromValAsNumber(a: Val): Self {
+    fn fromU4AsNumber(U4 a): Self {
         Self { lower: a, higher: 3 }
     }
 
@@ -494,34 +499,26 @@ extension Byte {
         System::setRegister<0>(1);
     }
 
-    fn equals(self, other: Self): Bool {
-        self.lower.equals(other.lower) && self.higher.equals(other.higher)
+    fn equals(self, Self other): Bool {
+        self.lower == other.lower && self.higher == other.higher
     }
 
     fn equalsZero(self): Bool {
-        if self.lower as Bool {
-            if self.higher as Bool {
-                return true;
-            } else {
-                return false;
-            }
-        } else {
-            return false;
-        }
+        self.lower == 0 && self.higher == 0
     }
 
     fn printDec(self) {
-        let lower: Val = self.lower;
-        let higher: Val = self.higher;
-        if lower.greater(9) {
-            lower.sub(10);
+        mut U4 lower = self.lower;
+        mut U4 higher = self.higher;
+        if lower > 9 {
+            lower -= 10;
             lower.printDec();
-            higher.inc();
+            higher += 1;
         } else {
             lower.printDec();
-        };
-        if higher.greater(9) {
-            higher.sub(10);
+        }
+        if higher > 9 {
+            higher -= 10;
             higher.printDec();
             '1'.print();
         } else {
@@ -541,12 +538,12 @@ extension Byte {
 struct System {}
 
 extension System {
-    fn setRegister<N>(value: Val) {}
-    fn getRegister<N>(): Val {}
-    fn debug<T>(a: T) {}
+    fn setRegister<N>(U4 value) {}
+    fn getRegister<N>(): U4 {}
+    fn debug<T>(T a) {}
     fn debugType<T>() {}
 
-    fn debugInterupt(a: Val) {
+    fn debugInterupt(U4 a) {
         Self::setRegister<1>(a);
         Self::setRegister<0>(3);
     }
@@ -558,45 +555,45 @@ extension System {
 struct Array<T, E, F> {}
 
 extension Array<T, E, F> {
-    fn set<N>(mut self, value: T) {}
-    fn setDyn(mut self, index: F, value: T) {}
+    fn set<N>(mut self, T value) {}
+    fn setDyn(mut self, F index, T value) {}
     fn get<N>(self): T {}
-    fn getDyn(self, index: F): T {}
+    fn getDyn(self, F index): T {}
     fn len(self): F {}
 
-    fn print(self: Self<Byte, E, F>) {
-        let index: F = F::zero();
+    fn print(Self<U8, E, F> self) {
+        mut F index = F::zero();
         loop {
-            if self.len().greater(index) {
+            if self.len() > index {
                 self.getDyn(index).print();
-                index.inc();
+                index += 1;
             } else {
                 break;
-            };
+            }
         }
     }
 
-    fn println(self: Self<Byte, E, F>) {
-        let index: F = F::zero();
+    fn println(Self<U8, E, F> self) {
+        mut F index = F::zero();
         loop {
-            if self.len().equals(index) {
+            if self.len() == index {
                 break;
             } else {
                 self.getDyn(index).print();
-                index.inc();
-            };
-        };
+                index += 1;
+            }
+        }
         '\n'.print();
     }
 
-    fn contains(self, t: T): Bool {
-        let size: F = self.len();
+    fn contains(self, T t): Bool {
+        mut F size = self.len();
         loop {
-            if size.equalsZero() {
+            if size == 0 {
                 return false;
-            };
-            size.dec();
-            if self.getDyn(size).equals(t) {
+            }
+            size -= 1;
+            if self.getDyn(size) == t {
                 return true;
             }
         }
@@ -616,7 +613,7 @@ extension Option<T> {
         Self::None
     }
 
-    fn some(t: T): Self {
+    fn some(T t): Self {
         Self::Some(t)
     }
 
@@ -632,8 +629,8 @@ extension Option<T> {
 **`DynArray.ct`** — dynamic-length array backed by a fixed-size array:
 ```rust
 struct DynArray<T, N, F> {
-    array: Array<T, N, F>,
-    length: F,
+    Array<T, N, F> array,
+    F length,
 }
 
 extension DynArray<T, N, F> {
@@ -641,32 +638,32 @@ extension DynArray<T, N, F> {
         Self { array: Array::new(), length: F::zero() }
     }
 
-    fn from<Number>(input: Array<T, Number, F>): Self {
-        let dyn: Self = Self::new();
+    fn from<Number>(Array<T, Number, F> input): Self {
+        mut Self dyn = Self::new();
         dyn.addAll<Number>(input);
         dyn
     }
 
-    fn add(mut self, t: T) {
+    fn add(mut self, T t) {
         self.array.setDyn(self.length, t);
-        self.length.inc();
+        self.length += 1;
     }
 
-    fn addAll<Ng>(mut self, arr: Array<T, Ng, F>) {
-        let l: F = arr.len();
-        let c: F = F::zero();
+    fn addAll<Ng>(mut self, Array<T, Ng, F> arr) {
+        mut F l = arr.len();
+        mut F c = F::zero();
         loop {
-            if l.equalsZero() {
+            if l == 0 {
                 break;
-            };
+            }
             self.add(arr.getDyn(c));
-            c.inc();
-            l.dec();
+            c += 1;
+            l -= 1;
         }
     }
 
     fn pop(mut self): T {
-        self.length.dec();
+        self.length -= 1;
         self.getDyn(self.length)
     }
 
@@ -678,11 +675,11 @@ extension DynArray<T, N, F> {
         self.array.len()
     }
 
-    fn getDyn(self, pos: F): T {
+    fn getDyn(self, F pos): T {
         self.array.getDyn(pos)
     }
 
-    fn setDyn(mut self, pos: F, t: T) {
+    fn setDyn(mut self, F pos, T t) {
         self.array.setDyn(pos, t);
     }
 
@@ -690,37 +687,37 @@ extension DynArray<T, N, F> {
         self.array.get<Number>()
     }
 
-    fn set<Number>(mut self, t: T) {
+    fn set<Number>(mut self, T t) {
         self.array.set<Number>(t);
     }
 
     fn last(self): T {
-        let k: F = self.len();
-        k.dec();
+        mut F k = self.len();
+        k -= 1;
         self.getDyn(k)
     }
 
-    fn println(self: Self<Byte, N, F>) {
-        let index: F = F::zero();
+    fn println(Self<U8, N, F> self) {
+        mut F index = F::zero();
         loop {
-            if self.len().equals(index) {
+            if self.len() == index {
                 break;
             } else {
                 self.getDyn(index).print();
-                index.inc();
-            };
-        };
+                index += 1;
+            }
+        }
         '\n'.print();
     }
 
-    fn contains(self, t: T): Bool {
-        let size: F = self.len();
+    fn contains(self, T t): Bool {
+        mut F size = self.len();
         loop {
-            if size.equalsZero() {
+            if size == 0 {
                 return false;
-            };
-            size.dec();
-            if self.getDyn(size).equals(t) {
+            }
+            size -= 1;
+            if self.getDyn(size) == t {
                 return true;
             }
         }
@@ -730,11 +727,44 @@ extension DynArray<T, N, F> {
 
 #### Step 1.2 — Write example Morpion game in new syntax
 **Output:** `examples/new_syntax/Morpion.ct`
-**What:** Translate the Morpion (tic-tac-toe) game to the new syntax. This is the primary end-to-end example: it exercises structs, extensions, method calls, control flow, expressions-as-values, templates, and string/char literals.
+**What:** Translate the Morpion (tic-tac-toe) game to the new syntax. This is the primary end-to-end example: it exercises enums (Cell state), traits (Eq), structs, extensions, match expressions, method calls, control flow, expressions-as-values, and templates.
 
 ```rust
+enum Cell {
+    Empty,
+    O,
+    X,
+}
+
+extension Cell {
+    fn print(self) {
+        match self {
+            Self::Empty => '-'.print(),
+            Self::O => 'O'.print(),
+            Self::X => 'X'.print(),
+        }
+    }
+
+    fn isEmpty(self): Bool {
+        match self {
+            Self::Empty => true,
+            _ => false,
+        }
+    }
+}
+
+trait Eq {
+    fn eq(self, Self other): Bool;
+}
+
+impl Eq for Cell {
+    fn eq(self, Cell other): Bool {
+        self as U4 == other as U4
+    }
+}
+
 struct Morpion {
-    grid: Array<Val, 9, Val>,
+    Array<Cell, 9, U4> grid,
 }
 
 extension Morpion {
@@ -742,107 +772,95 @@ extension Morpion {
         Self { grid: Array::new() }
     }
 
-    fn set(mut self, pos: Val, val: Val) {
+    fn set(mut self, U4 pos, Cell val) {
         self.grid.setDyn(pos, val);
     }
 
-    fn getDyn(self, pos: Val): Val {
+    fn getDyn(self, U4 pos): Cell {
         self.grid.getDyn(pos)
     }
 
-    fn get<TE>(self): Val {
+    fn get<TE>(self): Cell {
         self.grid.get<TE>()
     }
 
     fn display(self) {
-        let count: Val = 0;
+        mut U4 count = 0;
         loop {
-            if count.equals(9) {
+            if count == 9 {
                 '\n'.print();
                 break;
-            };
-            if count.equals(3) || count.equals(6) {
+            }
+            if count == 3 || count == 6 {
                 '\n'.print();
-            };
-            let j: Val = self.getDyn(count);
-            if j.equalsZero() {
-                '-'
-            } else if j.equals(1) {
-                'O'
-            } else {
-                'X'
-            }.print();
-            count.inc();
+            }
+            self.getDyn(count).print();
+            count += 1;
         }
     }
 
     fn play(mut self) {
-        let currentPlayer: Val = 1;
-        let count: Val = 9;
+        mut Cell currentPlayer = Cell::O;
+        mut U4 count = 9;
         self.display();
         loop {
-            let pos: Val = Val::input();
-            pos.dec();
-            if pos.greater(8) {
+            mut U4 pos = U4::input();
+            pos -= 1;
+            if pos > 8 {
                 continue;
-            };
-            if self.getDyn(pos).equalsZero() {
+            }
+            if self.getDyn(pos).isEmpty() {
                 self.set(pos, currentPlayer);
-                count.dec();
+                count -= 1;
                 self.display();
                 if self.winner(currentPlayer) {
-                    if currentPlayer.equals(1) {
-                        'O'
-                    } else {
-                        'X'
-                    }.print();
+                    currentPlayer.print();
                     " won!".println();
                     break;
-                };
-                if count.equalsZero() {
+                }
+                if count == 0 {
                     "Equality!".println();
                     break;
-                };
-                currentPlayer = if currentPlayer.equals(1) {
-                    2
-                } else {
-                    1
+                }
+                currentPlayer = match currentPlayer {
+                    Cell::O => Cell::X,
+                    _ => Cell::O,
                 };
             } else {
                 "Invalid input!".println();
-            };
+            }
         }
     }
 
-    fn winner(self, tocheck: Val): Bool {
-        if self.get<0>().equals(tocheck) {
-            if self.get<1>().equals(tocheck) && self.get<2>().equals(tocheck) {
+    fn winner(self, Cell tocheck): Bool {
+        if self.get<0>() == tocheck {
+            if self.get<1>() == tocheck && self.get<2>() == tocheck {
                 return true;
-            };
-            if self.get<3>().equals(tocheck) && self.get<6>().equals(tocheck) {
+            }
+            if self.get<3>() == tocheck && self.get<6>() == tocheck {
                 return true;
-            };
-            if self.get<4>().equals(tocheck) && self.get<8>().equals(tocheck) {
+            }
+            if self.get<4>() == tocheck && self.get<8>() == tocheck {
                 return true;
-            };
-        };
-        if self.get<1>().equals(tocheck) && self.get<4>().equals(tocheck) && self.get<7>().equals(tocheck) {
+            }
+        }
+        if self.get<1>() == tocheck && self.get<4>() == tocheck && self.get<7>() == tocheck {
             return true;
-        };
-        if self.get<2>().equals(tocheck) && self.get<4>().equals(tocheck) && self.get<6>().equals(tocheck) {
+        }
+        if self.get<2>() == tocheck && self.get<4>() == tocheck && self.get<6>() == tocheck {
             return true;
-        };
-        if self.get<3>().equals(tocheck) && self.get<4>().equals(tocheck) && self.get<5>().equals(tocheck) {
+        }
+        if self.get<3>() == tocheck && self.get<4>() == tocheck && self.get<5>() == tocheck {
             return true;
-        };
-        if self.get<6>().equals(tocheck) && self.get<7>().equals(tocheck) && self.get<8>().equals(tocheck) {
+        }
+        if self.get<6>() == tocheck && self.get<7>() == tocheck && self.get<8>() == tocheck {
             return true;
-        };
+        }
         false
     }
 
-    fn main(): Val {
-        let morpion: Self = Self::new();
+    fn main(): U4 {
+        mut Self morpion = Self::new();
         morpion.play();
         0
     }
@@ -852,14 +870,14 @@ extension Morpion {
 #### Step 1.3 — Manual review of example files
 **What:** Review all example files for syntax consistency before building the parser.
 Checklist:
-- [ ] All struct fields use `name: Type` syntax (colon, not `=`)
+- [ ] All struct fields use `Type name` syntax (type before name)
 - [ ] All struct construction uses `Self { field: value }` (colon, not `=`)
 - [ ] All `fn` declarations use `fn name(params): ReturnType { body }` format
 - [ ] Mutating methods use `mut self` or `mut` on parameters
 - [ ] Static methods (no `self`) use `Self::method()` or `TypeName::method()` call syntax
 - [ ] Template parameters use `<T>` on declarations, `<ConcreteType>` on calls
 - [ ] Extensions on generic types use `extension TypeName<T, U>` syntax
-- [ ] Variable declarations use `let name: Type = expr;` (not `Type name = expr;`)
+- [ ] Variable declarations use `mut Type name = expr;` (no `let` keyword)
 - [ ] Enum variants use `Variant`, `Variant(Type)`, `Variant = N` syntax
 - [ ] Enum construction uses `Self::Variant` or `Self::Variant(value)`
 - [ ] Match arms use `Self::Variant => expr` with `_` for wildcard
@@ -870,6 +888,10 @@ Checklist:
 - [ ] String literals (`"..."`) and char literals (`'...'`) have `.print()` and `.println()` methods
 - [ ] `&&` and `||` operators work as before
 - [ ] Semicolons terminate statements; missing semicolon on last expression = return value
+- [ ] No `.inc()` / `.dec()` calls — use `+= 1` / `-= 1` instead
+- [ ] `true` and `false` are used directly, not as `Bool::true()` / `Bool::false()`
+- [ ] Semicolons after block expressions (`if { }`, `loop { }`, `match { }`) are not required
+- [ ] Constants use `const Type name = expr;`
 
 **Deliverable:** Finalized example files, checked into the repo under `examples/new_syntax/`.
 
@@ -898,36 +920,38 @@ crates/new_parser/
 **What:** Write tests that parse each example file and assert the resulting AST structure.
 
 Tests in `crates/new_parser/src/tests/integration_tests.rs`:
-- `test_parse_val()` — parses `examples/new_syntax/std/Val.ct`, asserts: 1 struct item (Val, no fields), 1 extension item on Val with N methods (equalsZero, zero, input, equals, greater, sub, printDec, print, inc, dec)
-- `test_parse_bool()` — parses `Bool.ct`, asserts: 1 struct (Bool, 1 field `value: Val`), 1 extension with 4 methods
-- `test_parse_byte()` — parses `Byte.ct`, asserts: 1 struct (Byte, 2 fields), 1 extension with N methods
+- `test_parse_val()` — parses `examples/new_syntax/std/U4.ct`, asserts: 1 struct item (U4, no fields), 1 extension item on U4 with N methods (equalsZero, zero, input, equals, greater, sub, printDec, print)
+- `test_parse_bool()` — parses `Bool.ct`, asserts: 1 struct (Bool, 1 field `U4 value`), 1 extension with 2 methods (not, print)
+- `test_parse_const()` — parses `const U4 MAX = 15;` → Item::Const with type U4, name "MAX", value 15
+- `test_parse_expr_true_false()` — `true` → Expr::Bool(true), `false` → Expr::Bool(false)
+- `test_parse_byte()` — parses `U8.ct`, asserts: 1 struct (U8, 2 fields), 1 extension with N methods
 - `test_parse_system()` — parses `System.ct`, asserts: 1 struct, 1 extension, methods have template params
 - `test_parse_array()` — parses `Array.ct`, asserts: 1 struct with 3 template params, 1 extension with template params on the extension itself
 - `test_parse_option()` — parses `Option.ct`, asserts: 1 enum with 2 variants (None unit, Some with data), 1 extension with match expression in a method body
 - `test_parse_dynarray()` — parses `DynArray.ct`, asserts: 1 struct with 2 fields (one generic), 1 extension
-- `test_parse_morpion()` — parses `Morpion.ct`, asserts: 1 struct, 1 extension, 7 methods including `main() -> Val`
+- `test_parse_morpion()` — parses `Morpion.ct`, asserts: 1 struct, 1 extension, 7 methods including `main() -> U4`
 
 Tests in `crates/new_parser/src/tests/lexer_tests.rs`:
-- `test_lex_keywords()` — tokenize `struct enum extension impl trait fn mut let match` → correct token variants
+- `test_lex_keywords()` — tokenize `struct enum extension impl trait fn mut match` → correct token variants
 - `test_lex_symbols()` — tokenize `:: => { } ( ) < > , : ; .` → correct tokens
 - `test_lex_string_char()` — tokenize `"hello" '\n'` → String and Char tokens
 - `test_lex_full_function()` — tokenize a complete `fn` declaration, verify token sequence
 
 Tests in `crates/new_parser/src/tests/parser_tests.rs` (unit tests for individual parsers):
-- `test_parse_type_simple()` — `Val` → Type { name: "Val", templates: [] }
-- `test_parse_type_generic()` — `Array<Val, 9, Val>` → Type with 3 template args
-- `test_parse_struct_empty()` — `struct Val {}` → StructDef with no fields
-- `test_parse_struct_fields()` — `struct Byte { lower: Val, higher: Val }` → 2 fields
+- `test_parse_type_simple()` — `U4` → Type { name: "U4", templates: [] }
+- `test_parse_type_generic()` — `Array<U4, 9, U4>` → Type with 3 template args
+- `test_parse_struct_empty()` — `struct U4 {}` → StructDef with no fields
+- `test_parse_struct_fields()` — `struct U8 { U4 lower, U4 higher }` → 2 fields
 - `test_parse_enum_unit()` — `enum Color { Red, Green, Blue }` → 3 unit variants
 - `test_parse_enum_mixed()` — `enum Option<T> { None, Some(T) }` → unit + data variant
 - `test_parse_enum_explicit_discr()` — `enum X { A = 0, B(u4) = 2, C }` → explicit + auto discriminants
 - `test_parse_fn_no_params()` — `fn zero(): Self { 0 }` → no params, return type Self, body = number literal
-- `test_parse_fn_self()` — `fn inc(mut self) {}` → mut self param, no return, empty body
-- `test_parse_fn_params()` — `fn set(mut self, pos: Val, val: Val) { ... }` → 3 params with mut
+- `test_parse_fn_self()` — `fn not(self): Self {}` → self param, return type Self, empty body
+- `test_parse_fn_params()` — `fn set(mut self, U4 pos, U4 val) { ... }` → 3 params with mut
 - `test_parse_fn_template()` — `fn get<N>(self): T {}` → template param N
-- `test_parse_extension_simple()` — `extension Val { fn inc(mut self) {} }` → 1 method
+- `test_parse_extension_simple()` — `extension U4 { fn zero(): Self { 0 } }` → 1 method
 - `test_parse_extension_generic()` — `extension Array<T, E, F> { ... }` → extension with type params
-- `test_parse_trait()` — `trait Add { type Other; fn add(self, other: Self::Other): Self::Result; }` → associated types + method sigs
+- `test_parse_trait()` — `trait Add { type Other; fn add(self, Self::Other other): Self::Result; }` → associated types + method sigs
 - `test_parse_impl()` — `impl Add for MyType { type Other = MyType; fn add(...) { ... } }` → concrete types + body
 - `test_parse_expr_number()` — `42` → Expr::Number(42)
 - `test_parse_expr_variable()` — `count` → Expr::Variable("count")
@@ -937,11 +961,16 @@ Tests in `crates/new_parser/src/tests/parser_tests.rs` (unit tests for individua
 - `test_parse_expr_template_call()` — `self.get<0>()` → method call with template arg
 - `test_parse_expr_if_else()` — `if cond { a } else { b }` → Expr::If
 - `test_parse_expr_if_else_chain()` — `if a { } else if b { } else { }` → nested If
-- `test_parse_expr_if_as_expr()` — `let x = if cond { 1 } else { 2 };` → if used as expression
+- `test_parse_expr_if_as_expr()` — `U4 x = if cond { 1 } else { 2 };` → if used as expression
 - `test_parse_expr_loop()` — `loop { break; }` → Expr::Loop
 - `test_parse_expr_return()` — `return false;` → Expr::Return
-- `test_parse_expr_let()` — `let x: Val = 5;` → Expr::Declaration
+- `test_parse_expr_let()` — `U4 x = 5;` → Expr::Declaration (mutable = false)
+- `test_parse_expr_let_mut()` — `mut U4 x = 5;` → Expr::Declaration (mutable = true)
 - `test_parse_expr_assign()` — `x = 5;` → Expr::Assign
+- `test_parse_expr_compound_assign()` — `x -= 10;` → Expr::CompoundAssign(SubAssign, ...)
+- `test_parse_expr_plus_assign()` — `x += 1;` → Expr::CompoundAssign(AddAssign, ...)
+- `test_parse_expr_comparison()` — `a == b` → Expr::BinaryOp(EqEq, ...), `a > 9` → BinaryOp(Gt, ...)
+- `test_parse_expr_arithmetic()` — `a + b` → Expr::BinaryOp(Add, ...), `a - b` → BinaryOp(Sub, ...)
 - `test_parse_expr_bool_ops()` — `a && b || c` → Expr::BinaryOp chain
 - `test_parse_expr_struct_literal()` — `Self { lower: a, higher: b }` → Expr::StructLiteral
 - `test_parse_expr_enum_variant()` — `Self::None` → Expr::EnumVariant
@@ -963,7 +992,7 @@ enum Token {
     // Literals
     Number(i64),
     Ident(String),          // lowercase identifiers: variable names, field names
-    TypeName(String),       // uppercase identifiers: type names (Val, Bool, Self)
+    TypeName(String),       // uppercase identifiers: type names (U4, Bool, Self)
     String(String),         // "hello"
     Char(char),             // '\n'
 
@@ -975,7 +1004,6 @@ enum Token {
     Trait,
     Fn,
     Mut,
-    Let,
     If,
     Else,
     Loop,
@@ -985,6 +1013,7 @@ enum Token {
     Match,
     True,
     False,
+    Const,                  // const
     For,                    // reserved
     As,
     SelfValue,              // `self` (the value)
@@ -994,12 +1023,19 @@ enum Token {
     Comma,                  // ,
     Colon,                  // :
     Semicolon,              // ;
-    Eq,                     // =
+    Assign,                 // =
+    EqEq,                   // ==
+    NotEq,                  // !=
     PathSep,                // ::
     FatArrow,               // =>
     Underscore,             // _
     And,                    // &&
     Or,                     // ||
+    Plus,                   // +
+    Minus,                  // -
+    PlusAssign,             // +=
+    MinusAssign,            // -=
+    Bang,                   // !
     LParen, RParen,         // ( )
     LBrace, RBrace,         // { }
     LAngle, RAngle,         // < >
@@ -1015,16 +1051,21 @@ Note: `Self` is parsed as `TypeName("Self")`, not a separate keyword. This keeps
 
 Lexing rules (in priority order):
 1. Whitespace and `//` line comments → skip
-2. `::` → PathSep (must come before single `:`)
-3. `=>` → FatArrow (must come before single `=`)
-4. `&&` → And
-5. `||` → Or
-6. Single-char symbols: `.` `,` `:` `;` `=` `(` `)` `{` `}` `<` `>` `[` `]` `_`
-7. String literals: `"..."` with `\n`, `\t`, `\\`, `\"` escapes
-8. Char literals: `'...'` with same escapes
-9. Integer literals: `[0-9]+` → Number
-10. Identifiers/keywords: `[a-zA-Z_][a-zA-Z0-9_]*`
-    - Keyword check: `struct`, `enum`, `extension`, `impl`, `trait`, `fn`, `mut`, `let`, `if`, `else`, `loop`, `break`, `continue`, `return`, `match`, `true`, `false`, `for`, `as`, `self`
+2. Multi-char operators (must come before single-char):
+   - `::` → PathSep
+   - `=>` → FatArrow
+   - `==` → EqEq
+   - `!=` → NotEq
+   - `+=` → PlusAssign
+   - `-=` → MinusAssign
+   - `&&` → And
+   - `||` → Or
+3. Single-char symbols: `.` `,` `:` `;` `=` `+` `-` `!` `(` `)` `{` `}` `<` `>` `[` `]` `_`
+4. String literals: `"..."` with `\n`, `\t`, `\\`, `\"` escapes
+5. Char literals: `'...'` with same escapes
+6. Integer literals: `[0-9]+` → Number
+7. Identifiers/keywords: `[a-zA-Z_][a-zA-Z0-9_]*`
+    - Keyword check: `struct`, `enum`, `extension`, `impl`, `trait`, `fn`, `mut`, `if`, `else`, `loop`, `break`, `continue`, `return`, `match`, `true`, `false`, `for`, `as`, `self`, `const`
     - If starts with uppercase and not a keyword → TypeName
     - Otherwise → Ident
 
@@ -1046,6 +1087,13 @@ enum Item {
     Extension(ExtensionDef),
     Trait(TraitDef),
     Impl(ImplDef),
+    Const(ConstDef),
+}
+
+struct ConstDef {
+    ty: Spanned<Type>,
+    name: Spanned<String>,
+    value: Spanned<Expr>,
 }
 
 struct StructDef {
@@ -1072,7 +1120,7 @@ struct EnumVariant {
 }
 
 struct ExtensionDef {
-    target: Spanned<Type>,             // e.g. Val or Array<T, E, F>
+    target: Spanned<Type>,             // e.g. U4 or Array<T, E, F>
     methods: Vec<Spanned<Function>>,
 }
 
@@ -1109,14 +1157,14 @@ struct Param {
 }
 
 struct Type {
-    name: String,                       // "Val", "Array", "Self", "Self::Output"
+    name: String,                       // "U4", "Array", "Self", "Self::Output"
     templates: Vec<Spanned<TypeOrValue>>,
 }
 
 // Template arguments can be types or integer constants
 enum TypeOrValue {
     Type(Type),
-    Value(i64),                         // e.g. 9 in Array<Val, 9, Val>
+    Value(i64),                         // e.g. 9 in Array<U4, 9, U4>
 }
 
 // Expression block
@@ -1157,14 +1205,17 @@ enum Expr {
     Match(Box<Spanned<Expr>>, Vec<MatchArm>),
 
     // Binding
-    Declaration(Spanned<String>, Spanned<Type>, Box<Spanned<Expr>>),   // let name: Type = expr
+    Declaration(bool, Spanned<String>, Spanned<Type>, Box<Spanned<Expr>>), // [mut] Type name = expr
+                                                                       // bool = mutable
     Assign(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                    // lvalue = expr
+    CompoundAssign(CompoundOp, Box<Spanned<Expr>>, Box<Spanned<Expr>>), // lvalue += expr, lvalue -= expr
 
     // Cast
     Cast(Box<Spanned<Expr>>, Spanned<Type>),                           // expr as Type
 }
 
-enum BinOp { And, Or }
+enum BinOp { And, Or, EqEq, NotEq, Gt, Lt, GtEq, LtEq, Add, Sub }
+enum CompoundOp { AddAssign, SubAssign }
 
 struct MatchArm {
     pattern: Spanned<Pattern>,
@@ -1182,13 +1233,13 @@ enum Pattern {
 **What:** Implement parsers for types, struct definitions, and enum definitions.
 
 Parsers to implement:
-- `type_parser()` — parses `Val`, `Array<T, 9, Val>`, `Self`, `Self::Output`
+- `type_parser()` — parses `U4`, `Array<T, 9, U4>`, `Self`, `Self::Output`
   - TypeName, optionally followed by `<` type_or_value_list `>`
   - `Self::Ident` for associated type references
-- `struct_parser()` — parses `struct Name<T> { field: Type, ... }`
+- `struct_parser()` — parses `struct Name<T> { Type field, ... }`
   - `struct` keyword, TypeName, optional `<` template list `>`, `{` fields `}`
-  - Fields: `name: Type` separated by `,` (trailing comma optional)
-  - Empty struct: `struct Val {}`
+  - Fields: `Type name` separated by `,` (trailing comma optional)
+  - Empty struct: `struct U4 {}`
 - `enum_parser()` — parses `enum Name<T> { Variant, Variant(Type) = N, ... }`
   - Variants separated by `,` (trailing comma optional)
   - Each variant: name, optional `(Type)`, optional `= Number`
@@ -1210,10 +1261,15 @@ Parsers to implement:
   - `.field` → Field access
   - `.method<T>(args)` → MethodCall
   - `as Type` → Cast
-- `binop_parser()` — `&&` and `||` with left-to-right associativity (no precedence difference for now)
+- `binop_parser()` — binary operators with precedence (highest to lowest):
+  1. `+` `-` (arithmetic)
+  2. `==` `!=` `>` `<` `>=` `<=` (comparison)
+  3. `&&` (logical and)
+  4. `||` (logical or)
+  - All left-to-right associative
 - `block_parser()` — `{ stmt; stmt; expr }` where last expr without `;` is the block's value
 
-**Test:** `test_parse_expr_number`, `test_parse_expr_variable`, `test_parse_expr_field`, `test_parse_expr_method_call`, `test_parse_expr_static_call`, `test_parse_expr_template_call`, `test_parse_expr_bool_ops`, `test_parse_expr_struct_literal`, `test_parse_expr_enum_variant*`, `test_parse_expr_cast`, `test_parse_expr_string_method`, `test_parse_expr_char_method` pass.
+**Test:** `test_parse_expr_number`, `test_parse_expr_variable`, `test_parse_expr_field`, `test_parse_expr_method_call`, `test_parse_expr_static_call`, `test_parse_expr_template_call`, `test_parse_expr_bool_ops`, `test_parse_expr_comparison`, `test_parse_expr_arithmetic`, `test_parse_expr_struct_literal`, `test_parse_expr_enum_variant*`, `test_parse_expr_cast`, `test_parse_expr_string_method`, `test_parse_expr_char_method` pass.
 
 #### Step 1.11 — Parser: expressions (control flow)
 **File:** `crates/new_parser/src/parser.rs`
@@ -1222,7 +1278,7 @@ Parsers to implement:
 Parsers to implement:
 - `if_parser()` — `if expr { block } else if expr { block } else { block }`
   - `else` branch is optional; `else if` chains
-  - If-expression as value: `let x = if a { 1 } else { 2 };`
+  - If-expression as value: `U4 x = if a { 1 } else { 2 };`
   - Chained method call on if-expression: `if a { '-' } else { 'X' }.print()`
 - `loop_parser()` — `loop { block }`
 - `match_parser()` — `match expr { Pattern => expr, ... }`
@@ -1230,19 +1286,20 @@ Parsers to implement:
   - Arms separated by `,` (trailing comma optional)
 - `return_parser()` — `return expr;` or `return;`
 - `break` and `continue` as expression keywords
-- `let_parser()` — `let name: Type = expr;`
+- `let_parser()` — `Type name = expr;` or `mut Type name = expr;`
 - Assignment: `lvalue = expr;` where lvalue is Variable or Field chain
+- Compound assignment: `lvalue += expr;`, `lvalue -= expr;` → CompoundAssign node
 
-**Test:** `test_parse_expr_if_else`, `test_parse_expr_if_else_chain`, `test_parse_expr_if_as_expr`, `test_parse_expr_loop`, `test_parse_expr_return`, `test_parse_expr_let`, `test_parse_expr_assign`, `test_parse_expr_match`, `test_parse_expr_chained_method_on_if` pass.
+**Test:** `test_parse_expr_if_else`, `test_parse_expr_if_else_chain`, `test_parse_expr_if_as_expr`, `test_parse_expr_loop`, `test_parse_expr_return`, `test_parse_expr_let`, `test_parse_expr_let_mut`, `test_parse_expr_assign`, `test_parse_expr_compound_assign`, `test_parse_expr_match`, `test_parse_expr_chained_method_on_if` pass.
 
 #### Step 1.12 — Parser: functions, extensions, traits, impls
 **File:** `crates/new_parser/src/parser.rs`
 **What:** Implement parsers for function declarations and top-level item blocks.
 
 Parsers to implement:
-- `param_parser()` — `mut? self` or `mut? name: Type`
+- `param_parser()` — `mut? self` or `mut? Type name`
   - `self` has no explicit type annotation (type is `Self`)
-  - `self: Self<Byte, E, F>` for specialized self types (as seen in Array.print)
+  - `Self<U8, E, F> self` for specialized self types (as seen in Array.print)
 - `function_sig_parser()` — `fn name<T>(params): ReturnType`
   - Template params optional, return type optional
 - `function_parser()` — `fn_sig { block }`
@@ -1251,7 +1308,8 @@ Parsers to implement:
   - Methods are signatures only (no body): `fn name(params): RetType;`
   - Associated types: `type Name;`
 - `impl_parser()` — `impl Trait for Type { type Name = Type; fn ... }`
-- `program_parser()` — `Vec<Item>` = sequence of struct/enum/extension/trait/impl at top level
+- `const_parser()` — `const Type name = expr;`
+- `program_parser()` — `Vec<Item>` = sequence of struct/enum/extension/trait/impl/const at top level
 
 **Test:** `test_parse_fn_*`, `test_parse_extension_*`, `test_parse_trait`, `test_parse_impl` pass.
 
@@ -1293,7 +1351,7 @@ Parsers to implement:
 - Walk `Item::Struct` items, compute field offsets and total size
 - Handle template structs: store unresolved, compute size on monomorphization
 - Primitive types: `u4` = 1 cell, `u8` = 2 cells, `Bool` = 1 cell
-- **Test:** `struct Pair { a: u4, b: u8 }` → size 3, offsets a=0, b=1
+- **Test:** `struct Pair { u4 a, u8 b }` → size 3, offsets a=0, b=1
 
 #### Step 2.3 — Enum registration & layout computation
 **Crate:** `crates/typer/`
@@ -1354,7 +1412,7 @@ Parsers to implement:
 - Append return type slots as mutable output slots
 - Record field offset maps for struct params (for field access → slot offset lookup)
 - `FlatSig`: list of `SlotInfo { name, offset, size, mutable }`, input count, output count
-- **Test:** `fn test(self: u8, a: Option<u8>) -> u4` → 8 slots (2+3 input, 1+0+0 → wait, let me just verify the counts match)
+- **Test:** `fn test(self, Option<u8> a): u4` where Self is u8 → 8 slots (2+3 input, 1+0+0 → wait, let me just verify the counts match)
 
 ---
 
@@ -1379,7 +1437,7 @@ Parsers to implement:
 - Field access → `Copy(slot, base_slot + field_offset)` using FlatSig offset maps
 - Variable declaration → allocate new local slot
 - Assignment → `Copy(target_slot, source_slot)` with mutability check
-- **Test:** compile `let x: u4 = 5; x` → Set + Copy sequence
+- **Test:** compile `u4 x = 5; x` → Set + Copy sequence
 
 #### Step 4.3 — HIR generation: control flow
 **Crate:** `crates/hir/`
@@ -1463,7 +1521,7 @@ Parsers to implement:
 - For each function to inline: allocate fresh global slots for all its local slots
 - Replace `Call` with: Copy args to callee param slots → inlined body → Copy callee return slots to caller ret slots
 - After full inlining: no `Call` ops remain
-- **Test:** inline `fn inc(mut self: u4) { self.inc() }` → produces flat MIR with global slots
+- **Test:** inline `fn inc(mut self) { self.inc() }` on u4 → produces flat MIR with global slots
 
 #### Step 6.4 — HirOp → Mir conversion
 **Crate:** `crates/hir/`

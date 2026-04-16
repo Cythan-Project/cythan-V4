@@ -1,0 +1,21 @@
+enum Option<T> {
+    None,
+    Some(T),
+}
+
+extension Option<T> {
+    fn none(): Self {
+        Self::None
+    }
+
+    fn some(T t): Self {
+        Self::Some(t)
+    }
+
+    fn is_none(self): Bool {
+        match self {
+            Self::None => true,
+            Self::Some(_) => false,
+        }
+    }
+}

@@ -1,0 +1,135 @@
+enum Cell {
+    Empty,
+    O,
+    X,
+}
+
+extension Cell {
+    fn print(self) {
+        match self {
+            Self::Empty => '-'.print(),
+            Self::O => 'O'.print(),
+            Self::X => 'X'.print(),
+        }
+    }
+
+    fn isEmpty(self): Bool {
+        match self {
+            Self::Empty => true,
+            _ => false,
+        }
+    }
+}
+
+trait Eq {
+    fn eq(self, Self other): Bool;
+}
+
+impl Eq for Cell {
+    fn eq(self, Cell other): Bool {
+        self as U4 == other as U4
+    }
+}
+
+struct Morpion {
+    Array<Cell, 9, U4> grid,
+}
+
+extension Morpion {
+    fn new(): Self {
+        Self { grid: Array::new() }
+    }
+
+    fn set(mut self, U4 pos, Cell val) {
+        self.grid.setDyn(pos, val);
+    }
+
+    fn getDyn(self, U4 pos): Cell {
+        self.grid.getDyn(pos)
+    }
+
+    fn get<TE>(self): Cell {
+        self.grid.get<TE>()
+    }
+
+    fn display(self) {
+        mut U4 count = 0;
+        loop {
+            if count == 9 {
+                '\n'.print();
+                break;
+            }
+            if count == 3 || count == 6 {
+                '\n'.print();
+            }
+            self.getDyn(count).print();
+            count += 1;
+        }
+    }
+
+    fn play(mut self) {
+        mut Cell currentPlayer = Cell::O;
+        mut U4 count = 9;
+        self.display();
+        loop {
+            mut U4 pos = U4::input();
+            pos -= 1;
+            if pos > 8 {
+                continue;
+            }
+            if self.getDyn(pos).isEmpty() {
+                self.set(pos, currentPlayer);
+                count -= 1;
+                self.display();
+                if self.winner(currentPlayer) {
+                    currentPlayer.print();
+                    " won!".println();
+                    break;
+                }
+                if count == 0 {
+                    "Equality!".println();
+                    break;
+                }
+                currentPlayer = match currentPlayer {
+                    Cell::O => Cell::X,
+                    _ => Cell::O,
+                };
+            } else {
+                "Invalid input!".println();
+            }
+        }
+    }
+
+    fn winner(self, Cell tocheck): Bool {
+        if self.get<0>() == tocheck {
+            if self.get<1>() == tocheck && self.get<2>() == tocheck {
+                return true;
+            }
+            if self.get<3>() == tocheck && self.get<6>() == tocheck {
+                return true;
+            }
+            if self.get<4>() == tocheck && self.get<8>() == tocheck {
+                return true;
+            }
+        }
+        if self.get<1>() == tocheck && self.get<4>() == tocheck && self.get<7>() == tocheck {
+            return true;
+        }
+        if self.get<2>() == tocheck && self.get<4>() == tocheck && self.get<6>() == tocheck {
+            return true;
+        }
+        if self.get<3>() == tocheck && self.get<4>() == tocheck && self.get<5>() == tocheck {
+            return true;
+        }
+        if self.get<6>() == tocheck && self.get<7>() == tocheck && self.get<8>() == tocheck {
+            return true;
+        }
+        false
+    }
+
+    fn main(): U4 {
+        mut Self morpion = Self::new();
+        morpion.play();
+        0
+    }
+}

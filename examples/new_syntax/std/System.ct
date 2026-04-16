@@ -1,0 +1,13 @@
+struct System {}
+
+extension System {
+    fn setRegister<N>(U4 value) {}
+    fn getRegister<N>(): U4 {}
+    fn debug<T>(T a) {}
+    fn debugType<T>() {}
+
+    fn debugInterupt(U4 a) {
+        Self::setRegister<1>(a);
+        Self::setRegister<0>(3);
+    }
+}

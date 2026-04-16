@@ -1,0 +1,95 @@
+struct DynArray<T, N, F> {
+    Array<T, N, F> array,
+    F length,
+}
+
+extension DynArray<T, N, F> {
+    fn new(): Self {
+        Self { array: Array::new(), length: F::zero() }
+    }
+
+    fn from<Number>(Array<T, Number, F> input): Self {
+        mut Self dyn = Self::new();
+        dyn.addAll<Number>(input);
+        dyn
+    }
+
+    fn add(mut self, T t) {
+        self.array.setDyn(self.length, t);
+        self.length += 1;
+    }
+
+    fn addAll<Ng>(mut self, Array<T, Ng, F> arr) {
+        mut F l = arr.len();
+        mut F c = F::zero();
+        loop {
+            if l == 0 {
+                break;
+            }
+            self.add(arr.getDyn(c));
+            c += 1;
+            l -= 1;
+        }
+    }
+
+    fn pop(mut self): T {
+        self.length -= 1;
+        self.getDyn(self.length)
+    }
+
+    fn len(self): F {
+        self.length
+    }
+
+    fn capacity(self): F {
+        self.array.len()
+    }
+
+    fn getDyn(self, F pos): T {
+        self.array.getDyn(pos)
+    }
+
+    fn setDyn(mut self, F pos, T t) {
+        self.array.setDyn(pos, t);
+    }
+
+    fn get<Number>(self): T {
+        self.array.get<Number>()
+    }
+
+    fn set<Number>(mut self, T t) {
+        self.array.set<Number>(t);
+    }
+
+    fn last(self): T {
+        mut F k = self.len();
+        k -= 1;
+        self.getDyn(k)
+    }
+
+    fn println(Self<U8, N, F> self) {
+        mut F index = F::zero();
+        loop {
+            if self.len() == index {
+                break;
+            } else {
+                self.getDyn(index).print();
+                index += 1;
+            }
+        }
+        '\n'.print();
+    }
+
+    fn contains(self, T t): Bool {
+        mut F size = self.len();
+        loop {
+            if size == 0 {
+                return false;
+            }
+            size -= 1;
+            if self.getDyn(size) == t {
+                return true;
+            }
+        }
+    }
+}

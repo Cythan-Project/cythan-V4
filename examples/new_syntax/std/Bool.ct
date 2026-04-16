@@ -1,0 +1,17 @@
+struct Bool {
+    U4 value,
+}
+
+extension Bool {
+    fn not(self): Self {
+        if self { false } else { true }
+    }
+
+    fn print(self) {
+        if self {
+            "true".print();
+        } else {
+            "false".print();
+        }
+    }
+}
