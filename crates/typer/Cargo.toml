@@ -1,0 +1,10 @@
+[package]
+name = "typer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+new-parser = { path = "../new_parser" }
+
+[lints]
+workspace = true
