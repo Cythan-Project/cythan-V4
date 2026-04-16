@@ -9,6 +9,7 @@ mod mutability_tests;
 mod opt_tests;
 pub mod interp_tests;
 mod lower_tests;
+mod natives_tests;
 
 use new_parser::ast;
 

@@ -5,6 +5,7 @@ pub mod inline;
 pub mod interp;
 pub mod ir;
 pub mod monomorph;
+pub mod natives;
 pub mod opt;
 
 #[cfg(test)]
@@ -17,6 +18,7 @@ pub use inline::{hir_to_mir, inline_program};
 pub use interp::{CapturedIo, InterpError, Interpreter, IoContext};
 pub use ir::{ConcreteTemplateArg, ConcreteType, FnRef, HirBlock, HirFunction, HirOp, SlotId};
 pub use monomorph::{monomorphize, MonomorphKey};
+pub use natives::{BuiltinNatives, NativeCall, NativeEmitter, NativeProvider};
 pub use opt::{optimize_block, optimize_function};
 
 /// Alias used by the interpreter and inliner for dispatch keys.

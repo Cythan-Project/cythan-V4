@@ -15,18 +15,31 @@ use new_parser::ast;
 
 use crate::error::HirError;
 use crate::ir::*;
+use crate::natives::NativeProvider;
 
-/// Compile a `SimpleFn` into a `HirFunction`.
+/// Compile a `SimpleFn` into a `HirFunction` without consulting any native
+/// provider. Call-sites that target built-ins (System, Array, ...) are
+/// emitted as plain `Call` ops that the inliner will need to resolve.
 pub fn gen_function(
     fnsig: &typer::FnSig,
     simple: &typer::SimpleFn,
     reg: &typer::TypeRegistry,
     db: &typer::FunctionDB,
 ) -> Result<HirFunction, HirError> {
-    let mut g = Generator::new(reg, db, simple);
+    gen_function_with_natives::<NoNatives>(fnsig, simple, reg, db, None)
+}
 
-    // Compile the body. The block's result_slot is the function's return
-    // (concatenated output slots — or None if no return).
+/// Compile a `SimpleFn`, using `natives` (if supplied) to short-circuit
+/// method/static calls that target built-in types.
+pub fn gen_function_with_natives<P: NativeProvider>(
+    fnsig: &typer::FnSig,
+    simple: &typer::SimpleFn,
+    reg: &typer::TypeRegistry,
+    db: &typer::FunctionDB,
+    natives: Option<&P>,
+) -> Result<HirFunction, HirError> {
+    let mut g = Generator::new(reg, db, simple, natives.map(|n| n as &dyn NativeProvider));
+
     let result_slot = if simple.sig.output_count > 0 {
         Some(g.first_output_slot())
     } else {
@@ -43,10 +56,27 @@ pub fn gen_function(
     })
 }
 
+/// A zero-sized placeholder used purely to satisfy the generic bound of
+/// `gen_function_with_natives` when no provider is supplied.
+pub struct NoNatives;
+impl NativeProvider for NoNatives {
+    fn has_method(&self, _t: &str, _m: &str) -> bool {
+        false
+    }
+    fn generate(
+        &self,
+        _call: crate::natives::NativeCall<'_>,
+        _emitter: &mut crate::natives::NativeEmitter<'_>,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+}
+
 /// Per-function generator state.
 struct Generator<'a> {
     reg: &'a typer::TypeRegistry,
     db: &'a typer::FunctionDB,
+    natives: Option<&'a dyn NativeProvider>,
     simple: &'a typer::SimpleFn,
     /// Next available slot index for fresh allocation.
     next_slot: u32,
@@ -79,10 +109,12 @@ impl<'a> Generator<'a> {
         reg: &'a typer::TypeRegistry,
         db: &'a typer::FunctionDB,
         simple: &'a typer::SimpleFn,
+        natives: Option<&'a dyn NativeProvider>,
     ) -> Self {
         let mut g = Self {
             reg,
             db,
+            natives,
             simple,
             next_slot: 0,
             scopes: vec![HashMap::new()],
@@ -970,11 +1002,24 @@ impl<'a> Generator<'a> {
             None => Vec::new(),
         };
 
+        let tpl = lower_templates(templates);
+        if self.try_emit_native(
+            &resolved_recv,
+            &name.0,
+            &tpl,
+            &flat_args,
+            &ret_slots,
+            recv_size,
+            &[],
+            block,
+        )? {
+            return Ok(());
+        }
         block.push(HirOp::Call {
             target: FnRef {
                 type_name: resolved_recv,
                 method_name: name.0.clone(),
-                template_args: lower_templates(templates),
+                template_args: tpl,
             },
             args: flat_args,
             ret: ret_slots,
@@ -1019,16 +1064,79 @@ impl<'a> Generator<'a> {
             None => Vec::new(),
         };
 
+        let tpl = lower_templates(templates);
+        let recv_ty_args: Vec<ConcreteTemplateArg> = ty
+            .0
+            .templates
+            .iter()
+            .map(|(tv, _)| lower_tv(tv))
+            .collect();
+        if self.try_emit_native(
+            &resolved,
+            &name.0,
+            &tpl,
+            &flat_args,
+            &ret_slots,
+            /*receiver_cell_count*/ 0,
+            &recv_ty_args,
+            block,
+        )? {
+            return Ok(());
+        }
         block.push(HirOp::Call {
             target: FnRef {
                 type_name: resolved,
                 method_name: name.0.clone(),
-                template_args: lower_templates(templates),
+                template_args: tpl,
             },
             args: flat_args,
             ret: ret_slots,
         });
         Ok(())
+    }
+
+    fn try_emit_native(
+        &mut self,
+        type_name: &str,
+        method: &str,
+        template_args: &[ConcreteTemplateArg],
+        arg_slots: &[SlotId],
+        ret_slots: &[SlotId],
+        receiver_cell_count: u32,
+        receiver_type_args: &[ConcreteTemplateArg],
+        block: &mut HirBlock,
+    ) -> Result<bool, HirError> {
+        let Some(natives) = self.natives else {
+            return Ok(false);
+        };
+        if !natives.has_method(type_name, method) {
+            return Ok(false);
+        }
+        let mut ops = Vec::new();
+        {
+            let mut emitter = crate::natives::NativeEmitter {
+                ops: &mut ops,
+                registry: self.reg,
+                next_slot: &mut self.next_slot,
+            };
+            let call = crate::natives::NativeCall {
+                type_name,
+                method,
+                template_args,
+                arg_slots,
+                ret_slots,
+                receiver_type_args,
+                receiver_cell_count,
+                registry: self.reg,
+            };
+            natives
+                .generate(call, &mut emitter)
+                .map_err(|e| HirError::new(e))?;
+        }
+        for o in ops {
+            block.push(o);
+        }
+        Ok(true)
     }
 
     /// Type-size helper that falls back to 1 cell for unknown types (which
@@ -1044,7 +1152,14 @@ impl<'a> Generator<'a> {
             .get(&typer::FnSig::new(type_name, method))?;
         match f {
             typer::Fn::Simple(s) => Some(s.sig.output_count),
-            _ => None,
+            typer::Fn::Templated(t) => {
+                // For templated functions (e.g. `fn getRegister<N>(): U4`)
+                // we may still know the return *type*'s size if it doesn't
+                // reference the template params. Try to resolve it.
+                let ret_ty = t.body.sig.return_type.as_ref()?;
+                let resolved = self.resolve_ty_name(&ret_ty.0.name.0);
+                self.type_size(&resolved).ok()
+            }
         }
     }
 

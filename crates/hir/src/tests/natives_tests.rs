@@ -1,0 +1,482 @@
+//! Phase 7: native provider tests.
+//!
+//! Most tests drive the HIR generator with `BuiltinNatives` and assert that
+//! the expected low-level ops (WriteRegister/ReadRegister/Inc/Match/...) are
+//! emitted in place of Call ops.
+
+use either::Either;
+
+use crate::gen::gen_function_with_natives;
+use crate::ir::*;
+use crate::natives::{BuiltinNatives, NativeCall, NativeEmitter, NativeProvider};
+
+// Helper: compile a method with the builtin native provider active.
+fn compile_with_natives(
+    src: &str,
+    type_name: &str,
+    method: &str,
+) -> HirFunction {
+    let items = new_parser::parse(src).expect("parse");
+    let reg = typer::TypeRegistry::from_items(&items).expect("typer");
+    let db = typer::FunctionDB::from_registry(&reg).expect("fn_db");
+    let key = typer::FnSig::new(type_name, method);
+    let typer::Fn::Simple(s) = db.get(&key).expect("fn") else {
+        panic!("not simple");
+    };
+    gen_function_with_natives(&key, s, &reg, &db, Some(&BuiltinNatives::new())).expect("hir")
+}
+
+fn ops_list(hir: &HirFunction) -> &[HirOp] {
+    &hir.body.ops
+}
+
+// ---------- Step 7.1: trait + plumbing -------------------------------------
+
+#[test]
+fn builtin_has_method_catalog() {
+    let p = BuiltinNatives::new();
+    assert!(p.has_method("U4", "inc"));
+    assert!(p.has_method("U4", "dec"));
+    assert!(p.has_method("System", "setRegister"));
+    assert!(p.has_method("System", "getRegister"));
+    assert!(p.has_method("System", "debug"));
+    assert!(p.has_method("Array", "setDyn"));
+    assert!(p.has_method("Array", "getDyn"));
+    assert!(p.has_method("Array", "len"));
+    assert!(!p.has_method("U4", "not_a_native"));
+    assert!(!p.has_method("Foo", "anything"));
+}
+
+#[test]
+fn provider_emits_directly_via_api() {
+    // Direct invocation of BuiltinNatives without going through the HIR
+    // generator. Useful sanity-check that the NativeCall API is ergonomic.
+    let reg = typer::TypeRegistry::new();
+    let p = BuiltinNatives::new();
+
+    let mut ops: Vec<HirOp> = Vec::new();
+    let mut next_slot: u32 = 10;
+    {
+        let mut em = NativeEmitter {
+            ops: &mut ops,
+            registry: &reg,
+            next_slot: &mut next_slot,
+        };
+        let arg_slots = [SlotId(3)];
+        let ret_slots: [SlotId; 0] = [];
+        let call = NativeCall {
+            type_name: "U4",
+            method: "inc",
+            template_args: &[],
+            arg_slots: &arg_slots,
+            ret_slots: &ret_slots,
+            receiver_type_args: &[],
+            receiver_cell_count: 1,
+            registry: &reg,
+        };
+        p.generate(call, &mut em).expect("native inc");
+    }
+    assert_eq!(ops, vec![HirOp::Inc(SlotId(3))]);
+}
+
+// ---------- Step 7.2: U4::inc / U4::dec ------------------------------------
+
+#[test]
+fn u4_inc_native_emits_inc_op() {
+    // Need a source where `self.inc()` is syntactically valid — we have to
+    // declare the stub in the stdlib so the parser + typer accept it.
+    let src = r#"
+        extension U4 {
+            fn inc(mut self) {}
+            fn caller(mut U4 x): U4 { x.inc(); x }
+        }
+    "#;
+    let hir = compile_with_natives(src, "U4", "caller");
+    let has_inc = hir.body.ops.iter().any(|op| matches!(op, HirOp::Inc(_)));
+    let has_call = hir.body.ops.iter().any(|op| matches!(op, HirOp::Call { .. }));
+    assert!(has_inc, "expected Inc op, got: {:#?}", hir.body.ops);
+    assert!(!has_call, "Call op should have been replaced: {:#?}", hir.body.ops);
+}
+
+#[test]
+fn u4_dec_native_emits_dec_op() {
+    let src = r#"
+        extension U4 {
+            fn dec(mut self) {}
+            fn caller(mut U4 x): U4 { x.dec(); x }
+        }
+    "#;
+    let hir = compile_with_natives(src, "U4", "caller");
+    assert!(hir.body.ops.iter().any(|op| matches!(op, HirOp::Dec(_))));
+}
+
+// ---------- Step 7.3: System::setRegister / getRegister -------------------
+
+#[test]
+fn system_set_register_emits_write_register() {
+    let src = r#"
+        struct System {}
+        extension System {
+            fn setRegister<N>(U4 value) {}
+            fn poke(U4 v) { System::setRegister<0>(v); }
+        }
+    "#;
+    let hir = compile_with_natives(src, "System", "poke");
+    let found = hir.body.ops.iter().any(|op| matches!(
+        op,
+        HirOp::WriteRegister(0, Either::Right(_))
+    ));
+    assert!(found, "expected WriteRegister(0, Either::Right(..)): {:#?}", hir.body.ops);
+    assert!(!hir.body.ops.iter().any(|op| matches!(op, HirOp::Call { .. })));
+}
+
+#[test]
+fn system_set_register_with_different_index() {
+    let src = r#"
+        struct System {}
+        extension System {
+            fn setRegister<N>(U4 value) {}
+            fn poke3(U4 v) { System::setRegister<3>(v); }
+        }
+    "#;
+    let hir = compile_with_natives(src, "System", "poke3");
+    assert!(hir.body.ops.iter().any(|op| matches!(
+        op,
+        HirOp::WriteRegister(3, Either::Right(_))
+    )));
+}
+
+#[test]
+fn system_get_register_emits_read_register() {
+    let src = r#"
+        struct System {}
+        extension System {
+            fn getRegister<N>(): U4 { 0 }
+            fn fetch(): U4 { System::getRegister<2>() }
+        }
+    "#;
+    let hir = compile_with_natives(src, "System", "fetch");
+    let found = hir.body.ops.iter().any(|op| matches!(op, HirOp::ReadRegister(_, 2)));
+    assert!(found, "expected ReadRegister(.., 2): {:#?}", hir.body.ops);
+}
+
+#[test]
+fn system_set_register_rejects_bad_register() {
+    // Passing an out-of-range register index like 7 should produce an HIR error.
+    let src = r#"
+        struct System {}
+        extension System {
+            fn setRegister<N>(U4 value) {}
+            fn bad(U4 v) { System::setRegister<7>(v); }
+        }
+    "#;
+    let items = new_parser::parse(src).unwrap();
+    let reg = typer::TypeRegistry::from_items(&items).unwrap();
+    let db = typer::FunctionDB::from_registry(&reg).unwrap();
+    let key = typer::FnSig::new("System", "bad");
+    let typer::Fn::Simple(s) = db.get(&key).unwrap() else {
+        panic!();
+    };
+    let err = gen_function_with_natives(&key, s, &reg, &db, Some(&BuiltinNatives::new()));
+    assert!(err.is_err(), "expected error for out-of-range register");
+    assert!(err.unwrap_err().to_string().contains("out of range"));
+}
+
+// ---------- Step 7.3: debug/debugType no-ops -------------------------------
+
+#[test]
+fn system_debug_emits_no_ops() {
+    let src = r#"
+        struct System {}
+        extension System {
+            fn debug<T>(T a) {}
+            fn caller() { System::debug<U4>(5); }
+        }
+    "#;
+    let hir = compile_with_natives(src, "System", "caller");
+    // After native resolution, no Call op remains. The arg eval may still
+    // allocate slots but the only "action" is the Set for the literal 5.
+    assert!(!hir.body.ops.iter().any(|op| matches!(op, HirOp::Call { .. })));
+}
+
+// ---------- Step 7.4: Array natives ----------------------------------------
+
+#[test]
+fn array_native_direct_set_dyn_emits_match() {
+    // Drive BuiltinNatives directly for Array::setDyn on `Array<U4, 3, U4>`.
+    // Receiver: 3 cells starting at slot 0. Index slot: 3. Value slot: 4.
+    let reg = typer::TypeRegistry::new(); // U4 is pre-registered.
+    let p = BuiltinNatives::new();
+    let mut ops: Vec<HirOp> = Vec::new();
+    let mut next_slot: u32 = 5;
+
+    let receiver_type_args = vec![
+        ConcreteTemplateArg::Type(ConcreteType {
+            name: "U4".into(),
+            args: vec![],
+        }),
+        ConcreteTemplateArg::Value(3),
+        ConcreteTemplateArg::Type(ConcreteType {
+            name: "U4".into(),
+            args: vec![],
+        }),
+    ];
+    // arg_slots: receiver (3) + index (1) + value (1) = 5 cells.
+    let arg_slots = [SlotId(0), SlotId(1), SlotId(2), SlotId(3), SlotId(4)];
+    let ret_slots: [SlotId; 0] = [];
+    {
+        let mut em = NativeEmitter {
+            ops: &mut ops,
+            registry: &reg,
+            next_slot: &mut next_slot,
+        };
+        let call = NativeCall {
+            type_name: "Array",
+            method: "setDyn",
+            template_args: &[],
+            arg_slots: &arg_slots,
+            ret_slots: &ret_slots,
+            receiver_type_args: &receiver_type_args,
+            receiver_cell_count: 3,
+            registry: &reg,
+        };
+        p.generate(call, &mut em).expect("native setDyn");
+    }
+    // Must emit exactly one Match op with 3 arms (one per position).
+    assert_eq!(ops.len(), 1);
+    match &ops[0] {
+        HirOp::Match(discr, arms) => {
+            assert_eq!(*discr, SlotId(3), "index slot");
+            assert_eq!(arms.len(), 3);
+            assert_eq!(arms[0].1, vec![0]);
+            assert_eq!(arms[1].1, vec![1]);
+            assert_eq!(arms[2].1, vec![2]);
+        }
+        other => panic!("expected Match, got: {:?}", other),
+    }
+}
+
+#[test]
+fn array_native_direct_get_dyn_emits_match() {
+    let reg = typer::TypeRegistry::new();
+    let p = BuiltinNatives::new();
+    let mut ops: Vec<HirOp> = Vec::new();
+    let mut next_slot: u32 = 6;
+
+    let receiver_type_args = vec![
+        ConcreteTemplateArg::Type(ConcreteType {
+            name: "U4".into(),
+            args: vec![],
+        }),
+        ConcreteTemplateArg::Value(4),
+        ConcreteTemplateArg::Type(ConcreteType {
+            name: "U4".into(),
+            args: vec![],
+        }),
+    ];
+    // 4 receiver slots + 1 index slot; ret in slot 5.
+    let arg_slots = [SlotId(0), SlotId(1), SlotId(2), SlotId(3), SlotId(4)];
+    let ret_slots = [SlotId(5)];
+    {
+        let mut em = NativeEmitter {
+            ops: &mut ops,
+            registry: &reg,
+            next_slot: &mut next_slot,
+        };
+        let call = NativeCall {
+            type_name: "Array",
+            method: "getDyn",
+            template_args: &[],
+            arg_slots: &arg_slots,
+            ret_slots: &ret_slots,
+            receiver_type_args: &receiver_type_args,
+            receiver_cell_count: 4,
+            registry: &reg,
+        };
+        p.generate(call, &mut em).expect("native getDyn");
+    }
+    assert_eq!(ops.len(), 1);
+    match &ops[0] {
+        HirOp::Match(discr, arms) => {
+            assert_eq!(*discr, SlotId(4));
+            assert_eq!(arms.len(), 4);
+            // Each arm copies `[ret] <- self[i]`.
+            for (i, (arm, discs)) in arms.iter().enumerate() {
+                assert_eq!(discs, &vec![i as u8]);
+                assert_eq!(arm.ops.len(), 1);
+                assert_eq!(
+                    arm.ops[0],
+                    HirOp::Copy(SlotId(5), SlotId(i as u32)),
+                );
+            }
+        }
+        other => panic!("expected Match, got: {:?}", other),
+    }
+}
+
+#[test]
+fn array_native_static_get_emits_plain_copy() {
+    let reg = typer::TypeRegistry::new();
+    let p = BuiltinNatives::new();
+    let mut ops: Vec<HirOp> = Vec::new();
+    let mut next_slot: u32 = 5;
+
+    let receiver_type_args = vec![
+        ConcreteTemplateArg::Type(ConcreteType {
+            name: "U4".into(),
+            args: vec![],
+        }),
+        ConcreteTemplateArg::Value(4),
+        ConcreteTemplateArg::Type(ConcreteType {
+            name: "U4".into(),
+            args: vec![],
+        }),
+    ];
+    // 4 receiver slots; ret in slot 4.
+    let arg_slots = [SlotId(0), SlotId(1), SlotId(2), SlotId(3)];
+    let ret_slots = [SlotId(4)];
+    {
+        let mut em = NativeEmitter {
+            ops: &mut ops,
+            registry: &reg,
+            next_slot: &mut next_slot,
+        };
+        let call = NativeCall {
+            type_name: "Array",
+            method: "get",
+            template_args: &[ConcreteTemplateArg::Value(2)],
+            arg_slots: &arg_slots,
+            ret_slots: &ret_slots,
+            receiver_type_args: &receiver_type_args,
+            receiver_cell_count: 4,
+            registry: &reg,
+        };
+        p.generate(call, &mut em).expect("native get<2>");
+    }
+    // Expect: Copy(s4, s2)
+    assert_eq!(ops, vec![HirOp::Copy(SlotId(4), SlotId(2))]);
+}
+
+#[test]
+fn array_native_static_set_emits_plain_copy() {
+    let reg = typer::TypeRegistry::new();
+    let p = BuiltinNatives::new();
+    let mut ops: Vec<HirOp> = Vec::new();
+    let mut next_slot: u32 = 5;
+
+    let receiver_type_args = vec![
+        ConcreteTemplateArg::Type(ConcreteType {
+            name: "U4".into(),
+            args: vec![],
+        }),
+        ConcreteTemplateArg::Value(3),
+        ConcreteTemplateArg::Type(ConcreteType {
+            name: "U4".into(),
+            args: vec![],
+        }),
+    ];
+    // 3 receiver slots + 1 value slot; ret empty.
+    let arg_slots = [SlotId(0), SlotId(1), SlotId(2), SlotId(3)];
+    let ret_slots: [SlotId; 0] = [];
+    {
+        let mut em = NativeEmitter {
+            ops: &mut ops,
+            registry: &reg,
+            next_slot: &mut next_slot,
+        };
+        let call = NativeCall {
+            type_name: "Array",
+            method: "set",
+            template_args: &[ConcreteTemplateArg::Value(1)],
+            arg_slots: &arg_slots,
+            ret_slots: &ret_slots,
+            receiver_type_args: &receiver_type_args,
+            receiver_cell_count: 3,
+            registry: &reg,
+        };
+        p.generate(call, &mut em).expect("native set<1>");
+    }
+    assert_eq!(ops, vec![HirOp::Copy(SlotId(1), SlotId(3))]);
+}
+
+#[test]
+fn array_native_get_out_of_bounds() {
+    let reg = typer::TypeRegistry::new();
+    let p = BuiltinNatives::new();
+    let mut ops: Vec<HirOp> = Vec::new();
+    let mut next_slot: u32 = 5;
+
+    let receiver_type_args = vec![
+        ConcreteTemplateArg::Type(ConcreteType {
+            name: "U4".into(),
+            args: vec![],
+        }),
+        ConcreteTemplateArg::Value(3),
+        ConcreteTemplateArg::Type(ConcreteType {
+            name: "U4".into(),
+            args: vec![],
+        }),
+    ];
+    let arg_slots = [SlotId(0), SlotId(1), SlotId(2)];
+    let ret_slots = [SlotId(3)];
+    let mut em = NativeEmitter {
+        ops: &mut ops,
+        registry: &reg,
+        next_slot: &mut next_slot,
+    };
+    let call = NativeCall {
+        type_name: "Array",
+        method: "get",
+        template_args: &[ConcreteTemplateArg::Value(5)], // out of bounds
+        arg_slots: &arg_slots,
+        ret_slots: &ret_slots,
+        receiver_type_args: &receiver_type_args,
+        receiver_cell_count: 3,
+        registry: &reg,
+    };
+    let err = p.generate(call, &mut em);
+    assert!(err.is_err());
+    assert!(err.unwrap_err().contains("out of bounds"));
+}
+
+#[test]
+fn array_len_writes_size_to_index_cells() {
+    let reg = typer::TypeRegistry::new();
+    let p = BuiltinNatives::new();
+    let mut ops: Vec<HirOp> = Vec::new();
+    let mut next_slot: u32 = 5;
+
+    // len() for Array<U4, 10, U4> — size = 10, fits in one U4 cell as 10.
+    let receiver_type_args = vec![
+        ConcreteTemplateArg::Type(ConcreteType {
+            name: "U4".into(),
+            args: vec![],
+        }),
+        ConcreteTemplateArg::Value(10),
+        ConcreteTemplateArg::Type(ConcreteType {
+            name: "U4".into(),
+            args: vec![],
+        }),
+    ];
+    let arg_slots = [SlotId(0)]; // receiver
+    let ret_slots = [SlotId(4)];
+    {
+        let mut em = NativeEmitter {
+            ops: &mut ops,
+            registry: &reg,
+            next_slot: &mut next_slot,
+        };
+        let call = NativeCall {
+            type_name: "Array",
+            method: "len",
+            template_args: &[],
+            arg_slots: &arg_slots,
+            ret_slots: &ret_slots,
+            receiver_type_args: &receiver_type_args,
+            receiver_cell_count: 1,
+            registry: &reg,
+        };
+        p.generate(call, &mut em).expect("native len");
+    }
+    assert_eq!(ops, vec![HirOp::Set(SlotId(4), 10)]);
+}
