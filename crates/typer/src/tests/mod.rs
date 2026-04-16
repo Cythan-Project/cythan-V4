@@ -10,6 +10,8 @@
 
 mod enum_tests;
 mod extension_tests;
+mod flat_sig_tests;
+mod function_db_tests;
 mod integration_tests;
 mod layout_tests;
 mod struct_tests;
