@@ -6,6 +6,7 @@ mod control_flow_tests;
 mod call_tests;
 mod construction_tests;
 mod mutability_tests;
+mod opt_tests;
 
 use new_parser::ast;
 
