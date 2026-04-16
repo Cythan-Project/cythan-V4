@@ -668,11 +668,13 @@ impl<'a> Generator<'a> {
         for i in 0..val_size {
             args.push(SlotId(val_slot.0 + i));
         }
+        let trait_name = self.resolve_trait_for(&dst_ty, method);
         block.push(HirOp::Call {
             target: FnRef {
                 type_name: dst_ty,
                 method_name: method.to_string(),
                 template_args: Vec::new(),
+                trait_name,
             },
             args,
             ret: Vec::new(),
@@ -896,11 +898,13 @@ impl<'a> Generator<'a> {
             }
             None => Vec::new(),
         };
+        let trait_name = self.resolve_trait_for(&resolved, method);
         block.push(HirOp::Call {
             target: FnRef {
                 type_name: resolved,
                 method_name: method.to_string(),
                 template_args: Vec::new(),
+                trait_name,
             },
             args,
             ret,
@@ -1015,11 +1019,13 @@ impl<'a> Generator<'a> {
         )? {
             return Ok(());
         }
+        let trait_name = self.resolve_trait_for(&resolved_recv, &name.0);
         block.push(HirOp::Call {
             target: FnRef {
                 type_name: resolved_recv,
                 method_name: name.0.clone(),
                 template_args: tpl,
+                trait_name,
             },
             args: flat_args,
             ret: ret_slots,
@@ -1083,11 +1089,13 @@ impl<'a> Generator<'a> {
         )? {
             return Ok(());
         }
+        let trait_name = self.resolve_trait_for(&resolved, &name.0);
         block.push(HirOp::Call {
             target: FnRef {
                 type_name: resolved,
                 method_name: name.0.clone(),
                 template_args: tpl,
+                trait_name,
             },
             args: flat_args,
             ret: ret_slots,
@@ -1147,19 +1155,55 @@ impl<'a> Generator<'a> {
     }
 
     fn lookup_return_size(&self, type_name: &str, method: &str) -> Option<u32> {
-        let f = self
-            .db
-            .get(&typer::FnSig::new(type_name, method))?;
-        match f {
-            typer::Fn::Simple(s) => Some(s.sig.output_count),
-            typer::Fn::Templated(t) => {
-                // For templated functions (e.g. `fn getRegister<N>(): U4`)
-                // we may still know the return *type*'s size if it doesn't
-                // reference the template params. Try to resolve it.
-                let ret_ty = t.body.sig.return_type.as_ref()?;
-                let resolved = self.resolve_ty_name(&ret_ty.0.name.0);
-                self.type_size(&resolved).ok()
+        // Try both inherent and trait-keyed entries — if the method exists
+        // in either form we can take its return size.
+        let inherent_key = typer::FnSig::new(type_name, method);
+        if let Some(f) = self.db.get(&inherent_key) {
+            return Some(match f {
+                typer::Fn::Simple(s) => s.sig.output_count,
+                typer::Fn::Templated(t) => {
+                    let ret_ty = t.body.sig.return_type.as_ref()?;
+                    let resolved = self.resolve_ty_name(&ret_ty.0.name.0);
+                    self.type_size(&resolved).ok()?
+                }
+            });
+        }
+        // Scan trait-keyed entries for the same (type, method).
+        for (k, f) in &self.db.functions {
+            if k.type_name == type_name
+                && k.method_name == method
+                && k.trait_name.is_some()
+            {
+                return Some(match f {
+                    typer::Fn::Simple(s) => s.sig.output_count,
+                    typer::Fn::Templated(t) => {
+                        let ret_ty = t.body.sig.return_type.as_ref()?;
+                        let resolved = self.resolve_ty_name(&ret_ty.0.name.0);
+                        self.type_size(&resolved).ok()?
+                    }
+                });
             }
+        }
+        None
+    }
+
+    /// Consult the typer's scoped method-resolution to discover whether
+    /// this (type, method) dispatches via a trait. Returns `Some(trait)` if
+    /// it does, `None` for inherent dispatch, ambiguous, or not-found cases
+    /// (in which case the caller emits a Call that the inliner may yet
+    /// fail on — preserving the current behaviour where unresolvable calls
+    /// surface as late errors rather than stopping HIR gen).
+    fn resolve_trait_for(&self, type_name: &str, method: &str) -> Option<String> {
+        use typer::MethodResolution;
+        let res = self.reg.resolve_method(
+            self.simple.file_id,
+            type_name,
+            method,
+            /*trait_hint=*/ None,
+        );
+        match res {
+            MethodResolution::Trait { trait_name } => Some(trait_name),
+            _ => None,
         }
     }
 

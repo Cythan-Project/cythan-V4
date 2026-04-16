@@ -127,6 +127,7 @@ impl StripSpans for Item {
             Item::Trait(t) => t.strip_spans(),
             Item::Impl(i) => i.strip_spans(),
             Item::Const(c) => c.strip_spans(),
+            Item::Use(u) => u.name.strip_spans(),
         }
     }
 }

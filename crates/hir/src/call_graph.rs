@@ -61,7 +61,11 @@ fn collect_callees(block: &HirBlock, out: &mut HashSet<FnSigKey>) {
     for op in &block.ops {
         match op {
             HirOp::Call { target, .. } => {
-                out.insert(FnSigKey::new(&target.type_name, &target.method_name));
+                let key = match &target.trait_name {
+                    Some(t) => FnSigKey::new_trait(&target.type_name, &target.method_name, t),
+                    None => FnSigKey::new(&target.type_name, &target.method_name),
+                };
+                out.insert(key);
             }
             HirOp::If0(_, a, b) => {
                 collect_callees(a, out);

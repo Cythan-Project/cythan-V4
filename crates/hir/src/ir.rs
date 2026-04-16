@@ -98,12 +98,16 @@ pub struct HirFunction {
 }
 
 /// Reference to a function — target of an unresolved `Call`. Template args
-/// resolve at monomorphization time.
+/// resolve at monomorphization time. `trait_name` is `None` when the call
+/// routed to an inherent method, `Some(trait)` when routed through an
+/// `impl Trait for Type` — so two traits with a `eq` method on the same
+/// type produce two distinct `FnRef`s.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FnRef {
     pub type_name: String,
     pub method_name: String,
     pub template_args: Vec<ConcreteTemplateArg>,
+    pub trait_name: Option<String>,
 }
 
 /// A template argument — either a concrete type name (possibly with nested

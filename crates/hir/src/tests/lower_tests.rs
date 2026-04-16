@@ -206,6 +206,7 @@ fn hir_to_mir_rejects_remaining_call() {
                 type_name: "X".into(),
                 method_name: "y".into(),
                 template_args: vec![],
+                trait_name: None,
             },
             args: vec![],
             ret: vec![],

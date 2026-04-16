@@ -10,6 +10,7 @@ mod opt_tests;
 pub mod interp_tests;
 mod lower_tests;
 mod natives_tests;
+mod trait_dispatch_tests;
 
 use new_parser::ast;
 

@@ -33,6 +33,7 @@ fn hir_ops_clone_and_compare() {
             type_name: "U4".into(),
             method_name: "zero".into(),
             template_args: vec![],
+            trait_name: None,
         },
         args: vec![SlotId(0)],
         ret: vec![SlotId(1)],
@@ -45,6 +46,7 @@ fn fnref_with_template_args() {
     let r = FnRef {
         type_name: "Array".into(),
         method_name: "get".into(),
+        trait_name: None,
         template_args: vec![
             ConcreteTemplateArg::Type(ConcreteType {
                 name: "U4".into(),

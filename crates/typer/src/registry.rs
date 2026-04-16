@@ -1,6 +1,6 @@
 //! `TypeRegistry` and the registration/validation passes.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use new_parser::ast::{self, Spanned};
 
@@ -11,7 +11,17 @@ pub struct TypeRegistry {
     pub types: HashMap<String, TypeInfo>,
     pub traits: HashMap<String, TraitInfo>,
     pub impls: Vec<ImplInfo>,
+    /// Per-file import scope: for each `FileId`, the set of trait/type names
+    /// explicitly brought into scope via `use Name;` in that file. Operator
+    /// sugar (`+`, `-`, `==`, ...) bypasses this check — see `OPERATOR_TRAITS`.
+    pub imports: HashMap<FileId, HashSet<String>>,
 }
+
+/// Traits that operator sugar desugars into. Calls routed through these
+/// traits don't require an explicit `use` in the calling file.
+pub const OPERATOR_TRAITS: &[&str] = &[
+    "Add", "Sub", "Eq", "Ord", "PartialEq", "PartialOrd", "AddAssign", "SubAssign",
+];
 
 impl TypeRegistry {
     /// Create an empty registry, pre-populated with the hardcoded primitive
@@ -54,21 +64,28 @@ impl TypeRegistry {
         let mut errors: Vec<TyperError> = Vec::new();
 
         // Pass 1: collect structs/enums/traits (populates `types` and
-        // `traits` with their top-level declarations).
+        // `traits` with their top-level declarations) and per-file imports.
         for (file_ix, (_file, items)) in files.iter().enumerate() {
             let file_id = file_ix as FileId;
+            // Ensure the file has an imports entry even if no `use` statements.
+            r.imports.entry(file_id).or_default();
             for (item, _sp) in *items {
                 let out = match item {
                     ast::Item::Struct(s) => r.register_struct(s),
                     ast::Item::Enum(e) => r.register_enum(e),
                     ast::Item::Trait(t) => r.register_trait(t),
+                    ast::Item::Use(u) => {
+                        r.imports
+                            .entry(file_id)
+                            .or_default()
+                            .insert(u.name.0.clone());
+                        Ok(())
+                    }
                     _ => Ok(()),
                 };
                 if let Err(e) = out {
                     errors.push(e);
                 }
-                // `extension`/`impl`/`const` are handled in later passes.
-                let _ = file_id;
             }
         }
 
@@ -239,7 +256,15 @@ impl TypeRegistry {
 
         for (method, _) in &ext.methods {
             let method_name = &method.sig.name.0;
-            if ty.methods.iter().any(|m| m.function.sig.name.0 == *method_name) {
+            // Reject ONLY if an inherent method with the same name already
+            // exists — two extensions defining the same inherent method is
+            // a real error. A trait impl providing the same name alongside
+            // is fine (resolver picks the extension via the "inherent wins"
+            // rule).
+            let collides_with_inherent = ty.methods.iter().any(|m| {
+                m.function.sig.name.0 == *method_name && m.from_trait.is_none()
+            });
+            if collides_with_inherent {
                 return Err(TyperError::at(
                     format!(
                         "duplicate method `{}::{}`",
@@ -347,13 +372,24 @@ impl TypeRegistry {
         }
 
         // Attach impl methods to target type's methods list.
+        //
+        // Collisions are only an error when:
+        //   - another impl of the SAME trait already defined this method
+        //     (two impls of one trait for one type = UB), OR
+        //   - inherent + trait with same name isn't what we want: we DO
+        //     allow that (resolver picks inherent). So only same-trait
+        //     duplication is rejected here.
         let ty = self.types.get_mut(&target_name).unwrap();
         for (method, _) in &def.methods {
-            if ty.methods.iter().any(|m| m.function.sig.name.0 == method.sig.name.0) {
+            let collides_same_trait = ty.methods.iter().any(|m| {
+                m.function.sig.name.0 == method.sig.name.0
+                    && m.from_trait.as_deref() == Some(trait_name.as_str())
+            });
+            if collides_same_trait {
                 return Err(TyperError::at(
                     format!(
-                        "method `{}::{}` already defined; impl conflicts with extension",
-                        target_name, method.sig.name.0
+                        "method `{}::{}` already provided by another `impl {} for {}`",
+                        target_name, method.sig.name.0, trait_name, target_name
                     ),
                     method.sig.name.1.clone(),
                 ));
@@ -377,6 +413,105 @@ impl TypeRegistry {
             file_id,
         });
         Ok(())
+    }
+
+    // --- method resolution (trait-aware) --------------------------------
+
+    /// Resolve a method call `TypeName::method_name` made from `file_id`.
+    ///
+    /// Rules (Rust-flavoured):
+    ///   1. If an **inherent** method (from an `extension` block) exists
+    ///      with the given name, it always wins — regardless of imported
+    ///      traits.
+    ///   2. Else, collect every trait-impl method with the given name.
+    ///      Filter to those whose trait is **in scope** in the calling
+    ///      file (either via `use Trait;` or by virtue of the trait being
+    ///      an operator trait — see `OPERATOR_TRAITS`).
+    ///   3. If exactly one candidate remains, dispatch to it.
+    ///   4. If multiple remain, return `Ambiguous`.
+    ///   5. If zero remain but there were un-imported candidates, return
+    ///      `TraitNotImported` (so the diagnostic can suggest a `use`).
+    ///   6. Else, `NotFound`.
+    ///
+    /// Callers may force-select a specific trait (e.g. from syntax like
+    /// `MyTrait::my_method(...)`) via `trait_hint`. When supplied, only
+    /// candidates from that trait are considered, and the trait-in-scope
+    /// check is skipped.
+    pub fn resolve_method(
+        &self,
+        file_id: FileId,
+        type_name: &str,
+        method_name: &str,
+        trait_hint: Option<&str>,
+    ) -> MethodResolution {
+        let Some(info) = self.types.get(type_name) else {
+            return MethodResolution::NotFound {
+                reason: format!("unknown type `{}`", type_name),
+            };
+        };
+
+        // Explicit qualification: `MyTrait::my_method(args)`. Pick only
+        // methods that came from `MyTrait`.
+        if let Some(trait_name) = trait_hint {
+            for m in &info.methods {
+                if m.function.sig.name.0 == method_name
+                    && m.from_trait.as_deref() == Some(trait_name)
+                {
+                    return MethodResolution::Trait {
+                        trait_name: trait_name.to_string(),
+                    };
+                }
+            }
+            return MethodResolution::NotFound {
+                reason: format!(
+                    "`{}::{}` not implemented for `{}`",
+                    trait_name, method_name, type_name
+                ),
+            };
+        }
+
+        // Step 1: inherent beats everything.
+        for m in &info.methods {
+            if m.function.sig.name.0 == method_name && m.from_trait.is_none() {
+                return MethodResolution::Inherent;
+            }
+        }
+
+        // Step 2: collect trait candidates.
+        let empty = HashSet::new();
+        let imports = self.imports.get(&file_id).unwrap_or(&empty);
+        let mut in_scope: Vec<String> = Vec::new();
+        let mut out_of_scope: Vec<String> = Vec::new();
+        for m in &info.methods {
+            if m.function.sig.name.0 != method_name {
+                continue;
+            }
+            if let Some(t) = &m.from_trait {
+                if imports.contains(t) || OPERATOR_TRAITS.iter().any(|op| op == t) {
+                    in_scope.push(t.clone());
+                } else {
+                    out_of_scope.push(t.clone());
+                }
+            }
+        }
+
+        match in_scope.len() {
+            1 => MethodResolution::Trait {
+                trait_name: in_scope.into_iter().next().unwrap(),
+            },
+            0 => {
+                if out_of_scope.is_empty() {
+                    MethodResolution::NotFound {
+                        reason: format!("no method `{}` on `{}`", method_name, type_name),
+                    }
+                } else {
+                    MethodResolution::TraitNotImported { candidates: out_of_scope }
+                }
+            }
+            _ => MethodResolution::Ambiguous {
+                candidates: in_scope,
+            },
+        }
     }
 
     // --- helpers ----------------------------------------------------------

@@ -149,6 +149,25 @@ pub struct ImplInfo {
 
 // ---- error type -----------------------------------------------------------
 
+/// Result of resolving a method call against a type's method list, taking
+/// the calling file's trait-import scope into account.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MethodResolution {
+    /// The call dispatches to an inherent method defined in an `extension`.
+    Inherent,
+    /// The call dispatches to a trait method. `trait_name` identifies the
+    /// specific trait impl selected — the key bit of info the monomorphizer
+    /// will need to keep two traits with the same method name distinct.
+    Trait { trait_name: String },
+    /// More than one in-scope trait provides this method.
+    Ambiguous { candidates: Vec<String> },
+    /// The method exists on the type, but only via unimported traits. The
+    /// diagnostic can suggest `use <candidate>;`.
+    TraitNotImported { candidates: Vec<String> },
+    /// No such method anywhere.
+    NotFound { reason: String },
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TyperError {
     pub message: String,

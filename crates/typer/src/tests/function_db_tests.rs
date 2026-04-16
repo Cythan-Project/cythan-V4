@@ -104,7 +104,10 @@ fn impl_methods_are_registered_and_track_trait() {
         }
         "#,
     );
-    let eq = db.get(&FnSig::new("Cell", "eq")).expect("Cell::eq");
+    // Trait methods are keyed by their trait, so use `new_trait`.
+    let eq = db
+        .get(&FnSig::new_trait("Cell", "eq", "Eq"))
+        .expect("Cell::eq via Eq");
     match eq {
         Fn::Simple(s) => {
             assert_eq!(s.from_trait.as_deref(), Some("Eq"));
@@ -112,6 +115,8 @@ fn impl_methods_are_registered_and_track_trait() {
         }
         other => panic!("expected Simple, got {:?}", other),
     }
+    // The inherent-shaped key should NOT match this trait-only method.
+    assert!(db.get(&FnSig::new("Cell", "eq")).is_none());
 }
 
 #[test]

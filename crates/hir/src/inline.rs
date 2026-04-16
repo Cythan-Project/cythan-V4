@@ -183,7 +183,10 @@ impl<'a> Inliner<'a> {
         caller_base: u32,
         out: &mut Vec<HirOp>,
     ) -> Result<(), String> {
-        let key = FnSigKey::new(&target.type_name, &target.method_name);
+        let key = match &target.trait_name {
+            Some(t) => FnSigKey::new_trait(&target.type_name, &target.method_name, t),
+            None => FnSigKey::new(&target.type_name, &target.method_name),
+        };
         let callee = self
             .functions
             .get(&key)

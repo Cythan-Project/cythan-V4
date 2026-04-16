@@ -21,18 +21,37 @@ pub struct FunctionDB {
 
 /// Key into `FunctionDB`. `type_name` is the owning type or `""` for free
 /// functions (there are none in the current language, but the slot is kept
-/// for future use).
+/// for future use). `trait_name` is `None` for inherent methods (from
+/// `extension`) and `Some(trait)` for methods attached via `impl Trait for`.
+/// Two traits that both define `eq` on the same type produce distinct
+/// entries because their `trait_name` differs.
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct FnSig {
     pub type_name: String,
     pub method_name: String,
+    pub trait_name: Option<String>,
 }
 
 impl FnSig {
+    /// Construct a key for an inherent method (no trait).
     pub fn new(type_name: impl Into<String>, method_name: impl Into<String>) -> Self {
         Self {
             type_name: type_name.into(),
             method_name: method_name.into(),
+            trait_name: None,
+        }
+    }
+
+    /// Construct a key for a method attached via `impl Trait for Type`.
+    pub fn new_trait(
+        type_name: impl Into<String>,
+        method_name: impl Into<String>,
+        trait_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            type_name: type_name.into(),
+            method_name: method_name.into(),
+            trait_name: Some(trait_name.into()),
         }
     }
 }
@@ -51,6 +70,9 @@ pub struct SimpleFn {
     pub sig: FlatSig,
     pub type_name: String,
     pub from_trait: Option<String>,
+    /// File in which this method was declared. Used by the HIR generator to
+    /// look up which traits are in scope when resolving calls from its body.
+    pub file_id: crate::types::FileId,
 }
 
 /// A function whose signature still has unresolved template params — either
@@ -64,6 +86,7 @@ pub struct TemplatedFn {
     /// first type-level templates, then function-level templates.
     pub templates: Vec<String>,
     pub from_trait: Option<String>,
+    pub file_id: crate::types::FileId,
 }
 
 impl FunctionDB {
@@ -97,7 +120,14 @@ impl FunctionDB {
                     .map(|t| t.0.clone())
                     .collect();
 
-                let key = FnSig::new(info.name.clone(), m.function.sig.name.0.clone());
+                let key = match &m.from_trait {
+                    None => FnSig::new(info.name.clone(), m.function.sig.name.0.clone()),
+                    Some(t) => FnSig::new_trait(
+                        info.name.clone(),
+                        m.function.sig.name.0.clone(),
+                        t.clone(),
+                    ),
+                };
 
                 let is_simple = type_templates.is_empty() && method_templates.is_empty();
                 let f = if is_simple {
@@ -107,6 +137,7 @@ impl FunctionDB {
                             sig: flat,
                             type_name: info.name.clone(),
                             from_trait: m.from_trait.clone(),
+                            file_id: m.file_id,
                         }),
                         Err(e) => {
                             errors.push(e);
@@ -121,6 +152,7 @@ impl FunctionDB {
                         type_name: info.name.clone(),
                         templates,
                         from_trait: m.from_trait.clone(),
+                        file_id: m.file_id,
                     })
                 };
                 db.insert(key, f);

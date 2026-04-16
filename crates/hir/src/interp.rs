@@ -230,7 +230,14 @@ impl<'a, C: IoContext> Interpreter<'a, C> {
                 // No arm matched: fall through (no behavior change).
             }
             HirOp::Call { target, args, ret } => {
-                let key = typer::FnSig::new(&target.type_name, &target.method_name);
+                let key = match &target.trait_name {
+                    Some(t) => typer::FnSig::new_trait(
+                        &target.type_name,
+                        &target.method_name,
+                        t,
+                    ),
+                    None => typer::FnSig::new(&target.type_name, &target.method_name),
+                };
                 let callee = self.functions.get(&key).cloned().ok_or_else(|| {
                     InterpError::UnknownFunction(target.type_name.clone(), target.method_name.clone())
                 })?;

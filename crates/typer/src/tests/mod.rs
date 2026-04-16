@@ -16,6 +16,7 @@ mod integration_tests;
 mod layout_tests;
 mod struct_tests;
 mod trait_impl_tests;
+mod trait_resolution_tests;
 
 use new_parser::ast::{Item, Spanned};
 

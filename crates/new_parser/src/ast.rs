@@ -10,6 +10,15 @@ pub enum Item {
     Trait(TraitDef),
     Impl(ImplDef),
     Const(ConstDef),
+    /// `use Name;` — brings a trait (or type) name into scope for the file.
+    /// The name is the trait (or type) identifier; a full path form like
+    /// `use foo::Bar;` isn't supported yet.
+    Use(UseDef),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct UseDef {
+    pub name: Spanned<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

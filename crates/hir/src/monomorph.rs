@@ -32,20 +32,26 @@ impl MonomorphKey {
     /// Render a distinct symbol name for this monomorph, useful for
     /// debugging and for re-inserting into a `HashMap<FnSig, HirFunction>`
     /// where the top-level `FnSig` must be unique.
+    ///
+    /// The trait name (if any) is preserved on the mangled FnSig so that
+    /// e.g. `A::Foo::act` and `B::Foo::act` — two traits with the same
+    /// method name on the same type — produce distinct top-level keys.
     pub fn mangled(&self) -> FnSigKey {
-        if self.template_args.is_empty() {
-            return self.sig.clone();
+        let type_name = if self.template_args.is_empty() {
+            self.sig.type_name.clone()
+        } else {
+            let args = self
+                .template_args
+                .iter()
+                .map(render_arg)
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("{}<{}>", self.sig.type_name, args)
+        };
+        match &self.sig.trait_name {
+            Some(t) => FnSigKey::new_trait(type_name, self.sig.method_name.clone(), t.clone()),
+            None => FnSigKey::new(type_name, self.sig.method_name.clone()),
         }
-        let args = self
-            .template_args
-            .iter()
-            .map(render_arg)
-            .collect::<Vec<_>>()
-            .join(",");
-        FnSigKey::new(
-            format!("{}<{}>", self.sig.type_name, args),
-            self.sig.method_name.clone(),
-        )
     }
 }
 
@@ -351,6 +357,7 @@ pub fn monomorphize(
         sig: flat,
         type_name: templated.type_name.clone(),
         from_trait: templated.from_trait.clone(),
+        file_id: templated.file_id,
     };
 
     // Compile to HIR via the regular generator.

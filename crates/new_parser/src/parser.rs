@@ -924,8 +924,19 @@ fn const_parser() -> impl Parser<Token, Spanned<Item>, Error = PErr> + Clone {
         })
 }
 
+fn use_parser() -> impl Parser<Token, Spanned<Item>, Error = PErr> + Clone {
+    // `use Name;` — `Name` must be a TypeName (traits/types are uppercase
+    // by convention). Accepting Ident too is future-friendly but we keep it
+    // strict for now.
+    just(Token::Use)
+        .ignore_then(type_name_spanned())
+        .then_ignore(just(Token::Semicolon))
+        .map_with_span(|name, sp| (Item::Use(UseDef { name }), sp))
+}
+
 pub fn program_parser() -> impl Parser<Token, Vec<Spanned<Item>>, Error = PErr> {
     let item = choice((
+        use_parser(),
         struct_parser(),
         enum_parser(),
         extension_parser(),
