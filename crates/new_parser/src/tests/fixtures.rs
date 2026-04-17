@@ -20,6 +20,7 @@ pub fn ty(name: &str) -> Spanned<Type> {
     sp(Type {
         name: sp(name.to_string()),
         templates: Vec::new(),
+        qself: None,
     })
 }
 
@@ -27,6 +28,7 @@ pub fn ty_g(name: &str, templates: Vec<Spanned<TypeOrValue>>) -> Spanned<Type> {
     sp(Type {
         name: sp(name.to_string()),
         templates,
+        qself: None,
     })
 }
 

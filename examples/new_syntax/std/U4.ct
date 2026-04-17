@@ -91,8 +91,8 @@ impl Ord for U4 {
     }
 }
 
-impl Add for U4 {
-    fn add(self, U4 other): Self {
+impl Add<U4> for U4 {
+    fn add(self, U4 other): U4 {
         mut U4 a = self;
         mut U4 b = other;
         loop {
@@ -106,8 +106,8 @@ impl Add for U4 {
     }
 }
 
-impl Sub for U4 {
-    fn sub(self, U4 other): Self {
+impl Sub<U4> for U4 {
+    fn sub(self, U4 other): U4 {
         mut U4 a = self;
         mut U4 b = other;
         loop {

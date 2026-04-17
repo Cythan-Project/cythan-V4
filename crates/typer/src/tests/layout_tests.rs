@@ -19,6 +19,7 @@ fn struct_layout_sums_field_sizes() {
         new_parser::ast::Type {
             name: (name.to_string(), 0..0),
             templates: vec![],
+            qself: None,
         }
     }
     let layout = StructLayout {

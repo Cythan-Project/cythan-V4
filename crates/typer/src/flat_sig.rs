@@ -102,9 +102,16 @@ impl FlatSig {
         // Return slots (always mutable — the body writes into them).
         let mut output_count: SlotIndex = 0;
         if let Some((ret_ty, sp)) = &sig.return_type {
-            let resolved_name = resolve_self(&ret_ty.name.0, self_type_name);
-            let size = size_of_named(reg, &resolved_name, ret_ty, sp)?;
-            let type_args = ret_ty
+            // Qualified-path return types (`<Self as Trait>::Output`) are
+            // resolved up front so the slot records the concrete type.
+            let concrete_ret: ast::Type = if ret_ty.qself.is_some() {
+                reg.resolve_qualified_path_with_self(ret_ty, sp, self_type_name)?
+            } else {
+                ret_ty.clone()
+            };
+            let resolved_name = resolve_self(&concrete_ret.name.0, self_type_name);
+            let size = size_of_named(reg, &resolved_name, &concrete_ret, sp)?;
+            let type_args = concrete_ret
                 .templates
                 .iter()
                 .map(|(tv, _)| tv.clone())
@@ -157,8 +164,14 @@ fn resolve_param_type(
     }
 
     let (ty, sp) = param.ty.as_ref().expect("non-self param must have a type");
-    let resolved = resolve_self(&ty.name.0, self_type_name);
-    let size = size_of_named(reg, &resolved, ty, sp)?;
+    // Qualified path: resolve to concrete type first.
+    let concrete_ty: ast::Type = if ty.qself.is_some() {
+        reg.resolve_qualified_path_with_self(ty, sp, self_type_name)?
+    } else {
+        ty.clone()
+    };
+    let resolved = resolve_self(&concrete_ty.name.0, self_type_name);
+    let size = size_of_named(reg, &resolved, &concrete_ty, sp)?;
     Ok((resolved, size))
 }
 
@@ -185,6 +198,10 @@ fn size_of_named(
     original: &ast::Type,
     sp: &new_parser::Span,
 ) -> Result<CellCount, TyperError> {
+    // Qualified path: resolve to the associated type first.
+    if original.qself.is_some() {
+        return reg.resolve_type_size(original, sp);
+    }
     // If the type reference had template args, we still need to go through
     // resolve_type_size to get the "cannot compute size of generic" error.
     if !original.templates.is_empty() {

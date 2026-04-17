@@ -131,6 +131,7 @@ fn concrete_to_ast(t: &ConcreteType) -> new_parser::ast::Type {
             .iter()
             .map(|a| (concrete_arg_to_ast(a), 0..0))
             .collect(),
+        qself: None,
     }
 }
 

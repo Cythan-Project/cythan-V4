@@ -3,6 +3,11 @@
 // dispatches through it. These traits are in the compiler's
 // `OPERATOR_TRAITS` list, so callers don't need `use Add;` / `use Eq;` to
 // use `+` or `==` — the sugar implicitly brings them into scope.
+//
+// `Add<Output>` and `Sub<Output>` carry an `Output` template parameter
+// (the same role as Rust's `type Output`). The common `U4 + U4 -> U4`
+// case is just `impl Add<U4> for U4`; custom widenings are just another
+// impl with a different `Output`.
 
 trait Eq {
     fn eq(self, Self other): Bool;
@@ -16,12 +21,12 @@ trait Ord {
     fn ge(self, Self other): Bool;
 }
 
-trait Add {
-    fn add(self, Self other): Self;
+trait Add<Output> {
+    fn add(self, Self other): Output;
 }
 
-trait Sub {
-    fn sub(self, Self other): Self;
+trait Sub<Output> {
+    fn sub(self, Self other): Output;
 }
 
 trait AddAssign {

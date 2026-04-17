@@ -853,7 +853,7 @@ fn add_impl_on_generic_struct() {
         extension Pair<T> {
             fn new(T a, T b): Self { Self { a: a, b: b, } }
         }
-        impl Add for Pair<U4> {
+        impl Add<Pair<U4>> for Pair<U4> {
             fn add(self, Pair<U4> other): Pair<U4> {
                 Pair::new(self.a + other.a, self.b + other.b)
             }

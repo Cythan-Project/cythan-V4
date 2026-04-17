@@ -634,6 +634,14 @@ impl TypeRegistry {
         ty: &ast::Type,
         sp: &new_parser::Span,
     ) -> Result<CellCount, TyperError> {
+        // Qualified path: `<SelfTy as Trait>::Ident`. Resolve to the
+        // concrete type named by the impl's template arg or associated-
+        // type binding, then size *that*.
+        if ty.qself.is_some() {
+            let resolved = self.resolve_qualified_path(ty, sp)?;
+            return self.resolve_type_size(&resolved, sp);
+        }
+
         // Native type: Array<T, N, F> has layout N * sizeof(T).
         if ty.name.0 == "Array" && ty.templates.len() == 3 {
             return self.array_layout_size(ty, sp);
@@ -720,6 +728,142 @@ impl TypeRegistry {
         let elem_size = self.resolve_type_size(element_ty, &t_arg.1)?;
         let _ = sp;
         Ok(elem_size * n)
+    }
+
+    /// Resolve a `<SelfTy as Trait>::Ident` qualified path to a concrete
+    /// type reference. The trait's template parameter list names positions;
+    /// `Ident` must match one of them (e.g. `Output` at position 0 for
+    /// `trait Add<Output>`). The resolver looks up the impl of `Trait` for
+    /// `SelfTy` and returns that impl's template arg at the matching
+    /// position. Returns a plain (`qself: None`) `ast::Type` so repeated
+    /// resolution is safe.
+    pub fn resolve_qualified_path(
+        &self,
+        ty: &ast::Type,
+        sp: &new_parser::Span,
+    ) -> Result<ast::Type, TyperError> {
+        self.resolve_qualified_path_with_self(ty, sp, "")
+    }
+
+    /// Like `resolve_qualified_path` but with an optional enclosing-type
+    /// hint. When the `self_ty` inside the qself is the bare `Self` head,
+    /// `self_hint` substitutes it with the enclosing type's name so we
+    /// can find the matching impl.
+    pub fn resolve_qualified_path_with_self(
+        &self,
+        ty: &ast::Type,
+        sp: &new_parser::Span,
+        self_hint: &str,
+    ) -> Result<ast::Type, TyperError> {
+        let qself = ty.qself.as_ref().ok_or_else(|| {
+            TyperError::at("not a qualified path", sp.clone())
+        })?;
+        let assoc_name = &ty.name.0;
+        let mut self_ty: ast::Type = qself.self_ty.0.clone();
+        if self_ty.name.0 == "Self" && !self_hint.is_empty() {
+            self_ty.name.0 = self_hint.to_string();
+        }
+        let self_ty = &self_ty;
+        let trait_head = &qself.trait_ty.0.name.0;
+
+        let trait_info = self.traits.get(trait_head).ok_or_else(|| {
+            TyperError::at(
+                format!("unknown trait `{}`", trait_head),
+                qself.trait_ty.1.clone(),
+            )
+        })?;
+
+        // Position of Ident in the trait's template param list. If it's
+        // not there, fall back to associated_types (for future-proofing).
+        let pos = trait_info
+            .templates
+            .iter()
+            .position(|n| n == assoc_name)
+            .or_else(|| {
+                let off = trait_info.templates.len();
+                trait_info
+                    .associated_types
+                    .iter()
+                    .position(|n| n == assoc_name)
+                    .map(|i| off + i)
+            })
+            .ok_or_else(|| {
+                TyperError::at(
+                    format!(
+                        "trait `{}` has no parameter or associated type `{}`",
+                        trait_head, assoc_name
+                    ),
+                    sp.clone(),
+                )
+            })?;
+
+        // Find an impl of `Trait` for `SelfTy`.
+        let target = match self_ty.qself {
+            Some(_) => self.resolve_qualified_path(self_ty, sp)?,
+            None => self_ty.clone(),
+        };
+        let impl_ = self
+            .impls
+            .iter()
+            .find(|i| i.trait_name == *trait_head && impl_target_matches(&i.target_name, &target))
+            .ok_or_else(|| {
+                TyperError::at(
+                    format!(
+                        "no `impl {} for {}` found — can't resolve `<{} as {}>::{}`",
+                        trait_head, target.name.0, target.name.0, trait_head, assoc_name
+                    ),
+                    sp.clone(),
+                )
+            })?;
+
+        // Template-arg position → real AST type. Trait-template args live
+        // on the impl's `trait_ty` that it was declared against; associated-
+        // type bindings live in `associated_bindings`.
+        let n_trait_tpl = trait_info.templates.len();
+        if pos < n_trait_tpl {
+            // Look up in the impl's methods list — trait template args
+            // aren't kept directly on ImplInfo, but they're on the methods'
+            // `trait_template_args`. Grab from the first method.
+            let info = self.types.get(&impl_.target_name).ok_or_else(|| {
+                TyperError::at(
+                    format!("impl target `{}` has no type info", impl_.target_name),
+                    sp.clone(),
+                )
+            })?;
+            for m in &info.methods {
+                if m.from_trait.as_deref() == Some(trait_head.as_str())
+                    && !m.trait_template_args.is_empty()
+                {
+                    if let Some(tv) = m.trait_template_args.get(pos) {
+                        if let ast::TypeOrValue::Type(t) = tv {
+                            return Ok(t.clone());
+                        }
+                    }
+                }
+            }
+            return Err(TyperError::at(
+                format!(
+                    "`impl {} for {}` has no template arg at position {}",
+                    trait_head, target.name.0, pos
+                ),
+                sp.clone(),
+            ));
+        }
+        // Associated-type binding.
+        let assoc_idx = pos - n_trait_tpl;
+        impl_
+            .associated_bindings
+            .get(assoc_idx)
+            .map(|(_, t)| t.clone())
+            .ok_or_else(|| {
+                TyperError::at(
+                    format!(
+                        "`impl {} for {}` is missing binding for associated type `{}`",
+                        trait_head, target.name.0, assoc_name
+                    ),
+                    sp.clone(),
+                )
+            })
     }
 
     /// Resolve a (possibly-generic) struct type reference to a concrete
@@ -977,6 +1121,15 @@ impl ImplDefExt for ast::ImplDef {
     }
 }
 
+/// Match an impl's `target_name` (a bare type head) against a concrete
+/// `target` AST type. Impls are registered keyed by the head-name only, so
+/// `impl Add<U4> for Pair<U4>` lives under `target_name == "Pair"`. We
+/// ignore the incoming target's template args for now — callers who need
+/// precise multi-instantiation dispatch can narrow further.
+fn impl_target_matches(impl_target_name: &str, target: &ast::Type) -> bool {
+    impl_target_name == target.name.0
+}
+
 /// Substitute template parameter references in an AST type with concrete
 /// bindings. Used by `resolve_struct_layout` to specialize a generic
 /// struct's field types to a concrete instantiation. The hir crate has a
@@ -1025,6 +1178,7 @@ fn subst_ast_type(
     ast::Type {
         name: ty.name.clone(),
         templates,
+        qself: ty.qself.clone(),
     }
 }
 

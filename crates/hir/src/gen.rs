@@ -651,13 +651,23 @@ impl<'a> Generator<'a> {
         value: &ast::Spanned<ast::Expr>,
         block: &mut HirBlock,
     ) -> Result<(), HirError> {
-        let resolved = self.resolve_ty_name(&ty.0.name.0);
+        // For qualified paths like `<U4 as Add>::Output`, resolve once up
+        // front so the binding records the concrete name rather than the
+        // unresolved associated-type tail.
+        let resolved_ast_ty = if ty.0.qself.is_some() {
+            self.reg
+                .resolve_qualified_path(&ty.0, &ty.1)
+                .map_err(|e| HirError::at(e.message, ty.1.clone()))?
+        } else {
+            ty.0.clone()
+        };
+        let resolved = self.resolve_ty_name(&resolved_ast_ty.name.0);
         // Use the typer's Array-aware sizing when we have an AST type with
         // template args (falls back to the plain lookup otherwise). This
         // is what lets `mut Array<U4, 4, U4> arr = ...` compute size = 4.
-        let size = if !ty.0.templates.is_empty() {
+        let size = if !resolved_ast_ty.templates.is_empty() {
             self.reg
-                .resolve_type_size(&ty.0, &ty.1)
+                .resolve_type_size(&resolved_ast_ty, &ty.1)
                 .map_err(|e| HirError::at(e.message, ty.1.clone()))?
         } else {
             self.type_size(&resolved)?
@@ -682,8 +692,7 @@ impl<'a> Generator<'a> {
                 ),
                 _ => None,
             });
-        let template_args: Vec<ConcreteTemplateArg> = ty
-            .0
+        let template_args: Vec<ConcreteTemplateArg> = resolved_ast_ty
             .templates
             .iter()
             .map(|(tv, _)| lower_tv(tv))
@@ -916,6 +925,7 @@ impl<'a> Generator<'a> {
                             .iter()
                             .map(|a| (lower_concrete_to_ast_tv(a), 0..0))
                             .collect(),
+                        qself: None,
                     };
                     let l = self
                         .reg
@@ -944,6 +954,7 @@ impl<'a> Generator<'a> {
                                             .iter()
                                             .map(|a| (lower_concrete_to_ast_tv(a), 0..0))
                                             .collect(),
+                                        qself: None,
                                     },
                                     _ => t.clone(),
                                 }
@@ -1121,12 +1132,25 @@ impl<'a> Generator<'a> {
         for i in 0..rsize {
             args.push(SlotId(rslot.0 + i));
         }
+        // Recover the receiver's concrete template args (for dispatching
+        // through the right monomorph of `impl Add for Pair<U4>`), then
+        // use them to size the return. For `Add<Output>` / `Sub<Output>`
+        // this is the Output type — which can differ from `lsize`.
+        let recv_args = self.infer_receiver_type_args(&l.0);
         let ret: Vec<SlotId> = match dst {
             Some(d) => {
-                // For comparisons, return is Bool (size 1). For Add/Sub it's
-                // Self (size lsize). We emit `ret` list accordingly.
                 let ret_size = match op {
-                    ast::BinOp::Add | ast::BinOp::Sub => lsize,
+                    ast::BinOp::Add | ast::BinOp::Sub | ast::BinOp::EqEq
+                    | ast::BinOp::NotEq | ast::BinOp::Gt | ast::BinOp::Lt
+                    | ast::BinOp::GtEq | ast::BinOp::LtEq => self
+                        .lookup_return_size_full(&resolved, method, &recv_args, &[])
+                        .unwrap_or_else(|| {
+                            // Fallback: arithmetic ⇒ lhs size, comparisons ⇒ 1.
+                            match op {
+                                ast::BinOp::Add | ast::BinOp::Sub => lsize,
+                                _ => 1,
+                            }
+                        }),
                     _ => 1,
                 };
                 (0..ret_size).map(|i| SlotId(d.0 + i)).collect()
@@ -1134,10 +1158,6 @@ impl<'a> Generator<'a> {
             None => Vec::new(),
         };
         let trait_name = self.resolve_trait_for(&resolved, method);
-        // Thread the lhs's concrete template args into the Call so the
-        // inliner can dispatch through the right monomorph (e.g.
-        // `impl Add for Pair<U4>`).
-        let recv_args = self.infer_receiver_type_args(&l.0);
         block.push(HirOp::Call {
             target: FnRef {
                 type_name: resolved,
@@ -1585,6 +1605,7 @@ impl<'a> Generator<'a> {
                         .iter()
                         .map(|a| (lower_concrete_to_ast_tv(a), 0..0))
                         .collect(),
+                    qself: None,
                 },
                 ConcreteTemplateArg::Value(_) => return None,
             };
@@ -1714,6 +1735,7 @@ impl<'a> Generator<'a> {
                 .into_iter()
                 .map(|arg| (lower_concrete_to_ast_tv(&arg), 0..0))
                 .collect(),
+            qself: None,
         };
         self.reg.resolve_struct_layout(&ty, &(0..0)).ok()
     }
@@ -1748,6 +1770,7 @@ impl<'a> Generator<'a> {
                             .into_iter()
                             .map(|a| (lower_concrete_to_ast_tv(&a), 0..0))
                             .collect(),
+                        qself: None,
                     };
                     let l = self.reg.resolve_struct_layout(&ty, &(0..0)).ok()?;
                     let f = l.fields.iter().find(|f| f.name == field.0)?;
@@ -1972,6 +1995,7 @@ impl<'a> Generator<'a> {
                         .into_iter()
                         .map(|a| (lower_concrete_to_ast_tv(&a), 0..0))
                         .collect(),
+                    qself: None,
                 };
                 self.reg.resolve_type_size(&ast_ty, &(0..0)).ok().filter(|s| *s > 0)
             }
@@ -2124,6 +2148,7 @@ impl<'a> Generator<'a> {
                 let ast_ty = ast::Type {
                     name: (resolved.clone(), ty.0.name.1.clone()),
                     templates: ty.0.templates.clone(),
+                    qself: None,
                 };
                 self.reg
                     .resolve_enum_layout(&ast_ty, &ty.1)
@@ -2575,6 +2600,7 @@ pub(crate) fn lower_concrete_to_ast_tv(arg: &ConcreteTemplateArg) -> ast::TypeOr
                 .iter()
                 .map(|a| (lower_concrete_to_ast_tv(a), 0..0))
                 .collect(),
+            qself: None,
         }),
     }
 }

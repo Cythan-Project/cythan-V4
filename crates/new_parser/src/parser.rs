@@ -69,16 +69,46 @@ pub fn type_parser() -> impl Parser<Token, Spanned<Type>, Error = PErr> + Clone 
             )
             .then_ignore(just(Token::Gt));
 
-        path.then(templates.or_not())
-            .map_with_span(|(name, templates), sp| {
+        // Qualified path: `<SelfTy as Trait>::Ident`. Matches Rust's
+        // disambiguating syntax for associated-type lookups. The `::Ident`
+        // tail becomes the resulting Type's `name`; the `qself` carries
+        // the SelfTy and the trait reference so the typer can resolve
+        // "which Trait impl's Ident is this?".
+        let qualified = just(Token::Lt)
+            .ignore_then(ty.clone())
+            .then_ignore(just(Token::As))
+            .then(ty.clone())
+            .then_ignore(just(Token::Gt))
+            .then_ignore(just(Token::PathSep))
+            .then(type_name_spanned())
+            .map_with_span(|((self_ty, trait_ty), ident), sp| {
+                (
+                    Type {
+                        name: ident,
+                        templates: Vec::new(),
+                        qself: Some(Box::new(QSelf {
+                            self_ty,
+                            trait_ty,
+                        })),
+                    },
+                    sp,
+                )
+            });
+
+        let plain = path.then(templates.or_not()).map_with_span(
+            |(name, templates), sp| {
                 (
                     Type {
                         name,
                         templates: templates.unwrap_or_default(),
+                        qself: None,
                     },
                     sp,
                 )
-            })
+            },
+        );
+
+        choice((qualified, plain))
     })
 }
 
@@ -106,6 +136,7 @@ fn bare_type_parser() -> impl Parser<Token, Spanned<Type>, Error = PErr> + Clone
                     Type {
                         name,
                         templates: templates.unwrap_or_default(),
+                        qself: None,
                     },
                     sp,
                 )

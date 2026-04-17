@@ -91,6 +91,12 @@ fn subst_type(ty: &ast::Type, bindings: &HashMap<String, ConcreteTemplateArg>) -
     ast::Type {
         name: ty.name.clone(),
         templates,
+        qself: ty.qself.as_ref().map(|q| {
+            Box::new(ast::QSelf {
+                self_ty: (subst_type(&q.self_ty.0, bindings), q.self_ty.1.clone()),
+                trait_ty: (subst_type(&q.trait_ty.0, bindings), q.trait_ty.1.clone()),
+            })
+        }),
     }
 }
 
@@ -136,6 +142,7 @@ fn concrete_type_to_ast(ct: &ConcreteType, span: &new_parser::Span) -> ast::Span
         ast::Type {
             name: (ct.name.clone(), span.clone()),
             templates,
+            qself: None,
         },
         span.clone(),
     )

@@ -16,6 +16,7 @@ mod natives_tests;
 mod operator_tests;
 mod trait_dispatch_tests;
 mod template_stress_tests;
+mod operator_output_tests;
 
 use new_parser::ast;
 

@@ -107,10 +107,23 @@ pub struct Param {
 
 /// A type reference. `name` is the path (e.g. `"U4"`, `"Array"`, `"Self"`, `"Self::Output"`).
 /// For associated-type references (`Self::Output`), the whole dotted path lives in `name`.
+///
+/// When the type is written with a qualified-path prefix
+/// (`<SelfTy as Trait>::Ident`), `qself` carries the `SelfTy` and the trait
+/// reference. The `Ident` tail ends up in `name` — e.g. for
+/// `<U4 as Add>::Output`, `name.0 == "Output"` and `qself` is
+/// `Some({ self_ty: U4, trait_ty: Add })`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Type {
     pub name: Spanned<String>,
     pub templates: Vec<Spanned<TypeOrValue>>,
+    pub qself: Option<Box<QSelf>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct QSelf {
+    pub self_ty: Spanned<Type>,
+    pub trait_ty: Spanned<Type>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
