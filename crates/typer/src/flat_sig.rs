@@ -216,9 +216,21 @@ fn resolve_named_size(
     name: &str,
     sp: &new_parser::Span,
 ) -> Result<CellCount, TyperError> {
-    let info = reg.types.get(name).ok_or_else(|| {
-        TyperError::at(format!("unknown type `{}`", name), sp.clone())
-    })?;
+    // Path-qualified reference? Canonicalize via the registry so the
+    // lookup succeeds against the stored (usually bare) name.
+    let info = match reg.types.get(name) {
+        Some(i) => i,
+        None => {
+            let canonical = reg
+                .canonicalize_type_name(name, None)
+                .ok_or_else(|| {
+                    TyperError::at(format!("unknown type `{}`", name), sp.clone())
+                })?;
+            reg.types.get(&canonical).ok_or_else(|| {
+                TyperError::at(format!("unknown type `{}`", name), sp.clone())
+            })?
+        }
+    };
     match &info.kind {
         TypeKind::Primitive { size } => Ok(*size),
         TypeKind::Struct(StructKind::Concrete(l)) => Ok(l.size),

@@ -209,10 +209,11 @@ impl<'a> Generator<'a> {
     }
 
     fn type_size(&self, type_name: &str) -> Result<u32, HirError> {
+        // Accept path-qualified names too — run through the registry's
+        // canonicalizer first so `a::b::Foo` size-lookups succeed.
         let info = self
             .reg
-            .types
-            .get(type_name)
+            .lookup_type(type_name, Some(self.simple.file_id))
             .ok_or_else(|| HirError::new(format!("unknown type `{}`", type_name)))?;
         match &info.kind {
             typer::TypeKind::Primitive { size } => Ok(*size),
@@ -225,13 +226,26 @@ impl<'a> Generator<'a> {
         }
     }
 
-    /// Resolve `Self` → enclosing type name.
+    /// Resolve a source-level type name to its registry storage name.
+    ///
+    /// Steps, in order:
+    ///   1. `Self` / `Self::Foo` — substitute the enclosing type.
+    ///   2. Path form (`a::b::Foo`) or a `use`-aliased short name —
+    ///      consult the registry's `canonicalize_type_name` with the
+    ///      current file's id.
+    ///   3. Bare name — return as-is.
     fn resolve_ty_name(&self, name: &str) -> String {
         if name == "Self" {
             return self.simple.type_name.clone();
         }
         if let Some(rest) = name.strip_prefix("Self::") {
             return format!("{}::{}", self.simple.type_name, rest);
+        }
+        if let Some(canonical) = self
+            .reg
+            .canonicalize_type_name(name, Some(self.simple.file_id))
+        {
+            return canonical;
         }
         name.to_string()
     }
@@ -550,9 +564,12 @@ impl<'a> Generator<'a> {
         field: &str,
         sp: &new_parser::Span,
     ) -> Result<(u32, u32), HirError> {
-        let info = self.reg.types.get(type_name).ok_or_else(|| {
-            HirError::at(format!("unknown type `{}`", type_name), sp.clone())
-        })?;
+        let info = self
+            .reg
+            .lookup_type(type_name, Some(self.simple.file_id))
+            .ok_or_else(|| {
+                HirError::at(format!("unknown type `{}`", type_name), sp.clone())
+            })?;
         match &info.kind {
             typer::TypeKind::Struct(typer::StructKind::Concrete(layout)) => {
                 for f in &layout.fields {
@@ -578,9 +595,12 @@ impl<'a> Generator<'a> {
         field: &str,
         sp: &new_parser::Span,
     ) -> Result<String, HirError> {
-        let info = self.reg.types.get(type_name).ok_or_else(|| {
-            HirError::at(format!("unknown type `{}`", type_name), sp.clone())
-        })?;
+        let info = self
+            .reg
+            .lookup_type(type_name, Some(self.simple.file_id))
+            .ok_or_else(|| {
+                HirError::at(format!("unknown type `{}`", type_name), sp.clone())
+            })?;
         let typer::TypeKind::Struct(typer::StructKind::Concrete(_)) = &info.kind else {
             return Err(HirError::at(
                 format!("type `{}` is not a concrete struct", type_name),

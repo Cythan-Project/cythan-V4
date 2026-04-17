@@ -38,9 +38,13 @@ fn type_name_spanned() -> impl Parser<Token, Spanned<String>, Error = PErr> + Cl
 /// associated-type references like `Self::Output`).
 pub fn type_parser() -> impl Parser<Token, Spanned<Type>, Error = PErr> + Clone {
     recursive(|ty: Recursive<Token, Spanned<Type>, PErr>| {
+        // A path segment may be either a TypeName (uppercase) or a
+        // lowercase identifier — the latter is common for module path
+        // prefixes like `std::ArrayList::Foo` or `user::Bar`.
         let path_segment = choice((type_name_tok(), ident_tok()));
-        let path = type_name_tok()
-            .then(just(Token::PathSep).ignore_then(path_segment).repeated())
+        let path = path_segment
+            .clone()
+            .then(just(Token::PathSep).ignore_then(path_segment.clone()).repeated())
             .map(|(head, tail)| {
                 if tail.is_empty() {
                     head
@@ -1021,11 +1025,29 @@ fn const_parser() -> impl Parser<Token, Spanned<Item>, Error = PErr> + Clone {
 }
 
 fn use_parser() -> impl Parser<Token, Spanned<Item>, Error = PErr> + Clone {
-    // `use Name;` — `Name` must be a TypeName (traits/types are uppercase
-    // by convention). Accepting Ident too is future-friendly but we keep it
-    // strict for now.
+    // `use Name;` or `use a::b::Name;` — `Name` is the leaf (always a
+    // TypeName); interior segments are module path components and may
+    // be lowercase idents (`std`, `my_mod`) or capitalized filenames.
+    let segment = choice((type_name_tok(), ident_tok()));
     just(Token::Use)
-        .ignore_then(type_name_spanned())
+        .ignore_then(
+            segment
+                .clone()
+                .then(just(Token::PathSep).ignore_then(segment).repeated())
+                .map(|(head, tail)| {
+                    if tail.is_empty() {
+                        head
+                    } else {
+                        let mut out = head;
+                        for part in tail {
+                            out.push_str("::");
+                            out.push_str(&part);
+                        }
+                        out
+                    }
+                })
+                .map_with_span(|s, sp| (s, sp)),
+        )
         .then_ignore(just(Token::Semicolon))
         .map_with_span(|name, sp| (Item::Use(UseDef { name }), sp))
 }

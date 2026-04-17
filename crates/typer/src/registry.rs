@@ -8,6 +8,10 @@ use crate::types::*;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TypeRegistry {
+    /// Keyed by canonical (fully-qualified) type name. For a type
+    /// declared in a file whose module path is `std::ArrayList`, the
+    /// canonical name is `std::ArrayList::ArrayList`. Primitives like
+    /// `U4` use their bare name as canonical.
     pub types: HashMap<String, TypeInfo>,
     pub traits: HashMap<String, TraitInfo>,
     pub impls: Vec<ImplInfo>,
@@ -16,10 +20,25 @@ pub struct TypeRegistry {
     /// concrete types satisfy their bounds. Direct (non-generic) impls
     /// remain in `impls`.
     pub blanket_impls: Vec<ImplInfo>,
-    /// Per-file import scope: for each `FileId`, the set of trait/type names
-    /// explicitly brought into scope via `use Name;` in that file. Operator
-    /// sugar (`+`, `-`, `==`, ...) bypasses this check — see `OPERATOR_TRAITS`.
+    /// Per-file import scope: for each `FileId`, the set of trait
+    /// names brought into scope via `use Name;` — tracked separately
+    /// from `type_aliases` because trait-in-scope drives operator
+    /// dispatch, while type_aliases drives type-name resolution.
     pub imports: HashMap<FileId, HashSet<String>>,
+    /// Module path per file (e.g., `std::ArrayList` for
+    /// `std/ArrayList.ct`). Used to canonicalize declared type names.
+    pub file_module_paths: HashMap<FileId, String>,
+    /// Per-file type-name aliases set up by `use` statements. Maps a
+    /// short name (the leaf) to its canonical full name, scoped to
+    /// the file that issued the `use`.
+    pub type_aliases: HashMap<FileId, HashMap<String, String>>,
+    /// Global bare-name → canonical map, for names that exist in only
+    /// one file. Ambiguous names (declared in multiple files) aren't
+    /// here — consumers must qualify or `use` to disambiguate.
+    pub bare_aliases: HashMap<String, String>,
+    /// Names that got declared in multiple files. Stored so we can
+    /// emit a useful "ambiguous; qualify or use" error at lookup time.
+    pub ambiguous_bare: HashSet<String>,
 }
 
 /// Traits that operator sugar desugars into. Calls routed through these
@@ -42,7 +61,27 @@ impl TypeRegistry {
                 methods: Vec::new(),
             },
         );
+        // Primitive `U4` is bare-accessible everywhere.
+        r.bare_aliases.insert(U4_NAME.to_string(), U4_NAME.to_string());
         r
+    }
+
+    /// Derive a module path for a file — strip `.ct`, replace path
+    /// separators with `::`. `std/ArrayList.ct` → `std::ArrayList`.
+    fn derive_module_path(file_name: &str) -> String {
+        let trimmed = file_name.strip_suffix(".ct").unwrap_or(file_name);
+        trimmed.replace('/', "::").replace('\\', "::")
+    }
+
+    /// Join a module path and a leaf, producing `path::leaf` unless
+    /// the path is empty (just `leaf`). Also returns just `leaf` for
+    /// the synthetic "main" file of the single-file entry point.
+    fn join_path(module: &str, leaf: &str) -> String {
+        if module.is_empty() {
+            leaf.to_string()
+        } else {
+            format!("{}::{}", module, leaf)
+        }
     }
 
     // --- public registration entry points ---------------------------------
@@ -68,6 +107,15 @@ impl TypeRegistry {
         let mut r = Self::new();
         let mut errors: Vec<TyperError> = Vec::new();
 
+        // Record per-file module paths up front so registration passes
+        // can canonicalize names as they go.
+        for (file_ix, (file_name, _)) in files.iter().enumerate() {
+            let file_id = file_ix as FileId;
+            r.file_module_paths
+                .insert(file_id, Self::derive_module_path(file_name));
+            r.type_aliases.entry(file_id).or_default();
+        }
+
         // Pass 1: collect structs/enums/traits (populates `types` and
         // `traits` with their top-level declarations) and per-file imports.
         for (file_ix, (_file, items)) in files.iter().enumerate() {
@@ -76,14 +124,21 @@ impl TypeRegistry {
             r.imports.entry(file_id).or_default();
             for (item, _sp) in *items {
                 let out = match item {
-                    ast::Item::Struct(s) => r.register_struct(s),
-                    ast::Item::Enum(e) => r.register_enum(e),
-                    ast::Item::Trait(t) => r.register_trait(t),
+                    ast::Item::Struct(s) => r.register_struct_with_file(s, file_id),
+                    ast::Item::Enum(e) => r.register_enum_with_file(e, file_id),
+                    ast::Item::Trait(t) => r.register_trait_with_file(t, file_id),
                     ast::Item::Use(u) => {
-                        r.imports
+                        // `use a::b::Foo;` — store a per-file alias
+                        // mapping the leaf to the full path, so the
+                        // resolver later finds it. Also track the bare
+                        // name in `imports` for operator trait scope.
+                        let full = u.name.0.clone();
+                        let leaf = full.rsplit("::").next().unwrap_or(&full).to_string();
+                        r.type_aliases
                             .entry(file_id)
                             .or_default()
-                            .insert(u.name.0.clone());
+                            .insert(leaf.clone(), full);
+                        r.imports.entry(file_id).or_default().insert(leaf);
                         Ok(())
                     }
                     _ => Ok(()),
@@ -134,9 +189,158 @@ impl TypeRegistry {
         }
     }
 
+    /// Add a canonical name to the bare-name index. If the bare name
+    /// was already mapped, mark it ambiguous and remove it from the
+    /// unambiguous alias map — subsequent bare references will error
+    /// unless the caller uses a path or a `use` alias.
+    fn add_bare_alias(&mut self, bare: &str, canonical: &str) {
+        if self.ambiguous_bare.contains(bare) {
+            return;
+        }
+        match self.bare_aliases.get(bare) {
+            None => {
+                self.bare_aliases.insert(bare.to_string(), canonical.to_string());
+            }
+            Some(existing) if existing == canonical => {
+                // same registration, no-op (e.g. primitive U4 pre-seed).
+            }
+            Some(_) => {
+                self.bare_aliases.remove(bare);
+                self.ambiguous_bare.insert(bare.to_string());
+            }
+        }
+    }
+
+    /// Resolve a type reference written in source (bare `Foo`,
+    /// path-qualified `a::b::Foo`, or via a per-file `use` alias) to
+    /// its registry-keyed storage name. The registry currently keys
+    /// types by their bare name; this helper converts path and alias
+    /// forms to that bare name.
+    ///
+    /// Rules, in order:
+    ///   1. `name` contains `::` → strip to the leaf, look up via
+    ///      `bare_aliases` to confirm that `<full_path> → leaf` is a
+    ///      known alias.
+    ///   2. Per-file `use` alias → mapped canonical (leaf form).
+    ///   3. Fallback to the name as-is (existing bare-name semantics).
+    pub fn canonicalize_type_name(
+        &self,
+        name: &str,
+        file_id: Option<FileId>,
+    ) -> Option<String> {
+        if let Some(idx) = name.rfind("::") {
+            // Path-qualified. Validate the full path is a known alias
+            // for the leaf; return the leaf as the storage name.
+            if let Some(leaf) = self.bare_aliases.get(name) {
+                return Some(leaf.clone());
+            }
+            // Permissive fallback: if the leaf alone is a known type,
+            // accept it. Keeps existing tests with user-written paths
+            // working without a declared module path for the leaf's
+            // file.
+            let leaf = &name[idx + 2..];
+            if self.types.contains_key(leaf) || self.traits.contains_key(leaf) {
+                return Some(leaf.to_string());
+            }
+            return None;
+        }
+        if let Some(fid) = file_id {
+            if let Some(alias) = self.type_aliases.get(&fid).and_then(|m| m.get(name)) {
+                // The alias is the full path the user wrote in `use`.
+                // Resolve to the storage (bare) name.
+                if let Some(bare) = self.bare_aliases.get(alias) {
+                    return Some(bare.clone());
+                }
+                let leaf = alias.rsplit("::").next().unwrap_or(alias);
+                if self.types.contains_key(leaf) || self.traits.contains_key(leaf) {
+                    return Some(leaf.to_string());
+                }
+            }
+        }
+        if self.types.contains_key(name) || self.traits.contains_key(name) {
+            return Some(name.to_string());
+        }
+        None
+    }
+
+    /// Convenience: resolve a bare/FQ name to a `TypeInfo` reference.
+    pub fn lookup_type(&self, name: &str, file_id: Option<FileId>) -> Option<&TypeInfo> {
+        self.canonicalize_type_name(name, file_id)
+            .and_then(|cn| self.types.get(&cn))
+    }
+
     // --- individual registration passes (exposed for testing) -------------
 
+    /// Wrapper for legacy test call sites — registers with file_id=0,
+    /// which uses empty module path ("") and names the type by its
+    /// bare identifier only. Real compilation always goes through
+    /// `register_struct_with_file`.
     pub fn register_struct(&mut self, def: &ast::StructDef) -> Result<(), TyperError> {
+        self.register_struct_core(def)
+    }
+
+    pub fn register_enum(&mut self, def: &ast::EnumDef) -> Result<(), TyperError> {
+        self.register_enum_core(def)
+    }
+
+    pub fn register_trait(&mut self, def: &ast::TraitDef) -> Result<(), TyperError> {
+        self.register_trait_core(def)
+    }
+
+    /// File-aware struct registration. Keeps `types` keyed by bare
+    /// name (for back-compat with every call site that lookups by
+    /// bare name), but records the bare-name-as-FQ mapping so
+    /// `a::b::Foo` path syntax resolves when `b` matches the file's
+    /// module path. Collisions across files surface as errors.
+    pub fn register_struct_with_file(
+        &mut self,
+        def: &ast::StructDef,
+        file_id: FileId,
+    ) -> Result<(), TyperError> {
+        self.register_path_alias_for(&def.name.0, file_id);
+        self.register_struct_core(def)
+    }
+
+    pub fn register_enum_with_file(
+        &mut self,
+        def: &ast::EnumDef,
+        file_id: FileId,
+    ) -> Result<(), TyperError> {
+        self.register_path_alias_for(&def.name.0, file_id);
+        self.register_enum_core(def)
+    }
+
+    pub fn register_trait_with_file(
+        &mut self,
+        def: &ast::TraitDef,
+        file_id: FileId,
+    ) -> Result<(), TyperError> {
+        self.register_path_alias_for(&def.name.0, file_id);
+        self.register_trait_core(def)
+    }
+
+    /// Record that `bare` is also reachable via `<file's module>::bare`.
+    /// Future type references written as `a::b::bare` can look up the
+    /// bare name through this alias table.
+    fn register_path_alias_for(&mut self, bare: &str, file_id: FileId) {
+        let module = self
+            .file_module_paths
+            .get(&file_id)
+            .cloned()
+            .unwrap_or_default();
+        if module.is_empty() {
+            return;
+        }
+        let full = Self::join_path(&module, bare);
+        self.bare_aliases.insert(full, bare.to_string());
+        // Also seed the bare → bare identity so `canonicalize_type_name`
+        // can recognize a plain reference from the declaring file.
+        self.bare_aliases
+            .entry(bare.to_string())
+            .or_insert_with(|| bare.to_string());
+    }
+
+    fn register_struct_core(&mut self, def: &ast::StructDef) -> Result<(), TyperError> {
         let name = def.name.0.clone();
         if self.types.contains_key(&name) && name != U4_NAME {
             return Err(TyperError::at(
@@ -146,10 +350,6 @@ impl TypeRegistry {
         }
         let templates: Vec<String> = def.templates.iter().map(|t| t.0.clone()).collect();
 
-        // Primitive U4 is special: its in-source declaration is an empty
-        // struct, but the registry treats it as a 1-cell primitive.
-        // (It is pre-populated in `new()`; a later `struct U4 {}` in source
-        // is accepted as redundant.)
         if name == U4_NAME {
             if !def.fields.is_empty() {
                 return Err(TyperError::at(
@@ -161,9 +361,6 @@ impl TypeRegistry {
         }
 
         let kind = if templates.is_empty() {
-            // Concrete struct: need to resolve every field's size.
-            // For now, only U4 and other already-registered concrete types
-            // are valid field types.
             let layout = self.compute_struct_layout(def)?;
             TypeKind::Struct(StructKind::Concrete(layout))
         } else {
@@ -188,7 +385,7 @@ impl TypeRegistry {
         Ok(())
     }
 
-    pub fn register_enum(&mut self, def: &ast::EnumDef) -> Result<(), TyperError> {
+    fn register_enum_core(&mut self, def: &ast::EnumDef) -> Result<(), TyperError> {
         let name = def.name.0.clone();
         if self.types.contains_key(&name) {
             return Err(TyperError::at(
@@ -233,7 +430,7 @@ impl TypeRegistry {
         Ok(())
     }
 
-    pub fn register_trait(&mut self, def: &ast::TraitDef) -> Result<(), TyperError> {
+    fn register_trait_core(&mut self, def: &ast::TraitDef) -> Result<(), TyperError> {
         let name = def.name.0.clone();
         if self.traits.contains_key(&name) {
             return Err(TyperError::at(
@@ -258,7 +455,10 @@ impl TypeRegistry {
         ext: &ast::ExtensionDef,
         file_id: FileId,
     ) -> Result<(), TyperError> {
-        let target_name = ext.target.0.name.0.clone();
+        let raw = ext.target.0.name.0.clone();
+        let target_name = self
+            .canonicalize_type_name(&raw, Some(file_id))
+            .unwrap_or(raw);
         let ty = self
             .types
             .get_mut(&target_name)
@@ -302,8 +502,18 @@ impl TypeRegistry {
         def: &ast::ImplDef,
         file_id: FileId,
     ) -> Result<(), TyperError> {
-        let trait_name = def.trait_ty.0.name.0.clone();
-        let target_name = def.target.0.name.0.clone();
+        // Canonicalize path-qualified references so `impl lib::M::Trait
+        // for lib::T::Type` ends up keyed by the same bare name the
+        // declaring file used. Falls through to the verbatim name if
+        // the path doesn't resolve — later validation catches it.
+        let trait_name_raw = def.trait_ty.0.name.0.clone();
+        let target_name_raw = def.target.0.name.0.clone();
+        let trait_name = self
+            .canonicalize_type_name(&trait_name_raw, Some(file_id))
+            .unwrap_or(trait_name_raw);
+        let target_name = self
+            .canonicalize_type_name(&target_name_raw, Some(file_id))
+            .unwrap_or(target_name_raw);
 
         // Trait must exist.
         let trait_info = self
@@ -357,13 +567,21 @@ impl TypeRegistry {
                 bounds: g
                     .bounds
                     .iter()
-                    .map(|(t, _)| BoundRef {
-                        trait_name: t.name.0.clone(),
-                        trait_args: t
-                            .templates
-                            .iter()
-                            .map(|(tv, _)| tv.clone())
-                            .collect(),
+                    .map(|(t, _)| {
+                        // Canonicalize bound trait references too so
+                        // `T: lib::Tag::Tag` matches impls that
+                        // registered as bare `Tag`.
+                        let canonical = self
+                            .canonicalize_type_name(&t.name.0, Some(file_id))
+                            .unwrap_or_else(|| t.name.0.clone());
+                        BoundRef {
+                            trait_name: canonical,
+                            trait_args: t
+                                .templates
+                                .iter()
+                                .map(|(tv, _)| tv.clone())
+                                .collect(),
+                        }
                     })
                     .collect(),
             })
@@ -384,7 +602,10 @@ impl TypeRegistry {
         if is_blanket {
             for g in &generics {
                 for b in &g.bounds {
-                    if !self.traits.contains_key(&b.trait_name) {
+                    let canonical = self
+                        .canonicalize_type_name(&b.trait_name, Some(file_id))
+                        .unwrap_or_else(|| b.trait_name.clone());
+                    if !self.traits.contains_key(&canonical) {
                         return Err(TyperError::at(
                             format!("unknown trait `{}` in bound", b.trait_name),
                             def.target.1.clone(),
@@ -1139,15 +1360,25 @@ impl TypeRegistry {
         }
 
         // User-defined generic struct/enum instantiation like
-        // `ArrayList<U4, 4, U4>` or `Option<U4>`.
+        // `ArrayList<U4, 4, U4>` or `Option<U4>`. Path-qualified
+        // references land here too; canonicalize to the bare storage
+        // name before walking.
         if !ty.templates.is_empty() {
-            if let Some(info) = self.types.get(&ty.name.0) {
+            let canonical = self
+                .canonicalize_type_name(&ty.name.0, None)
+                .unwrap_or_else(|| ty.name.0.clone());
+            if let Some(info) = self.types.get(&canonical) {
                 match &info.kind {
                     TypeKind::Struct(StructKind::Templated { .. }) => {
-                        return self.resolve_struct_layout(ty, sp).map(|l| l.size);
+                        // Normalize the name for downstream sizing.
+                        let mut ty2 = ty.clone();
+                        ty2.name.0 = canonical;
+                        return self.resolve_struct_layout(&ty2, sp).map(|l| l.size);
                     }
                     TypeKind::Enum(EnumKind::Templated { .. }) => {
-                        return self.resolve_enum_layout(ty, sp).map(|l| l.total_size());
+                        let mut ty2 = ty.clone();
+                        ty2.name.0 = canonical;
+                        return self.resolve_enum_layout(&ty2, sp).map(|l| l.total_size());
                     }
                     _ => {}
                 }
@@ -1161,7 +1392,10 @@ impl TypeRegistry {
                 sp.clone(),
             ));
         }
-        let info = self.types.get(&ty.name.0).ok_or_else(|| {
+        let canonical = self
+            .canonicalize_type_name(&ty.name.0, None)
+            .unwrap_or_else(|| ty.name.0.clone());
+        let info = self.types.get(&canonical).ok_or_else(|| {
             TyperError::at(
                 format!("unknown type `{}`", ty.name.0),
                 sp.clone(),
@@ -1403,9 +1637,12 @@ impl TypeRegistry {
         ty: &ast::Type,
         sp: &new_parser::Span,
     ) -> Result<StructLayout, TyperError> {
+        let canonical = self
+            .canonicalize_type_name(&ty.name.0, None)
+            .unwrap_or_else(|| ty.name.0.clone());
         // Direct concrete lookup.
         if ty.templates.is_empty() {
-            let info = self.types.get(&ty.name.0).ok_or_else(|| {
+            let info = self.types.get(&canonical).ok_or_else(|| {
                 TyperError::at(format!("unknown type `{}`", ty.name.0), sp.clone())
             })?;
             return match &info.kind {
@@ -1418,7 +1655,7 @@ impl TypeRegistry {
         }
 
         // Generic instantiation — substitute and compute.
-        let info = self.types.get(&ty.name.0).ok_or_else(|| {
+        let info = self.types.get(&canonical).ok_or_else(|| {
             TyperError::at(format!("unknown type `{}`", ty.name.0), sp.clone())
         })?;
         let fields = match &info.kind {
@@ -1480,9 +1717,12 @@ impl TypeRegistry {
         ty: &ast::Type,
         sp: &new_parser::Span,
     ) -> Result<EnumLayout, TyperError> {
+        let canonical = self
+            .canonicalize_type_name(&ty.name.0, None)
+            .unwrap_or_else(|| ty.name.0.clone());
         // Direct concrete lookup.
         if ty.templates.is_empty() {
-            let info = self.types.get(&ty.name.0).ok_or_else(|| {
+            let info = self.types.get(&canonical).ok_or_else(|| {
                 TyperError::at(format!("unknown type `{}`", ty.name.0), sp.clone())
             })?;
             return match &info.kind {
@@ -1495,7 +1735,7 @@ impl TypeRegistry {
         }
 
         // Generic instantiation — substitute and compute.
-        let info = self.types.get(&ty.name.0).ok_or_else(|| {
+        let info = self.types.get(&canonical).ok_or_else(|| {
             TyperError::at(format!("unknown type `{}`", ty.name.0), sp.clone())
         })?;
         let variants = match &info.kind {

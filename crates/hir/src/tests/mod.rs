@@ -23,6 +23,7 @@ mod misc_edge_tests;
 mod blanket_impl_tests;
 mod resolution_tests;
 mod iter_string_tests;
+mod path_import_tests;
 
 use new_parser::ast;
 
