@@ -651,16 +651,13 @@ impl<'a> Generator<'a> {
         value: &ast::Spanned<ast::Expr>,
         block: &mut HirBlock,
     ) -> Result<(), HirError> {
-        // For qualified paths like `<U4 as Add>::Output`, resolve once up
-        // front so the binding records the concrete name rather than the
-        // unresolved associated-type tail.
-        let resolved_ast_ty = if ty.0.qself.is_some() {
-            self.reg
-                .resolve_qualified_path(&ty.0, &ty.1)
-                .map_err(|e| HirError::at(e.message, ty.1.clone()))?
-        } else {
-            ty.0.clone()
-        };
+        // Resolve qself at the top level AND inside any nested template
+        // args (e.g. `Array<<U4 as Add>::Output, 3, U4>`) so the binding
+        // and the downstream Call sees concrete types everywhere.
+        let resolved_ast_ty = self
+            .reg
+            .resolve_qself_deep(&ty.0, &ty.1, &self.simple.type_name)
+            .map_err(|e| HirError::at(e.message, ty.1.clone()))?;
         let resolved = self.resolve_ty_name(&resolved_ast_ty.name.0);
         // Use the typer's Array-aware sizing when we have an AST type with
         // template args (falls back to the plain lookup otherwise). This
@@ -723,11 +720,11 @@ impl<'a> Generator<'a> {
                 templates: call_tpl,
                 args: call_args,
             } if call_tpl.is_empty()
-                && call_ty.0.name.0 == ty.0.name.0
-                && !ty.0.templates.is_empty() =>
+                && call_ty.0.name.0 == resolved_ast_ty.name.0
+                && !resolved_ast_ty.templates.is_empty() =>
             {
                 let mut new_ty = call_ty.clone();
-                new_ty.0.templates = ty.0.templates.clone();
+                new_ty.0.templates = resolved_ast_ty.templates.clone();
                 patched_value = (
                     ast::Expr::StaticCall {
                         ty: new_ty,
@@ -1275,9 +1272,10 @@ impl<'a> Generator<'a> {
             }
         };
 
-        // Evaluate args into slots. Size each arg via the generic-aware
-        // path (a bare `type_size` lookup would return 1 for generics
-        // like `ArrayList<U4, 3, U4>` and silently truncate the copy).
+        // Evaluate args into slots. For l-value args we reuse the
+        // caller's storage so the inliner's mut-param write-back lands
+        // on the real source variable (mirrors the `mut self` lvalue-
+        // passthrough). Non-lvalue args copy into a fresh temp as before.
         let mut arg_slots: Vec<(SlotId, u32)> = Vec::new();
         for a in args {
             let aty = self.infer_expr_type(&a.0, &a.1)?;
@@ -1285,8 +1283,14 @@ impl<'a> Generator<'a> {
             let size = self
                 .receiver_cell_size(&a.0)
                 .unwrap_or_else(|| self.type_size_permissive(&resolved));
-            let s = self.alloc_temp(&resolved, size);
-            self.gen_expr_into(&a.0, &a.1, Some(s), block)?;
+            let s = match self.lvalue_slot(&a.0) {
+                Some(slot) => slot,
+                None => {
+                    let t = self.alloc_temp(&resolved, size);
+                    self.gen_expr_into(&a.0, &a.1, Some(t), block)?;
+                    t
+                }
+            };
             arg_slots.push((s, size));
         }
 
@@ -1592,24 +1596,16 @@ impl<'a> Generator<'a> {
                     args: recv_args.to_vec(),
                 }),
             );
-            // Substitute into the return type and rebuild as ast::Type.
-            let arg = subst_concrete_arg(
-                &ast::TypeOrValue::Type(ret_ty.0.clone()),
-                &bindings,
-            );
-            let ast_ty = match arg {
-                ConcreteTemplateArg::Type(ct) => ast::Type {
-                    name: (ct.name.clone(), 0..0),
-                    templates: ct
-                        .args
-                        .iter()
-                        .map(|a| (lower_concrete_to_ast_tv(a), 0..0))
-                        .collect(),
-                    qself: None,
-                },
-                ConcreteTemplateArg::Value(_) => return None,
-            };
-            self.reg.resolve_type_size(&ast_ty, &(0..0)).ok()
+            // Substitute into the return type. If the return type uses a
+            // qualified path (e.g. `<T as Add>::Output`), first substitute
+            // the qself's `self_ty`/`trait_ty` through the bindings, then
+            // let the registry resolve the qualified path and size it.
+            let substituted = subst_ast_type_with_qself(&ret_ty.0, &bindings);
+            let concrete = self
+                .reg
+                .resolve_qself_deep(&substituted, &(0..0), type_name)
+                .ok()?;
+            self.reg.resolve_type_size(&concrete, &(0..0)).ok()
         };
         let inherent_key = typer::FnSig::new(type_name, method);
         if let Some(f) = self.db.get(&inherent_key) {
@@ -1654,6 +1650,64 @@ impl<'a> Generator<'a> {
             }
         }
         raw_name.to_string()
+    }
+
+    /// Look up the return-type head name for a (type, method) pair,
+    /// substituting template params from the receiver's concrete args.
+    /// Used by operator-sugar return-type inference — knowing the *size*
+    /// isn't enough; callers need the head name to chain further member
+    /// lookups. Returns `None` when we can't figure out a concrete head
+    /// (template-param binding missing, unknown method, ...).
+    fn lookup_return_type_name(
+        &self,
+        type_name: &str,
+        method: &str,
+        recv_args: &[ConcreteTemplateArg],
+    ) -> Option<String> {
+        let info = self.reg.types.get(type_name)?;
+        let lookup = |f: &typer::Fn| -> Option<String> {
+            let ret_ty = match f {
+                typer::Fn::Simple(s) => s.body.sig.return_type.as_ref()?,
+                typer::Fn::Templated(t) => t.body.sig.return_type.as_ref()?,
+            };
+            let mut bindings: std::collections::HashMap<String, ConcreteTemplateArg> =
+                std::collections::HashMap::new();
+            if info.templates.len() == recv_args.len() {
+                for (n, a) in info.templates.iter().zip(recv_args.iter()) {
+                    bindings.insert(n.clone(), a.clone());
+                }
+            }
+            bindings.insert(
+                "Self".to_string(),
+                ConcreteTemplateArg::Type(ConcreteType {
+                    name: type_name.to_string(),
+                    args: recv_args.to_vec(),
+                }),
+            );
+            let arg = subst_concrete_arg(
+                &ast::TypeOrValue::Type(ret_ty.0.clone()),
+                &bindings,
+            );
+            match arg {
+                ConcreteTemplateArg::Type(ct) => Some(ct.name),
+                _ => None,
+            }
+        };
+        // Inherent first.
+        if let Some(f) = self.db.get(&typer::FnSig::new(type_name, method)) {
+            if let Some(n) = lookup(f) {
+                return Some(n);
+            }
+        }
+        // Then any trait-keyed match.
+        for (k, f) in &self.db.functions {
+            if k.type_name == type_name && k.method_name == method {
+                if let Some(n) = lookup(f) {
+                    return Some(n);
+                }
+            }
+        }
+        None
     }
 
     /// Try to infer the enclosing type's template args for a
@@ -1790,6 +1844,67 @@ impl<'a> Generator<'a> {
                     .map(|(tv, _)| lower_tv(tv))
                     .collect();
                 Some((f.ast_type.name.0.clone(), args))
+            }
+            ast::Expr::BinaryOp(op, l, _) => {
+                // For Add/Sub, the result is the lhs type's `<Output>`
+                // per the operator trait. Resolve the lhs's concrete
+                // type + args, then consult the add/sub method's return
+                // type with substitution. Comparisons and short-circuit
+                // operators always produce a Bool (no template args).
+                match op {
+                    ast::BinOp::Add | ast::BinOp::Sub => {
+                        let method = if matches!(op, ast::BinOp::Add) {
+                            "add"
+                        } else {
+                            "sub"
+                        };
+                        let (lhs_name, lhs_args) = self.concrete_type_of(&l.0)?;
+                        let resolved = self.resolve_ty_name(&lhs_name);
+                        let info = self.reg.types.get(&resolved)?;
+                        let key = typer::FnSig::new(&resolved, method);
+                        let mut found: Option<&typer::Fn> = self.db.get(&key);
+                        if found.is_none() {
+                            for (k, f) in &self.db.functions {
+                                if k.type_name == resolved && k.method_name == method {
+                                    found = Some(f);
+                                    break;
+                                }
+                            }
+                        }
+                        let f = found?;
+                        let ret_ty = match f {
+                            typer::Fn::Simple(s) => s.body.sig.return_type.as_ref()?,
+                            typer::Fn::Templated(t) => t.body.sig.return_type.as_ref()?,
+                        };
+                        let mut bindings: std::collections::HashMap<
+                            String,
+                            ConcreteTemplateArg,
+                        > = std::collections::HashMap::new();
+                        if info.templates.len() == lhs_args.len() {
+                            for (n, a) in info.templates.iter().zip(lhs_args.iter()) {
+                                bindings.insert(n.clone(), a.clone());
+                            }
+                        }
+                        bindings.insert(
+                            "Self".to_string(),
+                            ConcreteTemplateArg::Type(ConcreteType {
+                                name: resolved.clone(),
+                                args: lhs_args.clone(),
+                            }),
+                        );
+                        let arg = subst_concrete_arg(
+                            &ast::TypeOrValue::Type(ret_ty.0.clone()),
+                            &bindings,
+                        );
+                        match arg {
+                            ConcreteTemplateArg::Type(ct) => {
+                                Some((ct.name, ct.args))
+                            }
+                            _ => None,
+                        }
+                    }
+                    _ => Some(("Bool".to_string(), Vec::new())),
+                }
             }
             ast::Expr::StaticCall { ty, name, templates, args } => {
                 // Determine the receiver's concrete template args the same
@@ -2269,7 +2384,22 @@ impl<'a> Generator<'a> {
                 | ast::BinOp::LtEq
                 | ast::BinOp::And
                 | ast::BinOp::Or => "Bool".into(),
-                ast::BinOp::Add | ast::BinOp::Sub => self.infer_expr_type(&l.0, &l.1)?,
+                ast::BinOp::Add | ast::BinOp::Sub => {
+                    // With `Add<Output>` / `Sub<Output>`, the result type
+                    // can differ from the lhs (widening, etc.). Look it
+                    // up via the operator trait's impl on the lhs type.
+                    let method = match op {
+                        ast::BinOp::Add => "add",
+                        ast::BinOp::Sub => "sub",
+                        _ => unreachable!(),
+                    };
+                    let lhs_name = self.infer_expr_type(&l.0, &l.1)?;
+                    let resolved = self.resolve_ty_name(&lhs_name);
+                    // Look up the return type's head via the trait method.
+                    let recv_args = self.infer_receiver_type_args(&l.0);
+                    self.lookup_return_type_name(&resolved, method, &recv_args)
+                        .unwrap_or(resolved)
+                }
             },
             ast::Expr::StructLiteral { ty, .. } | ast::Expr::EnumVariant { ty, .. } => {
                 self.resolve_ty_name(&ty.0.name.0)
@@ -2559,6 +2689,62 @@ fn unify_type_against_concrete(
                     .or_insert_with(|| a_arg.clone());
             }
         }
+    }
+}
+
+/// Substitute template-param bindings through an AST type tree. Unlike
+/// `subst_concrete_arg`, this preserves `qself` prefixes so a later
+/// `resolve_qself_deep` pass can resolve them against the bound
+/// `self_ty`. Used by return-size lookups when the callee's declared
+/// return type is a qualified path like `<T as Add>::Output`.
+pub(crate) fn subst_ast_type_with_qself(
+    ty: &ast::Type,
+    bindings: &std::collections::HashMap<String, ConcreteTemplateArg>,
+) -> ast::Type {
+    // Case 1: the type head itself is a bound template param AND has no
+    // further template args (e.g. bare `T`). Replace wholesale.
+    if ty.templates.is_empty() && ty.qself.is_none() {
+        if let Some(ConcreteTemplateArg::Type(ct)) = bindings.get(&ty.name.0) {
+            return ast::Type {
+                name: (ct.name.clone(), 0..0),
+                templates: ct
+                    .args
+                    .iter()
+                    .map(|a| (lower_concrete_to_ast_tv(a), 0..0))
+                    .collect(),
+                qself: None,
+            };
+        }
+    }
+    // Case 2: recurse into template args.
+    let templates = ty
+        .templates
+        .iter()
+        .map(|(tv, sp)| {
+            let new_tv = match tv {
+                ast::TypeOrValue::Value(n) => ast::TypeOrValue::Value(*n),
+                ast::TypeOrValue::Type(inner) => ast::TypeOrValue::Type(
+                    subst_ast_type_with_qself(inner, bindings),
+                ),
+            };
+            (new_tv, sp.clone())
+        })
+        .collect();
+    ast::Type {
+        name: ty.name.clone(),
+        templates,
+        qself: ty.qself.as_ref().map(|q| {
+            Box::new(ast::QSelf {
+                self_ty: (
+                    subst_ast_type_with_qself(&q.self_ty.0, bindings),
+                    q.self_ty.1.clone(),
+                ),
+                trait_ty: (
+                    subst_ast_type_with_qself(&q.trait_ty.0, bindings),
+                    q.trait_ty.1.clone(),
+                ),
+            })
+        }),
     }
 }
 

@@ -730,6 +730,39 @@ impl TypeRegistry {
         Ok(elem_size * n)
     }
 
+    /// Walk an AST type and resolve every qualified-path occurrence (at
+    /// the top level and inside nested template args) to a concrete
+    /// `ast::Type` with `qself: None`. Non-qself nodes are passed through
+    /// with their children recursively resolved. Errors bubble up.
+    pub fn resolve_qself_deep(
+        &self,
+        ty: &ast::Type,
+        sp: &new_parser::Span,
+        self_hint: &str,
+    ) -> Result<ast::Type, TyperError> {
+        let resolved_head = if ty.qself.is_some() {
+            self.resolve_qualified_path_with_self(ty, sp, self_hint)?
+        } else {
+            ty.clone()
+        };
+        let mut out_templates: Vec<ast::Spanned<ast::TypeOrValue>> =
+            Vec::with_capacity(resolved_head.templates.len());
+        for (tv, tv_sp) in &resolved_head.templates {
+            let new_tv = match tv {
+                ast::TypeOrValue::Value(n) => ast::TypeOrValue::Value(*n),
+                ast::TypeOrValue::Type(inner) => ast::TypeOrValue::Type(
+                    self.resolve_qself_deep(inner, tv_sp, self_hint)?,
+                ),
+            };
+            out_templates.push((new_tv, tv_sp.clone()));
+        }
+        Ok(ast::Type {
+            name: resolved_head.name,
+            templates: out_templates,
+            qself: None,
+        })
+    }
+
     /// Resolve a `<SelfTy as Trait>::Ident` qualified path to a concrete
     /// type reference. The trait's template parameter list names positions;
     /// `Ident` must match one of them (e.g. `Output` at position 0 for
