@@ -1124,12 +1124,16 @@ impl<'a> Generator<'a> {
             }
         };
 
-        // Evaluate args into slots.
+        // Evaluate args into slots. Size each arg via the generic-aware
+        // path (a bare `type_size` lookup would return 1 for generics
+        // like `ArrayList<U4, 3, U4>` and silently truncate the copy).
         let mut arg_slots: Vec<(SlotId, u32)> = Vec::new();
         for a in args {
             let aty = self.infer_expr_type(&a.0, &a.1)?;
             let resolved = self.resolve_ty_name(&aty);
-            let size = self.type_size_permissive(&resolved);
+            let size = self
+                .receiver_cell_size(&a.0)
+                .unwrap_or_else(|| self.type_size_permissive(&resolved));
             let s = self.alloc_temp(&resolved, size);
             self.gen_expr_into(&a.0, &a.1, Some(s), block)?;
             arg_slots.push((s, size));
@@ -1209,7 +1213,9 @@ impl<'a> Generator<'a> {
         for a in args {
             let aty = self.infer_expr_type(&a.0, &a.1)?;
             let resolved_a = self.resolve_ty_name(&aty);
-            let size = self.type_size_permissive(&resolved_a);
+            let size = self
+                .receiver_cell_size(&a.0)
+                .unwrap_or_else(|| self.type_size_permissive(&resolved_a));
             let s = self.alloc_temp(&resolved_a, size);
             self.gen_expr_into(&a.0, &a.1, Some(s), block)?;
             arg_slots.push((s, size));

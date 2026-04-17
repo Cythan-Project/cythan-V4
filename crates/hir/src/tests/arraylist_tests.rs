@@ -75,6 +75,12 @@ fn run_program(extra: &str, entry: &typer::FnSig, args: &[u8]) -> Vec<u8> {
     let (reg, db, fns) = compile_program(extra);
     let inlined =
         inline_program_full(&fns, entry, Some(&reg), Some(&db)).expect("inline");
+    if std::env::var("HIR_DUMP").is_ok() {
+        eprintln!("=== entry: {} slots ===", inlined.slot_count);
+        for (i, op) in inlined.body.ops.iter().enumerate() {
+            eprintln!("  {:3} {:?}", i, op);
+        }
+    }
     let mir_block = hir_to_mir(&inlined.body).expect("mir conv");
 
     struct Null;
@@ -449,9 +455,7 @@ fn nested_arraylist_push_to_inner() {
 }
 
 #[test]
-#[ignore = "chained nested method calls: outer.get(i).get(j) on multiple inner lists \
-            still loses data — push of the second inner doesn't propagate cleanly. \
-            Working on this."]
+
 fn nested_arraylist_multiple_inner_elements() {
     let src = r#"
         extension U4 {
@@ -474,8 +478,80 @@ fn nested_arraylist_multiple_inner_elements() {
 }
 
 #[test]
-#[ignore = "chained nested method calls: outer.get(i).len() on both pushed inners \
-            reads the wrong offsets. Related to the multiple_inner_elements bug."]
+fn nested_minimal_get1_after_two_pushes() {
+    // Single inner list pushed into outer; fetch index 1 of it.
+    let src = r#"
+        extension U4 {
+            fn test(): U4 {
+                mut ArrayList<U4, 2, ArrayList<U4, 3, U4>> outer = ArrayList::new();
+                mut ArrayList<U4, 3, U4> inner = ArrayList::new();
+                inner.push(1);
+                inner.push(2);
+                outer.push(inner);
+                outer.get(0).get(1)
+            }
+        }
+    "#;
+    let entry = typer::FnSig::new("U4", "test");
+    assert_eq!(run_program(src, &entry, &[]), vec![2]);
+}
+
+#[test]
+fn nested_outer_only_len_after_push() {
+    // Simplest nested scenario: push one inner, ask outer.len() (should be 1).
+    // This tests ONLY the outer's push/len pipeline, no chained inner-get.
+    let src = r#"
+        extension U4 {
+            fn test(): U4 {
+                mut ArrayList<U4, 2, ArrayList<U4, 3, U4>> outer = ArrayList::new();
+                mut ArrayList<U4, 3, U4> inner = ArrayList::new();
+                outer.push(inner);
+                outer.len()
+            }
+        }
+    "#;
+    let entry = typer::FnSig::new("U4", "test");
+    assert_eq!(run_program(src, &entry, &[]), vec![1]);
+}
+
+#[test]
+fn nested_store_inner_in_local_then_get() {
+    let src = r#"
+        extension U4 {
+            fn test(): U4 {
+                mut ArrayList<U4, 2, ArrayList<U4, 3, U4>> outer = ArrayList::new();
+                mut ArrayList<U4, 3, U4> inner = ArrayList::new();
+                inner.push(1);
+                inner.push(2);
+                outer.push(inner);
+                mut ArrayList<U4, 3, U4> got = outer.get(0);
+                got.get(1)
+            }
+        }
+    "#;
+    let entry = typer::FnSig::new("U4", "test");
+    assert_eq!(run_program(src, &entry, &[]), vec![2]);
+}
+
+#[test]
+fn nested_minimal_len_after_one_push() {
+    let src = r#"
+        extension U4 {
+            fn test(): U4 {
+                mut ArrayList<U4, 2, ArrayList<U4, 3, U4>> outer = ArrayList::new();
+                mut ArrayList<U4, 3, U4> inner = ArrayList::new();
+                inner.push(7);
+                outer.push(inner);
+                outer.get(0).len()
+            }
+        }
+    "#;
+    let entry = typer::FnSig::new("U4", "test");
+    assert_eq!(run_program(src, &entry, &[]), vec![1]);
+}
+
+#[test]
+
 fn nested_arraylist_inner_len_independent() {
     // Two inner lists with different current lengths — verifies that the
     // outer list's monomorph propagates the inner generic to `get`.
