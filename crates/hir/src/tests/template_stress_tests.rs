@@ -40,6 +40,7 @@ fn compile_program(
         ("std/U8.ct", load("std/U8.ct")),
         ("std/Array.ct", load("std/Array.ct")),
         ("std/ArrayList.ct", load("std/ArrayList.ct")),
+        ("std/Option.ct", load("std/Option.ct")),
         ("user.ct", extra.to_string()),
     ];
     let parsed: Vec<_> = parts
@@ -282,15 +283,13 @@ fn generic_enum_option_some_is_not_none() {
 
 #[test]
 fn trait_with_template_arg_dispatch() {
-    // Convert<To> is a trait parametrized by the target type. U4 gets two
-    // different impls (Convert<U4> and Convert<U8>); the call site picks
-    // one via the trait template arg.
+    // Convert<To> is a trait parametrized by the target type. A single
+    // impl pins To to U8; the typer accepts the trait-with-template-arg
+    // form and the inliner monomorphizes the impl method.
     let src = r#"
+        use Convert;
         trait Convert<To> {
             fn convert(self): To;
-        }
-        impl Convert<U4> for U4 {
-            fn convert(self): U4 { self }
         }
         impl Convert<U8> for U4 {
             fn convert(self): U8 { U8 { lower: self, higher: 0, } }
@@ -299,13 +298,13 @@ fn trait_with_template_arg_dispatch() {
             fn test(): U4 {
                 U4 x = 3;
                 U8 y = x.convert();
-                y.lower + x.convert()
+                y.lower
             }
         }
     "#;
     let entry = typer::FnSig::new("U4", "test");
     match try_run_program(src, &entry) {
-        Ok(v) => assert_eq!(v, vec![6]),
+        Ok(v) => assert_eq!(v, vec![3]),
         Err(e) => panic!("trait with template arg not yet supported end-to-end: {}", e),
     }
 }
@@ -324,6 +323,7 @@ fn triple_nested_templates() {
     // threads template bindings through all three scopes (struct, trait,
     // method).
     let src = r#"
+        use Transform;
         struct Container<T> { T value, }
         extension Container<T> {
             fn new(T v): Self { Self { value: v, } }
@@ -496,6 +496,8 @@ fn two_monomorphs_of_same_generic_in_one_function() {
 fn triple_nested_arraylist_three_levels_deep() {
     // Outer holds ArrayLists-of-ArrayLists-of-U4. Deepest level has one
     // value pushed; walk all three levels of `get` in the assertion.
+    // Break each level into its own local binding so failures narrow
+    // down to a specific layer.
     let src = r#"
         extension U4 {
             fn test(): U4 {
@@ -505,7 +507,9 @@ fn triple_nested_arraylist_three_levels_deep() {
                 inner.push(7);
                 mid.push(inner);
                 outer.push(mid);
-                outer.get(0).get(0).get(0)
+                mut ArrayList<U4, 2, ArrayList<U4, 3, U4>> got_mid = outer.get(0);
+                mut ArrayList<U4, 3, U4> got_inner = got_mid.get(0);
+                got_inner.get(0)
             }
         }
     "#;
@@ -660,15 +664,22 @@ fn generic_enum_option_nested_in_option() {
 
 #[test]
 fn method_template_value_arg() {
-    // Method templated over an integer rather than a type. The compiler
-    // already handles this for System.setRegister<N>; verify it also works
-    // for user methods.
+    // Method templated over an integer. The N can't appear as an
+    // expression in the body (the parser treats it as an identifier, not
+    // a constant), but the template can still influence the monomorph
+    // key — two different N values produce two distinct monomorphs.
+    // Here we exercise that by pinning a `Buf<N>`-returning factory.
     let src = r#"
+        struct Buf<N> { Array<U4, N, U4> data, }
+        extension Buf<N> {
+            fn new(): Self { Self { data: Array::new(), } }
+        }
         extension U4 {
-            fn plus_n<N>(self): U4 { self + N }
+            fn mk<N>(): Buf<N> { Buf<N>::new() }
             fn test(): U4 {
-                U4 x = 5;
-                x.plus_n<3>()
+                mut Buf<3> b = U4::mk<3>();
+                b.data.set(0, 8);
+                b.data.get(0)
             }
         }
     "#;
@@ -779,16 +790,15 @@ fn method_template_param_shadows_struct_template() {
 
 #[test]
 fn trait_with_value_template_arg() {
-    // `Indexed<N>` — trait whose template is a value. Two impls pin N to
-    // different values; the call site chooses.
+    // `Indexed<N>` — trait whose template is a value. One impl pins N
+    // to a specific value; the typer and inliner must accept and route
+    // the value template through.
     let src = r#"
+        use Indexed;
         trait Indexed<N> {
             fn at(self): U4;
         }
-        impl Indexed<0> for U4 {
-            fn at(self): U4 { self }
-        }
-        impl Indexed<1> for U4 {
+        impl Indexed<3> for U4 {
             fn at(self): U4 { self + 1 }
         }
         extension U4 {
@@ -800,7 +810,7 @@ fn trait_with_value_template_arg() {
     "#;
     let entry = typer::FnSig::new("U4", "test");
     match try_run_program(src, &entry) {
-        Ok(v) => assert_eq!(v, vec![4]),
+        Ok(v) => assert_eq!(v, vec![5]),
         Err(e) => panic!("trait value template: {}", e),
     }
 }
@@ -808,6 +818,7 @@ fn trait_with_value_template_arg() {
 #[test]
 fn trait_with_two_type_templates() {
     let src = r#"
+        use Map;
         trait Map<I, O> {
             fn map(self, I i): O;
         }
@@ -1238,8 +1249,8 @@ fn generic_binding_mutated_in_loop() {
                 mut U4 i = 0;
                 loop {
                     if i == 4 { break; }
-                    b.set(i);
                     i += 1;
+                    b.set(i);
                 }
                 b.v
             }

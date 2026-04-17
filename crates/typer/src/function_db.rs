@@ -73,6 +73,13 @@ pub struct SimpleFn {
     /// File in which this method was declared. Used by the HIR generator to
     /// look up which traits are in scope when resolving calls from its body.
     pub file_id: crate::types::FileId,
+    /// When this `SimpleFn` is the output of monomorphizing a method on a
+    /// generic type (e.g. `Pair<U4>::new` from `Pair<T>::new`), this holds
+    /// the concrete type-level template args. Empty when the enclosing
+    /// type is non-generic or when this is a direct non-monomorphized
+    /// Simple. HIR gen reads this to fill in `Pair::new(...)` calls that
+    /// implicitly mean `Self::new(...)`.
+    pub type_template_args: Vec<ast::TypeOrValue>,
 }
 
 /// A function whose signature still has unresolved template params — either
@@ -138,6 +145,7 @@ impl FunctionDB {
                             type_name: info.name.clone(),
                             from_trait: m.from_trait.clone(),
                             file_id: m.file_id,
+                            type_template_args: Vec::new(),
                         }),
                         Err(e) => {
                             errors.push(e);

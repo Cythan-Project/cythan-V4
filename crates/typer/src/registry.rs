@@ -277,6 +277,7 @@ impl TypeRegistry {
                 function: method.clone(),
                 file_id,
                 from_trait: None,
+                trait_template_args: Vec::new(),
             });
         }
         Ok(())
@@ -374,16 +375,26 @@ impl TypeRegistry {
         // Attach impl methods to target type's methods list.
         //
         // Collisions are only an error when:
-        //   - another impl of the SAME trait already defined this method
-        //     (two impls of one trait for one type = UB), OR
+        //   - another impl of the SAME trait WITH THE SAME TEMPLATE ARGS
+        //     already defined this method (two identical impls for one
+        //     type = UB), OR
         //   - inherent + trait with same name isn't what we want: we DO
-        //     allow that (resolver picks inherent). So only same-trait
-        //     duplication is rejected here.
+        //     allow that (resolver picks inherent). So only same-trait-
+        //     same-args duplication is rejected here — `impl Convert<U4>
+        //     for U4` and `impl Convert<U8> for U4` coexist.
+        let trait_args: Vec<ast::TypeOrValue> = def
+            .trait_ty
+            .0
+            .templates
+            .iter()
+            .map(|(tv, _)| tv.clone())
+            .collect();
         let ty = self.types.get_mut(&target_name).unwrap();
         for (method, _) in &def.methods {
             let collides_same_trait = ty.methods.iter().any(|m| {
                 m.function.sig.name.0 == method.sig.name.0
                     && m.from_trait.as_deref() == Some(trait_name.as_str())
+                    && m.trait_template_args == trait_args
             });
             if collides_same_trait {
                 return Err(TyperError::at(
@@ -398,6 +409,7 @@ impl TypeRegistry {
                 function: method.clone(),
                 file_id,
                 from_trait: Some(trait_name.clone()),
+                trait_template_args: trait_args.clone(),
             });
         }
 
@@ -627,11 +639,18 @@ impl TypeRegistry {
             return self.array_layout_size(ty, sp);
         }
 
-        // User-defined generic struct instantiation like `ArrayList<U4, 4, U4>`.
+        // User-defined generic struct/enum instantiation like
+        // `ArrayList<U4, 4, U4>` or `Option<U4>`.
         if !ty.templates.is_empty() {
             if let Some(info) = self.types.get(&ty.name.0) {
-                if matches!(&info.kind, TypeKind::Struct(StructKind::Templated { .. })) {
-                    return self.resolve_struct_layout(ty, sp).map(|l| l.size);
+                match &info.kind {
+                    TypeKind::Struct(StructKind::Templated { .. }) => {
+                        return self.resolve_struct_layout(ty, sp).map(|l| l.size);
+                    }
+                    TypeKind::Enum(EnumKind::Templated { .. }) => {
+                        return self.resolve_enum_layout(ty, sp).map(|l| l.total_size());
+                    }
+                    _ => {}
                 }
             }
             return Err(TyperError::at(
@@ -780,6 +799,121 @@ impl TypeRegistry {
         Ok(StructLayout {
             fields: out_fields,
             size: offset,
+        })
+    }
+
+    /// Resolve a (possibly-generic) enum type reference to a concrete
+    /// `EnumLayout`. Mirrors `resolve_struct_layout` but for enums: each
+    /// variant's payload AST type is substituted with the concrete
+    /// template args, then sized; the enum's data_size is the max of
+    /// payload sizes.
+    pub fn resolve_enum_layout(
+        &self,
+        ty: &ast::Type,
+        sp: &new_parser::Span,
+    ) -> Result<EnumLayout, TyperError> {
+        // Direct concrete lookup.
+        if ty.templates.is_empty() {
+            let info = self.types.get(&ty.name.0).ok_or_else(|| {
+                TyperError::at(format!("unknown type `{}`", ty.name.0), sp.clone())
+            })?;
+            return match &info.kind {
+                TypeKind::Enum(EnumKind::Concrete(l)) => Ok(l.clone()),
+                _ => Err(TyperError::at(
+                    format!("`{}` is not a concrete enum", ty.name.0),
+                    sp.clone(),
+                )),
+            };
+        }
+
+        // Generic instantiation — substitute and compute.
+        let info = self.types.get(&ty.name.0).ok_or_else(|| {
+            TyperError::at(format!("unknown type `{}`", ty.name.0), sp.clone())
+        })?;
+        let variants = match &info.kind {
+            TypeKind::Enum(EnumKind::Templated { variants }) => variants,
+            _ => {
+                return Err(TyperError::at(
+                    format!("`{}` is not a generic enum", ty.name.0),
+                    sp.clone(),
+                ))
+            }
+        };
+        if info.templates.len() != ty.templates.len() {
+            return Err(TyperError::at(
+                format!(
+                    "`{}` expects {} template arguments, got {}",
+                    ty.name.0,
+                    info.templates.len(),
+                    ty.templates.len()
+                ),
+                sp.clone(),
+            ));
+        }
+
+        let bindings: std::collections::HashMap<String, &ast::TypeOrValue> = info
+            .templates
+            .iter()
+            .zip(ty.templates.iter())
+            .map(|(name, (arg, _))| (name.clone(), arg))
+            .collect();
+
+        let count = variants.len();
+        let discriminant_size = discriminant_size_for(count);
+
+        // Resolve each variant's payload size after substitution.
+        let mut resolved: Vec<(String, Option<i64>, CellCount)> = Vec::with_capacity(count);
+        let mut data_size: CellCount = 0;
+        for v in variants {
+            let size = match &v.data {
+                Some(data_ty) => {
+                    let substituted = subst_ast_type(data_ty, &bindings);
+                    self.resolve_type_size(&substituted, sp)?
+                }
+                None => 0,
+            };
+            if size > data_size {
+                data_size = size;
+            }
+            resolved.push((v.name.clone(), v.discriminant, size));
+        }
+
+        // Assign discriminant values exactly like compute_enum_layout.
+        let mut used: std::collections::BTreeSet<u32> = Default::default();
+        for (_, discr, _) in &resolved {
+            if let Some(d) = discr {
+                if *d < 0 {
+                    return Err(TyperError::new("negative enum discriminant"));
+                }
+                used.insert(*d as u32);
+            }
+        }
+        let mut next_auto: u32 = 0;
+        let mut out_variants = Vec::with_capacity(count);
+        for (name, discr, size) in resolved {
+            let d = match discr {
+                Some(d) => d as u32,
+                None => {
+                    while used.contains(&next_auto) {
+                        next_auto += 1;
+                    }
+                    let d = next_auto;
+                    used.insert(d);
+                    next_auto += 1;
+                    d
+                }
+            };
+            out_variants.push(EnumVariantLayout {
+                name,
+                discriminant: d,
+                data_size: size,
+            });
+        }
+
+        Ok(EnumLayout {
+            variants: out_variants,
+            discriminant_size,
+            data_size,
         })
     }
 

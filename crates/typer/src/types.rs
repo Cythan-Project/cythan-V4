@@ -131,6 +131,11 @@ pub struct MethodInfo {
     pub file_id: FileId,
     /// If this method came from a trait impl, carries the trait name.
     pub from_trait: Option<String>,
+    /// Concrete template args on the trait head of the impl — e.g. for
+    /// `impl Convert<U4> for U4`, this is `[U4]`. Empty for inherent
+    /// extensions and for impls of a non-generic trait. Used to
+    /// distinguish multiple `impl Convert<T>` for the same target type.
+    pub trait_template_args: Vec<ast::TypeOrValue>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

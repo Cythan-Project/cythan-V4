@@ -16,12 +16,41 @@ pub type FnSigKey = typer::FnSig;
 pub struct ArraySpec {
     /// Element type (as a concrete type name, e.g. "U4", "Cell").
     pub element_type: String,
+    /// Full concrete template args of the element type. Non-empty when
+    /// the element is itself a generic instantiation like
+    /// `ArrayList<U4, 3, U4>`. Kept separate from `element_type` so the
+    /// mangled name can distinguish element-type instantiations of the
+    /// same head (critical for nested Array<ArrayList<...>, ...>).
+    pub element_args: Vec<ConcreteTemplateArg>,
     pub element_size: u32,
     /// Number of elements in the array.
     pub size: u32,
     /// Index type (e.g. "U4").
     pub index_type: String,
     pub index_size: u32,
+}
+
+fn render_concrete_arg(a: &ConcreteTemplateArg) -> String {
+    match a {
+        ConcreteTemplateArg::Value(n) => n.to_string(),
+        ConcreteTemplateArg::Type(t) => render_concrete_type(t),
+    }
+}
+
+fn render_concrete_type(t: &ConcreteType) -> String {
+    if t.args.is_empty() {
+        t.name.clone()
+    } else {
+        format!(
+            "{}<{}>",
+            t.name,
+            t.args
+                .iter()
+                .map(render_concrete_arg)
+                .collect::<Vec<_>>()
+                .join(",")
+        )
+    }
 }
 
 impl ArraySpec {
@@ -31,11 +60,24 @@ impl ArraySpec {
     }
 
     /// The mangled type name used to key monomorphs, e.g. `"Array<U4,9,U4>"`.
+    /// Includes the full element-type instantiation so
+    /// `Array<ArrayList<U4, 3, U4>, 2, U4>` and
+    /// `Array<ArrayList<U4, 2, Bool>, 2, U4>` key distinctly.
     pub fn mangled_type_name(&self) -> String {
-        format!(
-            "Array<{},{},{}>",
-            self.element_type, self.size, self.index_type
-        )
+        let elem = if self.element_args.is_empty() {
+            self.element_type.clone()
+        } else {
+            format!(
+                "{}<{}>",
+                self.element_type,
+                self.element_args
+                    .iter()
+                    .map(render_concrete_arg)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        };
+        format!("Array<{},{},{}>", elem, self.size, self.index_type)
     }
 
     /// Resolve an `ArraySpec` from a three-element template-arg list
@@ -48,13 +90,13 @@ impl ArraySpec {
         if args.len() != 3 {
             return None;
         }
-        let (element_type, element_size) = match &args[0] {
+        let (element_type, element_args, element_size) = match &args[0] {
             ConcreteTemplateArg::Type(t) => {
                 // Route through the typer so generic element types
                 // (e.g. `ArrayList<U4, 3, U4>`) size correctly.
                 let ast_ty = concrete_to_ast(t);
                 let sz = reg.resolve_type_size(&ast_ty, &(0..0)).ok()?;
-                (t.name.clone(), sz)
+                (t.name.clone(), t.args.clone(), sz)
             }
             _ => return None,
         };
@@ -72,6 +114,7 @@ impl ArraySpec {
         };
         Some(ArraySpec {
             element_type,
+            element_args,
             element_size,
             size,
             index_type,

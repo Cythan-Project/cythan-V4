@@ -397,12 +397,35 @@ pub fn monomorphize(
         |e| format!("flatten for {:?}: {}", key, e.message),
     )?;
 
+    // Split key.template_args into the enclosing-type slice (first N, for
+    // N type-level templates) and the method-level slice (remainder). The
+    // former is threaded onto `SimpleFn.type_template_args` so HIR gen can
+    // resolve bare-head calls like `Pair::new(...)` inside an `impl` for
+    // `Pair<U4>`.
+    let type_template_args: Vec<ast::TypeOrValue> = reg
+        .types
+        .get(&templated.type_name)
+        .map(|info| {
+            key.template_args
+                .iter()
+                .take(info.templates.len())
+                .map(|a| match a {
+                    ConcreteTemplateArg::Value(n) => ast::TypeOrValue::Value(*n),
+                    ConcreteTemplateArg::Type(ct) => {
+                        ast::TypeOrValue::Type(concrete_type_to_ast(ct, &(0..0)).0)
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     let simple = typer::SimpleFn {
         body: new_fn,
         sig: flat,
         type_name: templated.type_name.clone(),
         from_trait: templated.from_trait.clone(),
         file_id: templated.file_id,
+        type_template_args,
     };
 
     // Compile to HIR via the regular generator.

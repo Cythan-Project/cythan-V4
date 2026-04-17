@@ -467,9 +467,21 @@ impl<'a> Generator<'a> {
             return self.copy_multi(dst, src, size, block);
         }
         // Non-l-value (method call, struct literal, etc.): evaluate the
-        // receiver into a temp, then extract the field.
+        // receiver into a temp, then extract the field. Prefer the
+        // generic-aware `struct_layout_for_expr` so receivers whose type
+        // is a user-generic instantiation (e.g. `list.get(1)` returning
+        // `Pair<U4>`) resolve their field offsets through the registry's
+        // substituted layout.
         let recv_ty = self.infer_expr_type(&recv.0, &recv.1)?;
         let resolved = self.resolve_ty_name(&recv_ty);
+        if let Some(layout) = self.struct_layout_for_expr(&recv.0) {
+            if let Some(f) = layout.fields.iter().find(|f| f.name == field.0) {
+                let tmp = self.alloc_temp(&resolved, layout.size);
+                self.gen_expr_into(&recv.0, &recv.1, Some(tmp), block)?;
+                let src = SlotId(tmp.0 + f.offset);
+                return self.copy_multi(dst, src, f.size, block);
+            }
+        }
         let recv_size = self.type_size_permissive(&resolved);
         let tmp = self.alloc_temp(&resolved, recv_size);
         self.gen_expr_into(&recv.0, &recv.1, Some(tmp), block)?;
@@ -485,30 +497,45 @@ impl<'a> Generator<'a> {
         expr: &ast::Expr,
         sp: &new_parser::Span,
     ) -> Result<(SlotId, String), HirError> {
+        self.resolve_lvalue_base_sized(expr, sp).map(|(s, t, _)| (s, t))
+    }
+
+    /// Like `resolve_lvalue_base` but also returns the lvalue's cell size.
+    /// Needed for operator desugar on generic structs where the bare type
+    /// name (`Pair`) can't be sized without its template args.
+    fn resolve_lvalue_base_sized(
+        &mut self,
+        expr: &ast::Expr,
+        sp: &new_parser::Span,
+    ) -> Result<(SlotId, String, u32), HirError> {
         match expr {
             ast::Expr::SelfValue => {
                 let b = self.lookup("self").ok_or_else(|| {
                     HirError::at("`self` not available here", sp.clone())
                 })?;
-                Ok((b.slot, b.type_name))
+                Ok((b.slot, b.type_name, b.size))
             }
             ast::Expr::Variable(name) => {
                 let b = self.lookup(name).ok_or_else(|| {
                     HirError::at(format!("undefined variable `{}`", name), sp.clone())
                 })?;
-                Ok((b.slot, b.type_name))
+                Ok((b.slot, b.type_name, b.size))
             }
             ast::Expr::Field(inner, field) => {
-                let (base_slot, base_ty) = self.resolve_lvalue_base(&inner.0, &inner.1)?;
+                let (base_slot, base_ty, _) = self.resolve_lvalue_base_sized(&inner.0, &inner.1)?;
                 // Try generic-aware layout first.
                 if let Some(layout) = self.struct_layout_for_expr(&inner.0) {
                     if let Some(f) = layout.fields.iter().find(|f| f.name == field.0) {
-                        return Ok((SlotId(base_slot.0 + f.offset), f.ast_type.name.0.clone()));
+                        return Ok((
+                            SlotId(base_slot.0 + f.offset),
+                            f.ast_type.name.0.clone(),
+                            f.size,
+                        ));
                     }
                 }
-                let (offset, _size) = self.field_offset(&base_ty, &field.0, &field.1)?;
+                let (offset, size) = self.field_offset(&base_ty, &field.0, &field.1)?;
                 let field_ty = self.field_type(&base_ty, &field.0, &field.1)?;
-                Ok((SlotId(base_slot.0 + offset), field_ty))
+                Ok((SlotId(base_slot.0 + offset), field_ty, size))
             }
             _ => Err(HirError::at(
                 "not an l-value (expected variable or field chain)",
@@ -715,9 +742,9 @@ impl<'a> Generator<'a> {
         sp: &new_parser::Span,
         block: &mut HirBlock,
     ) -> Result<(), HirError> {
-        let (dst_slot, dst_ty) = self.resolve_lvalue_base(&target.0, &target.1)?;
+        let (dst_slot, _dst_ty, size) =
+            self.resolve_lvalue_base_sized(&target.0, &target.1)?;
         self.check_mutable_slot(dst_slot, sp)?;
-        let size = self.type_size(&dst_ty)?;
         // Mutability check for the entire span.
         for i in 0..size {
             self.check_mutable_slot(SlotId(dst_slot.0 + i), sp)?;
@@ -733,8 +760,8 @@ impl<'a> Generator<'a> {
         sp: &new_parser::Span,
         block: &mut HirBlock,
     ) -> Result<(), HirError> {
-        let (dst_slot, dst_ty) = self.resolve_lvalue_base(&target.0, &target.1)?;
-        let size = self.type_size(&dst_ty)?;
+        let (dst_slot, dst_ty, size) =
+            self.resolve_lvalue_base_sized(&target.0, &target.1)?;
         self.check_mutable_slot(dst_slot, sp)?;
         for i in 0..size {
             self.check_mutable_slot(SlotId(dst_slot.0 + i), sp)?;
@@ -775,11 +802,14 @@ impl<'a> Generator<'a> {
             args.push(SlotId(val_slot.0 + i));
         }
         let trait_name = self.resolve_trait_for(&dst_ty, method);
+        // Thread target's concrete template args so `impl AddAssign for
+        // Pair<U4>` dispatches correctly.
+        let recv_args = self.infer_receiver_type_args(&target.0);
         block.push(HirOp::Call {
             target: FnRef {
                 type_name: dst_ty,
                 method_name: method.to_string(),
-                template_args: Vec::new(),
+                template_args: recv_args,
                 trait_name,
             },
             args,
@@ -849,7 +879,7 @@ impl<'a> Generator<'a> {
         dst: Option<SlotId>,
         block: &mut HirBlock,
     ) -> Result<(), HirError> {
-        // Determine scrutinee type.
+        // Determine scrutinee type (name + concrete template args).
         let scrut_ty = self.infer_expr_type(&scrutinee.0, &scrutinee.1)?;
         let resolved = self.resolve_ty_name(&scrut_ty);
         let info = self.reg.types.get(&resolved).ok_or_else(|| {
@@ -858,15 +888,77 @@ impl<'a> Generator<'a> {
                 sp.clone(),
             )
         })?;
-        let layout = match &info.kind {
-            typer::TypeKind::Enum(typer::EnumKind::Concrete(l)) => l.clone(),
-            _ => {
-                return Err(HirError::at(
-                    format!("match scrutinee must be a concrete enum; got `{}`", resolved),
-                    sp.clone(),
-                ));
-            }
-        };
+        // For a generic enum, resolve the instantiated layout; fetch the
+        // scrutinee's template args from its binding (via `concrete_type_of`).
+        // Also derive the variants' payload AST types so pattern bindings
+        // get the right type/size — `EnumVariantLayout` only carries sizes,
+        // so we build a parallel Vec of per-variant payload types.
+        let (layout, payload_ast): (typer::EnumLayout, Vec<Option<ast::Type>>) =
+            match &info.kind {
+                typer::TypeKind::Enum(typer::EnumKind::Concrete(l)) => {
+                    // Re-scan the original enum def to pair variants with
+                    // their ast::Type payload (kept via `methods`/extension
+                    // blocks in TypeInfo — but not directly here). Concrete
+                    // enums don't retain the AST data types, so we treat
+                    // them as unknown. The code below falls back to a size-
+                    // driven inference.
+                    let payload = vec![None; l.variants.len()];
+                    (l.clone(), payload)
+                }
+                typer::TypeKind::Enum(typer::EnumKind::Templated { variants }) => {
+                    let (_, recv_args) =
+                        self.concrete_type_of(&scrutinee.0).unwrap_or_else(|| {
+                            (resolved.clone(), Vec::new())
+                        });
+                    let ast_ty = ast::Type {
+                        name: (resolved.clone(), scrutinee.1.clone()),
+                        templates: recv_args
+                            .iter()
+                            .map(|a| (lower_concrete_to_ast_tv(a), 0..0))
+                            .collect(),
+                    };
+                    let l = self
+                        .reg
+                        .resolve_enum_layout(&ast_ty, &scrutinee.1)
+                        .map_err(|e| HirError::at(e.message, sp.clone()))?;
+                    // Build substitution for variant payloads.
+                    let bindings: std::collections::HashMap<String, ConcreteTemplateArg> =
+                        info.templates
+                            .iter()
+                            .zip(recv_args.iter())
+                            .map(|(n, a)| (n.clone(), a.clone()))
+                            .collect();
+                    let payload: Vec<Option<ast::Type>> = variants
+                        .iter()
+                        .map(|v| {
+                            v.data.as_ref().map(|t| {
+                                let arg = subst_concrete_arg(
+                                    &ast::TypeOrValue::Type(t.clone()),
+                                    &bindings,
+                                );
+                                match arg {
+                                    ConcreteTemplateArg::Type(ct) => ast::Type {
+                                        name: (ct.name, 0..0),
+                                        templates: ct
+                                            .args
+                                            .iter()
+                                            .map(|a| (lower_concrete_to_ast_tv(a), 0..0))
+                                            .collect(),
+                                    },
+                                    _ => t.clone(),
+                                }
+                            })
+                        })
+                        .collect();
+                    (l, payload)
+                }
+                _ => {
+                    return Err(HirError::at(
+                        format!("match scrutinee must be an enum; got `{}`", resolved),
+                        sp.clone(),
+                    ));
+                }
+            };
 
         // Compile scrutinee into a slot (full size).
         let total_size = layout.total_size();
@@ -906,20 +998,44 @@ impl<'a> Generator<'a> {
                             arm.pattern.1.clone(),
                             )
                         })?;
-                    // Bindings: introduce a local for the data payload.
+                    // Bindings: introduce a local for the data payload. For
+                    // generic enums we know the payload's concrete AST type
+                    // via `payload_ast`; for concrete enums we fall back to
+                    // the layout's size (type name: unknown → "U4" hint).
                     if let Some(bind) = binding {
                         if let ast::PatternBinding::Name(nm) = &bind.0 {
-                            let ty = "U4"; // payload type unknown at this layer
                             let bind_slot = SlotId(scrut_slot.0 + layout.discriminant_size);
+                            let vix = layout
+                                .variants
+                                .iter()
+                                .position(|v| v.name == variant.0)
+                                .unwrap_or(0);
+                            let payload_ty = payload_ast.get(vix).and_then(|o| o.as_ref());
+                            let (ty_name, size, template_args): (String, u32, Vec<ConcreteTemplateArg>) =
+                                if let Some(pt) = payload_ty {
+                                    let nm = pt.name.0.clone();
+                                    let sz = self
+                                        .reg
+                                        .resolve_type_size(pt, &(0..0))
+                                        .unwrap_or(layv.data_size);
+                                    let args = pt
+                                        .templates
+                                        .iter()
+                                        .map(|(tv, _)| lower_tv(tv))
+                                        .collect();
+                                    (nm, sz, args)
+                                } else {
+                                    ("U4".to_string(), layv.data_size, Vec::new())
+                                };
                             self.scopes.last_mut().unwrap().insert(
                                 nm.clone(),
                                 LocalBinding {
                                     slot: bind_slot,
-                                    type_name: ty.to_string(),
-                                    size: 1,
+                                    type_name: ty_name,
+                                    size,
                                     mutable: false,
                                     field_offsets: None,
-                                    template_args: Vec::new(),
+                                    template_args,
                                 },
                             );
                         }
@@ -977,10 +1093,21 @@ impl<'a> Generator<'a> {
         };
         let lty = self.infer_expr_type(&l.0, &l.1)?;
         let resolved = self.resolve_ty_name(&lty);
-        let lsize = self.type_size(&resolved)?;
+        // `Pair<U4>` etc: the bare name alone isn't sizeable; use the
+        // expression's concrete binding to recover the cell count.
+        let lsize = self
+            .receiver_cell_size(&l.0)
+            .or_else(|| self.type_size(&resolved).ok())
+            .ok_or_else(|| HirError::at(
+                format!("cannot size operand of type `{}`", resolved),
+                sp.clone(),
+            ))?;
         let rty = self.infer_expr_type(&r.0, &r.1)?;
         let resolved_r = self.resolve_ty_name(&rty);
-        let rsize = self.type_size(&resolved_r)?;
+        let rsize = self
+            .receiver_cell_size(&r.0)
+            .or_else(|| self.type_size(&resolved_r).ok())
+            .unwrap_or(lsize);
 
         let lslot = self.alloc_temp(&resolved, lsize);
         self.gen_expr_into(&l.0, &l.1, Some(lslot), block)?;
@@ -1007,11 +1134,15 @@ impl<'a> Generator<'a> {
             None => Vec::new(),
         };
         let trait_name = self.resolve_trait_for(&resolved, method);
+        // Thread the lhs's concrete template args into the Call so the
+        // inliner can dispatch through the right monomorph (e.g.
+        // `impl Add for Pair<U4>`).
+        let recv_args = self.infer_receiver_type_args(&l.0);
         block.push(HirOp::Call {
             target: FnRef {
                 type_name: resolved,
                 method_name: method.to_string(),
-                template_args: Vec::new(),
+                template_args: recv_args,
                 trait_name,
             },
             args,
@@ -1153,10 +1284,11 @@ impl<'a> Generator<'a> {
             Some(d) => {
                 let ret_size = array_method_return_size(&resolved_recv, &name.0, &recv_ty_args)
                     .or_else(|| {
-                        self.lookup_return_size_with_args(
+                        self.lookup_return_size_full(
                             &resolved_recv,
                             &name.0,
                             &recv_ty_args,
+                            &tpl,
                         )
                     })
                     .unwrap_or(0);
@@ -1229,17 +1361,36 @@ impl<'a> Generator<'a> {
         }
 
         let tpl = lower_templates(templates);
-        let recv_ty_args: Vec<ConcreteTemplateArg> = ty
-            .0
-            .templates
-            .iter()
-            .map(|(tv, _)| lower_tv(tv))
-            .collect();
+        // Determine the receiver's concrete template args via (in order):
+        //   1. Explicit `<...>` on the call site.
+        //   2. Inherited from the enclosing monomorph when the bare head
+        //      matches (e.g. `Pair::new(...)` inside `impl for Pair<U4>`).
+        //   3. Inferred from argument types by unification with the
+        //      callee's param types (e.g. `Pair::new(3, 5)` ⇒ T=U4).
+        let recv_ty_args: Vec<ConcreteTemplateArg> = if !ty.0.templates.is_empty() {
+            ty.0.templates.iter().map(|(tv, _)| lower_tv(tv)).collect()
+        } else if resolved == self.simple.type_name
+            && !self.simple.type_template_args.is_empty()
+        {
+            self.simple
+                .type_template_args
+                .iter()
+                .map(|tv| lower_tv(tv))
+                .collect()
+        } else {
+            self.infer_recv_template_args_from_args(&resolved, &name.0, args)
+                .unwrap_or_default()
+        };
         let ret_slots: Vec<SlotId> = match dst {
             Some(d) => {
                 let ret_size = array_method_return_size(&resolved, &name.0, &recv_ty_args)
                     .or_else(|| {
-                        self.lookup_return_size_with_args(&resolved, &name.0, &recv_ty_args)
+                        self.lookup_return_size_full(
+                            &resolved,
+                            &name.0,
+                            &recv_ty_args,
+                            &tpl,
+                        )
                     })
                     .unwrap_or(0);
                 (0..ret_size).map(|i| SlotId(d.0 + i)).collect()
@@ -1369,23 +1520,58 @@ impl<'a> Generator<'a> {
         method: &str,
         recv_args: &[ConcreteTemplateArg],
     ) -> Option<u32> {
+        self.lookup_return_size_full(type_name, method, recv_args, &[])
+    }
+
+    /// Same as `lookup_return_size_with_args` but also accepts the
+    /// method-level template args so return types like `fn id<T>(T): T`
+    /// can be sized. `recv_args` bind the enclosing type's templates (in
+    /// declaration order); `method_args` bind the method's own templates
+    /// (also in declaration order).
+    fn lookup_return_size_full(
+        &self,
+        type_name: &str,
+        method: &str,
+        recv_args: &[ConcreteTemplateArg],
+        method_args: &[ConcreteTemplateArg],
+    ) -> Option<u32> {
         let size_of_return = |f: &typer::Fn| -> Option<u32> {
             let ret_ty = match f {
                 typer::Fn::Simple(s) => return Some(s.sig.output_count),
                 typer::Fn::Templated(t) => t.body.sig.return_type.as_ref()?,
             };
-            // Build param-name → concrete-arg bindings for the enclosing
-            // type.
+            // Build param-name → concrete-arg bindings across both scopes.
+            // Also bind `Self` to the concrete instantiation so that
+            // return types like `fn new(): Self` resolve correctly.
             let info = self.reg.types.get(type_name)?;
             if info.templates.len() != recv_args.len() {
                 return None;
             }
-            let bindings: std::collections::HashMap<String, ConcreteTemplateArg> = info
+            let mut bindings: std::collections::HashMap<String, ConcreteTemplateArg> = info
                 .templates
                 .iter()
                 .zip(recv_args.iter())
                 .map(|(n, a)| (n.clone(), a.clone()))
                 .collect();
+            // Method-level template params. Layout: templated.templates =
+            // type-params ++ method-params, so the method-level names are
+            // whatever the Templated fn declares.
+            if let typer::Fn::Templated(t) = f {
+                let n_type = info.templates.len();
+                let method_names: Vec<String> = t.templates[n_type..].to_vec();
+                if method_names.len() == method_args.len() {
+                    for (n, a) in method_names.iter().zip(method_args.iter()) {
+                        bindings.insert(n.clone(), a.clone());
+                    }
+                }
+            }
+            bindings.insert(
+                "Self".to_string(),
+                ConcreteTemplateArg::Type(ConcreteType {
+                    name: type_name.to_string(),
+                    args: recv_args.to_vec(),
+                }),
+            );
             // Substitute into the return type and rebuild as ast::Type.
             let arg = subst_concrete_arg(
                 &ast::TypeOrValue::Type(ret_ty.0.clone()),
@@ -1447,6 +1633,72 @@ impl<'a> Generator<'a> {
             }
         }
         raw_name.to_string()
+    }
+
+    /// Try to infer the enclosing type's template args for a
+    /// static-call like `Pair::new(3, 5)` by unifying each call-site
+    /// argument's concrete type against the corresponding param AST type
+    /// of the callee. Returns bindings ordered to match the type's
+    /// declared template param list.
+    fn infer_recv_template_args_from_args(
+        &self,
+        type_name: &str,
+        method: &str,
+        args: &[ast::Spanned<ast::Expr>],
+    ) -> Option<Vec<ConcreteTemplateArg>> {
+        let info = self.reg.types.get(type_name)?;
+        if info.templates.is_empty() {
+            return None;
+        }
+        let f = self.db.get(&typer::FnSig::new(type_name, method))?;
+        let typer::Fn::Templated(t) = f else {
+            return None;
+        };
+        // Only bind the type-level slice of `templated.templates`.
+        let n_type = info.templates.len();
+        let type_param_names: std::collections::HashSet<String> =
+            info.templates.iter().cloned().collect();
+
+        let mut bindings: std::collections::HashMap<String, ConcreteTemplateArg> =
+            std::collections::HashMap::new();
+
+        // Callee's non-self params, pair with actual args.
+        let callee_params: Vec<&ast::Param> = t
+            .body
+            .sig
+            .params
+            .iter()
+            .filter(|p| !p.is_self)
+            .collect();
+        let pairs = callee_params.iter().zip(args.iter());
+        for (param, arg_sp) in pairs {
+            let (param_ty, _) = param.ty.as_ref()?;
+            let (arg_name, arg_args) = self
+                .concrete_type_of(&arg_sp.0)
+                .or_else(|| {
+                    // Fallback: use infer_expr_type for bare-name types.
+                    let n = self.infer_expr_type(&arg_sp.0, &arg_sp.1).ok()?;
+                    Some((self.resolve_ty_name(&n), Vec::new()))
+                })?;
+            let arg_concrete = ConcreteType {
+                name: arg_name,
+                args: arg_args,
+            };
+            unify_type_against_concrete(
+                param_ty,
+                &arg_concrete,
+                &type_param_names,
+                &mut bindings,
+            );
+        }
+
+        // Assemble ordered list matching `info.templates` — only if every
+        // slot got bound.
+        let mut out = Vec::with_capacity(n_type);
+        for tp in &info.templates {
+            out.push(bindings.remove(tp)?);
+        }
+        Some(out)
     }
 
     /// Get a concrete `StructLayout` for the binding/expression's type.
@@ -1515,6 +1767,84 @@ impl<'a> Generator<'a> {
                     .map(|(tv, _)| lower_tv(tv))
                     .collect();
                 Some((f.ast_type.name.0.clone(), args))
+            }
+            ast::Expr::StaticCall { ty, name, templates, args } => {
+                // Determine the receiver's concrete template args the same
+                // way `gen_static_call` does: explicit first, then inherit
+                // from the enclosing monomorph, then unify with arg types.
+                let resolved_recv = self.resolve_ty_name(&ty.0.name.0);
+                let recv_args: Vec<ConcreteTemplateArg> = if !ty.0.templates.is_empty() {
+                    ty.0.templates.iter().map(|(tv, _)| lower_tv(tv)).collect()
+                } else if resolved_recv == self.simple.type_name
+                    && !self.simple.type_template_args.is_empty()
+                {
+                    self.simple
+                        .type_template_args
+                        .iter()
+                        .map(|tv| lower_tv(tv))
+                        .collect()
+                } else {
+                    self.infer_recv_template_args_from_args(&resolved_recv, &name.0, args)
+                        .unwrap_or_default()
+                };
+                let method_args: Vec<ConcreteTemplateArg> = templates
+                    .iter()
+                    .map(|(tv, _)| lower_tv(tv))
+                    .collect();
+                // Look up the method's declared return type and substitute.
+                let info = self.reg.types.get(&resolved_recv)?;
+                let (f, fk) = self
+                    .db
+                    .get(&typer::FnSig::new(&resolved_recv, &name.0))
+                    .map(|f| (f, typer::FnSig::new(&resolved_recv, &name.0)))
+                    .or_else(|| {
+                        for (k, f) in &self.db.functions {
+                            if k.type_name == resolved_recv && k.method_name == name.0 {
+                                return Some((f, k.clone()));
+                            }
+                        }
+                        None
+                    })?;
+                let _ = fk;
+                let ret_ty = match f {
+                    typer::Fn::Simple(s) => s.body.sig.return_type.as_ref()?,
+                    typer::Fn::Templated(t) => t.body.sig.return_type.as_ref()?,
+                }
+                .0
+                .clone();
+                let mut bindings: std::collections::HashMap<String, ConcreteTemplateArg> =
+                    std::collections::HashMap::new();
+                if info.templates.len() == recv_args.len() {
+                    for (n, a) in info.templates.iter().zip(recv_args.iter()) {
+                        bindings.insert(n.clone(), a.clone());
+                    }
+                }
+                if let typer::Fn::Templated(t) = f {
+                    let n_type = info.templates.len();
+                    if t.templates.len() >= n_type {
+                        let method_names: Vec<String> = t.templates[n_type..].to_vec();
+                        if method_names.len() == method_args.len() {
+                            for (n, a) in method_names.iter().zip(method_args.iter()) {
+                                bindings.insert(n.clone(), a.clone());
+                            }
+                        }
+                    }
+                }
+                bindings.insert(
+                    "Self".to_string(),
+                    ConcreteTemplateArg::Type(ConcreteType {
+                        name: resolved_recv.clone(),
+                        args: recv_args.clone(),
+                    }),
+                );
+                let arg = subst_concrete_arg(
+                    &ast::TypeOrValue::Type(ret_ty),
+                    &bindings,
+                );
+                match arg {
+                    ConcreteTemplateArg::Type(ct) => Some((ct.name.clone(), ct.args.clone())),
+                    _ => None,
+                }
             }
             ast::Expr::MethodCall { receiver, name, .. } => {
                 // Method call that returns a generic instantiation — e.g.
@@ -1786,6 +2116,19 @@ impl<'a> Generator<'a> {
         })?;
         let layout = match &info.kind {
             typer::TypeKind::Enum(typer::EnumKind::Concrete(l)) => l.clone(),
+            typer::TypeKind::Enum(typer::EnumKind::Templated { .. }) => {
+                // Generic enum instantiation — require template args on the
+                // AST type reference (or infer from context elsewhere). Use
+                // the registry's layout resolver to compute the concrete
+                // layout with substituted payload sizes.
+                let ast_ty = ast::Type {
+                    name: (resolved.clone(), ty.0.name.1.clone()),
+                    templates: ty.0.templates.clone(),
+                };
+                self.reg
+                    .resolve_enum_layout(&ast_ty, &ty.1)
+                    .map_err(|e| HirError::at(e.message, sp.clone()))?
+            }
             _ => {
                 return Err(HirError::at(
                     format!("cannot construct variant on non-concrete enum `{}`", resolved),
@@ -1906,7 +2249,79 @@ impl<'a> Generator<'a> {
             ast::Expr::StructLiteral { ty, .. } | ast::Expr::EnumVariant { ty, .. } => {
                 self.resolve_ty_name(&ty.0.name.0)
             }
-            ast::Expr::StaticCall { ty, .. } => self.resolve_ty_name(&ty.0.name.0),
+            ast::Expr::StaticCall { ty, name, templates, .. } => {
+                // Look up the method's declared return type and substitute
+                // both the receiver's type-level templates and the
+                // method-level templates. For `U4::id<U8>(...)`, the
+                // declared return `T` becomes `U8`; without this the
+                // caller thinks the expression's type is the bare head
+                // `U4`, breaking later field / sizing lookups.
+                let resolved_recv = self.resolve_ty_name(&ty.0.name.0);
+                let recv_args: Vec<ConcreteTemplateArg> =
+                    ty.0.templates.iter().map(|(tv, _)| lower_tv(tv)).collect();
+                let method_args: Vec<ConcreteTemplateArg> = templates
+                    .iter()
+                    .map(|(tv, _)| lower_tv(tv))
+                    .collect();
+                let fallback = || resolved_recv.clone();
+                let Some(info) = self.reg.types.get(&resolved_recv) else {
+                    return Ok(fallback());
+                };
+                let lookup = |f: &typer::Fn| -> Option<String> {
+                    let ret_ty = match f {
+                        typer::Fn::Simple(s) => s.body.sig.return_type.as_ref()?,
+                        typer::Fn::Templated(t) => t.body.sig.return_type.as_ref()?,
+                    };
+                    let mut bindings: std::collections::HashMap<String, ConcreteTemplateArg> =
+                        std::collections::HashMap::new();
+                    if info.templates.len() == recv_args.len() {
+                        for (n, a) in info.templates.iter().zip(recv_args.iter()) {
+                            bindings.insert(n.clone(), a.clone());
+                        }
+                    }
+                    if let typer::Fn::Templated(t) = f {
+                        let n_type = info.templates.len();
+                        if t.templates.len() >= n_type {
+                            let method_names: Vec<String> =
+                                t.templates[n_type..].to_vec();
+                            if method_names.len() == method_args.len() {
+                                for (n, a) in method_names.iter().zip(method_args.iter()) {
+                                    bindings.insert(n.clone(), a.clone());
+                                }
+                            }
+                        }
+                    }
+                    bindings.insert(
+                        "Self".to_string(),
+                        ConcreteTemplateArg::Type(ConcreteType {
+                            name: resolved_recv.clone(),
+                            args: recv_args.clone(),
+                        }),
+                    );
+                    let arg = subst_concrete_arg(
+                        &ast::TypeOrValue::Type(ret_ty.0.clone()),
+                        &bindings,
+                    );
+                    match arg {
+                        ConcreteTemplateArg::Type(ct) => Some(ct.name),
+                        _ => None,
+                    }
+                };
+                let inherent_key = typer::FnSig::new(&resolved_recv, &name.0);
+                if let Some(f) = self.db.get(&inherent_key) {
+                    if let Some(n) = lookup(f) {
+                        return Ok(n);
+                    }
+                }
+                for (k, f) in &self.db.functions {
+                    if k.type_name == resolved_recv && k.method_name == name.0 {
+                        if let Some(n) = lookup(f) {
+                            return Ok(n);
+                        }
+                    }
+                }
+                fallback()
+            }
             ast::Expr::If { then, .. } => {
                 // Type of an if-expression = type of its then branch's last stmt.
                 then.0
@@ -2084,6 +2499,44 @@ pub(crate) fn lower_ast_tv_list(tvs: &[ast::TypeOrValue]) -> Vec<ConcreteTemplat
 /// binding table (param name → concrete arg). Used when inferring the
 /// concrete type of a method call's return — e.g. `self.backing: Array<T,
 /// N, Index>` becomes `Array<Cell, 9, U4>` once T/N/Index are bound.
+/// Unify a callee-param AST type against the arg's concrete type, filling
+/// in any `type_params` that appear in the param type with bindings drawn
+/// from the arg. Succeeds silently — this is a best-effort inference that
+/// contributes partial information; the caller checks completeness.
+fn unify_type_against_concrete(
+    param_ty: &ast::Type,
+    arg: &ConcreteType,
+    type_params: &std::collections::HashSet<String>,
+    bindings: &mut std::collections::HashMap<String, ConcreteTemplateArg>,
+) {
+    // Leaf case: param is a bare template-param reference.
+    if param_ty.templates.is_empty() && type_params.contains(&param_ty.name.0) {
+        bindings
+            .entry(param_ty.name.0.clone())
+            .or_insert_with(|| ConcreteTemplateArg::Type(arg.clone()));
+        return;
+    }
+    // Heads don't match — no further info.
+    if param_ty.name.0 != arg.name {
+        return;
+    }
+    // Recurse into template args.
+    for (p_tv, a_arg) in param_ty.templates.iter().zip(arg.args.iter()) {
+        if let (ast::TypeOrValue::Type(p_ty), ConcreteTemplateArg::Type(a_ct)) = (&p_tv.0, a_arg) {
+            unify_type_against_concrete(p_ty, a_ct, type_params, bindings);
+        } else if let (ast::TypeOrValue::Type(p_ty), ConcreteTemplateArg::Value(_)) = (&p_tv.0, a_arg)
+        {
+            // Param expects a type but arg is a value — could be a bare
+            // name that's a value template param. Bind that.
+            if p_ty.templates.is_empty() && type_params.contains(&p_ty.name.0) {
+                bindings
+                    .entry(p_ty.name.0.clone())
+                    .or_insert_with(|| a_arg.clone());
+            }
+        }
+    }
+}
+
 pub(crate) fn subst_concrete_arg(
     tv: &ast::TypeOrValue,
     bindings: &std::collections::HashMap<String, ConcreteTemplateArg>,
