@@ -2793,13 +2793,24 @@ pub(crate) fn subst_ast_type_with_qself(
             };
         }
     }
-    // Case 2: recurse into template args.
+    // Case 2: recurse into template args. A leaf `Type(bare_name)` in a
+    // template slot may resolve to a *value* binding (e.g. `N` bound to
+    // `Value(2)`); emit a `TypeOrValue::Value` in that case so the
+    // downstream sizer sees an integer, not a type reference.
     let templates = ty
         .templates
         .iter()
         .map(|(tv, sp)| {
             let new_tv = match tv {
                 ast::TypeOrValue::Value(n) => ast::TypeOrValue::Value(*n),
+                ast::TypeOrValue::Type(inner)
+                    if inner.templates.is_empty() && inner.qself.is_none() =>
+                {
+                    match bindings.get(&inner.name.0) {
+                        Some(ConcreteTemplateArg::Value(n)) => ast::TypeOrValue::Value(*n),
+                        _ => ast::TypeOrValue::Type(subst_ast_type_with_qself(inner, bindings)),
+                    }
+                }
                 ast::TypeOrValue::Type(inner) => ast::TypeOrValue::Type(
                     subst_ast_type_with_qself(inner, bindings),
                 ),

@@ -1,0 +1,20 @@
+// Iterator support. `Iter<Item>` is implemented by types that produce a
+// stream of `Item` values — one per `next()` call, `None` when the
+// stream is exhausted. Concrete iterators (ArrayIter, StringIter, ...)
+// are plain structs that carry the data + a cursor; the `Iter<T>` impl
+// drives the cursor.
+//
+// `IntoIter<Item, I>` is a convention: implementers promise `fn
+// into_iter(self): I` and that `I` is an `Iter<Item>`. Because we
+// don't yet have associated-type-return substitution for generic
+// targets, each container type also exposes an inherent `iter()`
+// method with its own concrete iterator type — most call sites use
+// that directly.
+
+trait Iter<Item> {
+    fn next(mut self): Option<Item>;
+}
+
+trait IntoIter<Item, I> {
+    fn into_iter(self): I;
+}

@@ -22,6 +22,7 @@ mod if_let_tests;
 mod misc_edge_tests;
 mod blanket_impl_tests;
 mod resolution_tests;
+mod iter_string_tests;
 
 use new_parser::ast;
 

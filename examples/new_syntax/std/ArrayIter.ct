@@ -1,0 +1,32 @@
+// ArrayIter<T, N, F> — an iterator over `Array<T, N, F>`. Carries an
+// owned copy of the array plus a cursor. `next()` advances and returns
+// `Option::some(elem)` until the cursor hits the array's length.
+//
+// The phase-1 assumption is that `F` is `U4` so `+= 1` and `==` work
+// out of the box. Arrays with non-U4 index types would need matching
+// operator impls; the iterator itself doesn't care.
+
+use Iter;
+
+struct ArrayIter<T, N, F> {
+    Array<T, N, F> data,
+    F idx,
+}
+
+extension ArrayIter<T, N, F> {
+    fn new(Array<T, N, F> data): Self {
+        Self { data: data, idx: 0, }
+    }
+}
+
+impl<T, N, F> Iter<T> for ArrayIter<T, N, F> {
+    fn next(mut self): Option<T> {
+        if self.idx == self.data.len() {
+            Option<T>::none()
+        } else {
+            T item = self.data.get(self.idx);
+            self.idx += 1;
+            Option::some(item)
+        }
+    }
+}

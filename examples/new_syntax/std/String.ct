@@ -1,0 +1,80 @@
+// A length-prefixed buffer of U8 "chars". `N` is the compile-time max
+// capacity. `chars` holds raw bytes; `size` is the current length in
+// chars (always ≤ N).
+//
+// The same wrapper pattern as `ArrayList<Index, N, T>`: a backing
+// `Array` + a cursor. Chars are `U8` because ASCII bytes exceed the
+// U4 range.
+
+use Iter;
+use IntoIter;
+
+struct String<N> {
+    Array<U8, N, U4> chars,
+    U4 size,
+}
+
+extension String<N> {
+    // Empty string. Backing cells start zero-initialized.
+    fn new(): Self {
+        Self { chars: Array::new(), size: 0, }
+    }
+
+    fn len(self): U4 { self.size }
+    fn capacity(self): U4 { self.chars.len() }
+    fn is_empty(self): Bool { self.size == 0 }
+
+    fn is_full(self): Bool {
+        if self.capacity() > self.size { false } else { true }
+    }
+
+    // Append one char. Silent no-op when full.
+    fn push(mut self, U8 c) {
+        if self.is_full() {
+            // drop on the floor
+        } else {
+            self.chars.set(self.size, c);
+            self.size += 1;
+        }
+    }
+
+    fn get(self, U4 i): U8 { self.chars.get(i) }
+
+    fn set(mut self, U4 i, U8 c) { self.chars.set(i, c); }
+
+    // Produce an iterator over this string's chars.
+    fn iter(self): StringIter<N> { StringIter::new(self) }
+}
+
+// ------------------------------------------------------------------
+// StringIter<N> — a cursor + owned copy of the string. Implements
+// `Iter<U8>`.
+
+struct StringIter<N> {
+    String<N> data,
+    U4 idx,
+}
+
+extension StringIter<N> {
+    fn new(String<N> data): Self {
+        Self { data: data, idx: 0, }
+    }
+}
+
+impl<N> Iter<U8> for StringIter<N> {
+    fn next(mut self): Option<U8> {
+        if self.idx == self.data.len() {
+            Option<U8>::none()
+        } else {
+            U8 c = self.data.get(self.idx);
+            self.idx += 1;
+            Option::some(c)
+        }
+    }
+}
+
+// String implements IntoIter — `into_iter()` hands off to the
+// inherent `iter()` path.
+impl<N> IntoIter<U8, StringIter<N>> for String<N> {
+    fn into_iter(self): StringIter<N> { self.iter() }
+}
