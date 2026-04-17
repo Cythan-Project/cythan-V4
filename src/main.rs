@@ -10,6 +10,9 @@ use cythan_driver::run_context::{compute_max_bin, run, run_bin};
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod new_pipeline_tests;
+
 #[derive(Parser)]
 #[command(name = "cythan", about = "Cythan V4 compiler and runtime")]
 struct Cli {

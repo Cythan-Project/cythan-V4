@@ -310,8 +310,12 @@ impl<'a> Generator<'a> {
             }
             ast::Expr::Char(c) => {
                 if let Some(dst) = dst {
+                    // Char literals are U8 (2 cells: lower nibble first,
+                    // then higher). Matches the struct layout in
+                    // std/U8.ct: `struct U8 { U4 lower, U4 higher }`.
                     let byte = (*c as u32).min(255) as u8;
-                    block.push(HirOp::Set(dst, byte));
+                    block.push(HirOp::Set(dst, byte & 0xF));
+                    block.push(HirOp::Set(crate::ir::SlotId(dst.0 + 1), byte >> 4));
                 }
                 Ok(())
             }
@@ -2431,7 +2435,7 @@ impl<'a> Generator<'a> {
         Ok(match expr {
             ast::Expr::Number(_) => "U4".into(),
             ast::Expr::Bool(_) => "Bool".into(),
-            ast::Expr::Char(_) => "U4".into(),
+            ast::Expr::Char(_) => "U8".into(),
             ast::Expr::String(_) => "<str>".into(),
             ast::Expr::SelfValue => {
                 self.lookup("self")

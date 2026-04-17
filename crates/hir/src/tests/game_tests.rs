@@ -133,6 +133,10 @@ fn morpion_inline_end_to_end() {
     let _mir = crate::hir_to_mir(&inlined.body).expect("mir conv");
 }
 
+// End-to-end input/output game tests live at the top-level in
+// `src/new_pipeline_tests.rs` so they can use the `cythan_driver`
+// harness. This crate only tests the HIR-stage pieces.
+
 #[test]
 fn morpion_hir_gen_diagnostic() {
     // Attempt HIR gen on every Simple function. First failing function

@@ -39,6 +39,27 @@ target_name}`, and the various HIR paths still thread strings. Moving
 those to IDs is a separate, larger refactor — touches `hir/gen.rs`
 extensively. Not blocking; flagged as a follow-up.
 
+## Games + new-pipeline harness — PARTIAL
+
+`cythan_driver::new_pipeline` (see `crates/driver/src/new_pipeline.rs`)
+is the test harness for the new pipeline. It takes source files +
+entry + scripted input, compiles via `new_parser` → `typer` → `hir`
+→ `mir`, runs the MIR with a capturing `RunContext`, and returns
+output plus remaining input. Six integration tests in
+`src/new_pipeline_tests.rs` cover the harness itself and run Morpion
+end-to-end with three distinct input scripts (win / equality /
+invalid-input).
+
+**Known fix during this work:** char literals (`'-'`, `'O'`, …) were
+typed as `U4` (1 cell), which truncated them to the low nibble and
+made `'X'.print()` emit `8` instead of `X`. Re-typed as `U8`,
+emitting high and low nibbles into two cells.
+
+**Remaining:** Pendu / Chess / Game2048 live only under `cythan/` in
+the OLD syntax — they need porting to `examples/new_syntax/` to go
+through the new pipeline. The harness will run them unchanged once
+the source files exist.
+
 ## 2. Two parsers in-tree
 
 `crates/frontend` has the old hand-written tokenizer+parser driving the

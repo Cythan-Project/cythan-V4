@@ -12,6 +12,9 @@ cythan = { path = "crates/vm" }
 cythan-driver = { path = "crates/driver" }
 clap = { version = "4", features = ["derive"] }
 
+[dev-dependencies]
+typer = { path = "crates/typer" }
+
 [profile.release]
 debug = true
 
