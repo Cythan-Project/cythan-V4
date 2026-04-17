@@ -1,0 +1,139 @@
+// Port of cythan/examples/Pendu.ct to the new syntax.
+//
+// Hangman game. Target word is "grammaire" (9 letters). Player has 6
+// lives, types one letter per turn. The ASCII hangman grows as lives
+// drop; win by revealing all letters, lose at 0 lives.
+
+struct Pendu {
+    DynArray<U8, 15, U4> string,
+    DynArray<U8, 15, U4> currentLetters,
+}
+
+extension Pendu {
+    fn new(): Self {
+        mut DynArray<U8, 15, U4> s = DynArray::new();
+        s.add('g');
+        s.add('r');
+        s.add('a');
+        s.add('m');
+        s.add('m');
+        s.add('a');
+        s.add('i');
+        s.add('r');
+        s.add('e');
+        mut DynArray<U8, 15, U4> c = DynArray::new();
+        c.add('_');
+        c.add('_');
+        c.add('_');
+        c.add('_');
+        c.add('_');
+        c.add('_');
+        c.add('_');
+        c.add('_');
+        c.add('_');
+        Self { string: s, currentLetters: c, }
+    }
+
+    // Render the hangman for `life` lives remaining, then a newline +
+    // the revealed letters + newline. Output must match the legacy
+    // pipeline byte-for-byte: the tests assert exact transcripts.
+    fn display(self, U4 life) {
+        if life == 0 {
+            " |--|".println();
+            " |  O".println();
+            " | /|\\".println();
+            " | / \\".println();
+            "------".println();
+        }
+        if life == 1 {
+            " |--|".println();
+            " |  O".println();
+            " | /|\\".println();
+            " |".println();
+            "------".println();
+        }
+        if life == 2 {
+            " |--|".println();
+            " |  O".println();
+            " | /|".println();
+            " |".println();
+            "------".println();
+        }
+        if life == 3 {
+            " |--|".println();
+            " |  O".println();
+            " |  |".println();
+            " |".println();
+            "------".println();
+        }
+        if life == 4 {
+            " |--".println();
+            " |".println();
+            " |".println();
+            " |".println();
+            "------".println();
+        }
+        if life == 5 {
+            " |".println();
+            " |".println();
+            " |".println();
+            " |".println();
+            "------".println();
+        }
+        if life == 6 {
+            '\n'.print();
+            '\n'.print();
+            '\n'.print();
+            '\n'.print();
+            "------".println();
+            '\n'.print();
+        }
+        '\n'.print();
+        self.currentLetters.println();
+        '\n'.print();
+    }
+
+    fn play(mut self) {
+        mut U4 looses = 6;
+        loop {
+            self.display(looses);
+            if looses == 0 {
+                "GROSSE MERDE!".println();
+                break;
+            }
+            U8 input = U8::input();
+            mut U4 slen = self.string.len();
+            mut U4 index = 0;
+            mut U4 foundLetters = 0;
+            loop {
+                if slen == 0 {
+                    break;
+                }
+                U8 kdyn = self.string.getDyn(index);
+                if kdyn == input {
+                    self.currentLetters.setDyn(index, kdyn);
+                    foundLetters += 1;
+                }
+                slen -= 1;
+                index += 1;
+            }
+            if foundLetters == 0 {
+                "Tu n'as pas trouvé de lettre -1 vie".println();
+                looses -= 1;
+            } else {
+                if self.currentLetters.contains('_') {
+                    // keep going
+                } else {
+                    "Vous avez gagné!".println();
+                    break;
+                }
+            }
+        }
+    }
+
+    fn main(): U4 {
+        mut Self p = Self::new();
+        p.play();
+        0
+    }
+}

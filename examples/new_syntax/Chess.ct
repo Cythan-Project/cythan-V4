@@ -1,0 +1,193 @@
+// Port of cythan/games/Chess.ct to the new syntax.
+//
+// 8x8 board as eight `Array<U4, 8, U4>` row arrays. Piece encoding:
+//   0 empty; 1..6 white P R N B Q K; 7..12 black p r n b q k.
+// No move validation — capture the opponent's king (piece 12 for
+// White, 6 for Black) to win. Input per turn is four digits:
+//   srcCol srcRow dstCol dstRow, all 1-based with col a=1..h=8.
+
+struct Chess {
+    Array<U4, 8, U4> r0,
+    Array<U4, 8, U4> r1,
+    Array<U4, 8, U4> r2,
+    Array<U4, 8, U4> r3,
+    Array<U4, 8, U4> r4,
+    Array<U4, 8, U4> r5,
+    Array<U4, 8, U4> r6,
+    Array<U4, 8, U4> r7,
+    Bool whiteTurn,
+}
+
+extension Chess {
+    fn new(): Self {
+        Self {
+            r0: Array::new(),
+            r1: Array::new(),
+            r2: Array::new(),
+            r3: Array::new(),
+            r4: Array::new(),
+            r5: Array::new(),
+            r6: Array::new(),
+            r7: Array::new(),
+            whiteTurn: true,
+        }
+    }
+
+    // Place the standard starting position. White on ranks 0-1,
+    // black on ranks 6-7. Dynamic `.set` everywhere since the
+    // stdlib's Array doesn't expose a static `.set<N>`.
+    fn init(mut self) {
+        self.r0.set(0, 2); self.r0.set(1, 3); self.r0.set(2, 4); self.r0.set(3, 5);
+        self.r0.set(4, 6); self.r0.set(5, 4); self.r0.set(6, 3); self.r0.set(7, 2);
+        self.r1.set(0, 1); self.r1.set(1, 1); self.r1.set(2, 1); self.r1.set(3, 1);
+        self.r1.set(4, 1); self.r1.set(5, 1); self.r1.set(6, 1); self.r1.set(7, 1);
+        self.r6.set(0, 7); self.r6.set(1, 7); self.r6.set(2, 7); self.r6.set(3, 7);
+        self.r6.set(4, 7); self.r6.set(5, 7); self.r6.set(6, 7); self.r6.set(7, 7);
+        self.r7.set(0, 8); self.r7.set(1, 9); self.r7.set(2, 10); self.r7.set(3, 11);
+        self.r7.set(4, 12); self.r7.set(5, 10); self.r7.set(6, 9); self.r7.set(7, 8);
+    }
+
+    fn getCell(self, U4 row, U4 col): U4 {
+        if row == 0 { return self.r0.get(col); }
+        if row == 1 { return self.r1.get(col); }
+        if row == 2 { return self.r2.get(col); }
+        if row == 3 { return self.r3.get(col); }
+        if row == 4 { return self.r4.get(col); }
+        if row == 5 { return self.r5.get(col); }
+        if row == 6 { return self.r6.get(col); }
+        self.r7.get(col)
+    }
+
+    fn setCell(mut self, U4 row, U4 col, U4 piece) {
+        if row == 0 { self.r0.set(col, piece); }
+        if row == 1 { self.r1.set(col, piece); }
+        if row == 2 { self.r2.set(col, piece); }
+        if row == 3 { self.r3.set(col, piece); }
+        if row == 4 { self.r4.set(col, piece); }
+        if row == 5 { self.r5.set(col, piece); }
+        if row == 6 { self.r6.set(col, piece); }
+        if row == 7 { self.r7.set(col, piece); }
+    }
+
+    fn printPiece(U4 p) {
+        if p == 0 { '.'.print(); }
+        if p == 1 { 'P'.print(); }
+        if p == 2 { 'R'.print(); }
+        if p == 3 { 'N'.print(); }
+        if p == 4 { 'B'.print(); }
+        if p == 5 { 'Q'.print(); }
+        if p == 6 { 'K'.print(); }
+        if p == 7 { 'p'.print(); }
+        if p == 8 { 'r'.print(); }
+        if p == 9 { 'n'.print(); }
+        if p == 10 { 'b'.print(); }
+        if p == 11 { 'q'.print(); }
+        if p == 12 { 'k'.print(); }
+    }
+
+    fn display(self) {
+        "  a b c d e f g h".println();
+        mut U4 row = 7;
+        loop {
+            mut U4 d = row;
+            d += 1;
+            d.print();
+            ' '.print();
+            mut U4 col = 0;
+            loop {
+                Self::printPiece(self.getCell(row, col));
+                ' '.print();
+                if col == 7 {
+                    break;
+                }
+                col += 1;
+            }
+            '\n'.print();
+            if row == 0 {
+                break;
+            }
+            row -= 1;
+        }
+        "  a b c d e f g h".println();
+    }
+
+    fn play(mut self) {
+        loop {
+            self.display();
+            if self.whiteTurn {
+                "White> ".print();
+            } else {
+                "Black> ".print();
+            }
+            mut U4 sc = U4::input();
+            mut U4 sr = U4::input();
+            mut U4 dc = U4::input();
+            mut U4 dr = U4::input();
+            sc -= 1;
+            sr -= 1;
+            dc -= 1;
+            dr -= 1;
+            // U4 wraps 0-15; coords >7 signal bad input.
+            if sc > 7 { "Bad input".println(); continue; }
+            if sr > 7 { "Bad input".println(); continue; }
+            if dc > 7 { "Bad input".println(); continue; }
+            if dr > 7 { "Bad input".println(); continue; }
+            U4 piece = self.getCell(sr, sc);
+            mut Bool valid = false;
+            if self.whiteTurn {
+                if piece != 0 {
+                    if piece < 7 {
+                        valid = true;
+                    }
+                }
+            } else {
+                if piece > 6 {
+                    valid = true;
+                }
+            }
+            if valid {
+                // own piece, proceed
+            } else {
+                "Not your piece".println();
+                continue;
+            }
+            U4 target = self.getCell(dr, dc);
+            mut Bool ownTarget = false;
+            if self.whiteTurn {
+                if target != 0 {
+                    if target < 7 {
+                        ownTarget = true;
+                    }
+                }
+            } else {
+                if target > 6 {
+                    ownTarget = true;
+                }
+            }
+            if ownTarget {
+                "Can't capture own piece".println();
+                continue;
+            }
+            self.setCell(dr, dc, piece);
+            self.setCell(sr, sc, 0);
+            if target == 6 {
+                self.display();
+                "Black wins!".println();
+                break;
+            }
+            if target == 12 {
+                self.display();
+                "White wins!".println();
+                break;
+            }
+            self.whiteTurn = self.whiteTurn.not();
+        }
+    }
+
+    fn main(): U4 {
+        mut Self game = Self::new();
+        game.init();
+        game.play();
+        0
+    }
+}

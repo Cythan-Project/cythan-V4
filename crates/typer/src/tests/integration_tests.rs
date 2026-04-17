@@ -50,7 +50,14 @@ fn registers_bool_with_concrete_layout_and_methods() {
 
 #[test]
 fn registers_u8_with_size_2() {
-    let items = items_from("std/U8.ct");
+    // U8.ct pulls in `Eq` via its impl block, so load Ops.ct first so
+    // the trait is known to the registry.
+    let combined = format!(
+        "{}\n{}\n",
+        example("std/Ops.ct"),
+        example("std/U8.ct"),
+    );
+    let items = parse_src(&combined);
     let r = TypeRegistry::from_items(&items).unwrap();
     match &r.get_type("U8").unwrap().kind {
         TypeKind::Struct(StructKind::Concrete(layout)) => {

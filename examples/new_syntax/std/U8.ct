@@ -104,3 +104,13 @@ extension U8 {
         System::debugInterupt(self.higher);
     }
 }
+
+impl Eq for U8 {
+    fn eq(self, U8 other): Bool {
+        self.lower == other.lower && self.higher == other.higher
+    }
+
+    fn ne(self, U8 other): Bool {
+        if self.eq(other) { false } else { true }
+    }
+}

@@ -15,7 +15,7 @@ extension DynArray<T, N, F> {
     }
 
     fn add(mut self, T t) {
-        self.array.setDyn(self.length, t);
+        self.array.set(self.length, t);
         self.length += 1;
     }
 
@@ -26,7 +26,7 @@ extension DynArray<T, N, F> {
             if l == 0 {
                 break;
             }
-            self.add(arr.getDyn(c));
+            self.add(arr.get(c));
             c += 1;
             l -= 1;
         }
@@ -46,11 +46,11 @@ extension DynArray<T, N, F> {
     }
 
     fn getDyn(self, F pos): T {
-        self.array.getDyn(pos)
+        self.array.get(pos)
     }
 
     fn setDyn(mut self, F pos, T t) {
-        self.array.setDyn(pos, t);
+        self.array.set(pos, t);
     }
 
     fn get<Number>(self): T {

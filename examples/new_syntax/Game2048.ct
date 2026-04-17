@@ -1,0 +1,269 @@
+// Port of cythan/games/Game2048.ct to the new syntax.
+//
+// 4x4 grid of powers-of-2 tiles stored as log2(value) in a U4. Swipe
+// left/right/up/down to merge adjacent equal tiles. Input controls:
+//   1 = left  2 = right  3 = up  4 = down
+// The `seed` field advances each turn and decides which empty slot
+// gets the new tile (deterministic, no RNG).
+
+struct Game2048 {
+    Array<U4, 16, U4> grid,
+    U4 seed,
+    Bool changed,
+}
+
+extension Game2048 {
+    fn new(): Self {
+        Self { grid: Array::new(), seed: 0, changed: false, }
+    }
+
+    // The board stores log2(value); print the literal cell contents
+    // right-aligned in a 4-char column so the grid renders tidily.
+    fn printCell(U4 v) {
+        if v == 0 { "   .".print(); }
+        if v == 1 { "   2".print(); }
+        if v == 2 { "   4".print(); }
+        if v == 3 { "   8".print(); }
+        if v == 4 { "  16".print(); }
+        if v == 5 { "  32".print(); }
+        if v == 6 { "  64".print(); }
+        if v == 7 { " 128".print(); }
+        if v == 8 { " 256".print(); }
+        if v == 9 { " 512".print(); }
+        if v == 10 { "1024".print(); }
+        if v == 11 { "2048".print(); }
+        if v == 12 { "4096".print(); }
+        if v == 13 { "8192".print(); }
+        if v == 14 { "16384".print(); }
+        if v == 15 { "32768".print(); }
+    }
+
+    fn display(self) {
+        mut U4 i = 0;
+        loop {
+            Self::printCell(self.grid.get(i));
+            mut U4 col = i;
+            col += 1;
+            if col == 4 { '\n'.print(); }
+            if col == 8 { '\n'.print(); }
+            if col == 12 { '\n'.print(); }
+            if col == 0 { '\n'.print(); }
+            if i == 15 {
+                break;
+            }
+            i += 1;
+        }
+    }
+
+    fn slideLine(mut self, U4 i0, U4 i1, U4 i2, U4 i3) {
+        mut U4 a = self.grid.get(i0);
+        mut U4 b = self.grid.get(i1);
+        mut U4 c = self.grid.get(i2);
+        mut U4 d = self.grid.get(i3);
+        U4 oa = a;
+        U4 ob = b;
+        U4 oc = c;
+        U4 od = d;
+
+        // Collapse zeros left (three passes handles 4-wide line).
+        if a == 0 { a = b; b = 0; }
+        if b == 0 { b = c; c = 0; }
+        if c == 0 { c = d; d = 0; }
+        if a == 0 { a = b; b = 0; }
+        if b == 0 { b = c; c = 0; }
+        if a == 0 { a = b; b = 0; }
+
+        // Merge adjacent equals (log2 repr → increment by 1).
+        if a != 0 {
+            if a == b {
+                a += 1;
+                b = 0;
+            }
+        }
+        if b != 0 {
+            if b == c {
+                b += 1;
+                c = 0;
+            }
+        }
+        if c != 0 {
+            if c == d {
+                c += 1;
+                d = 0;
+            }
+        }
+
+        // Compact again after merge.
+        if b == 0 { b = c; c = 0; }
+        if c == 0 { c = d; d = 0; }
+        if b == 0 { b = c; c = 0; }
+
+        if oa != a { self.changed = true; }
+        if ob != b { self.changed = true; }
+        if oc != c { self.changed = true; }
+        if od != d { self.changed = true; }
+
+        self.grid.set(i0, a);
+        self.grid.set(i1, b);
+        self.grid.set(i2, c);
+        self.grid.set(i3, d);
+    }
+
+    fn slideLeft(mut self) {
+        self.slideLine(0, 1, 2, 3);
+        self.slideLine(4, 5, 6, 7);
+        self.slideLine(8, 9, 10, 11);
+        self.slideLine(12, 13, 14, 15);
+    }
+
+    fn slideRight(mut self) {
+        self.slideLine(3, 2, 1, 0);
+        self.slideLine(7, 6, 5, 4);
+        self.slideLine(11, 10, 9, 8);
+        self.slideLine(15, 14, 13, 12);
+    }
+
+    fn slideUp(mut self) {
+        self.slideLine(0, 4, 8, 12);
+        self.slideLine(1, 5, 9, 13);
+        self.slideLine(2, 6, 10, 14);
+        self.slideLine(3, 7, 11, 15);
+    }
+
+    fn slideDown(mut self) {
+        self.slideLine(12, 8, 4, 0);
+        self.slideLine(13, 9, 5, 1);
+        self.slideLine(14, 10, 6, 2);
+        self.slideLine(15, 11, 7, 3);
+    }
+
+    // Place a '2' tile (log2=1) on an empty cell picked by `seed`.
+    // Falls back to the first empty cell if the seed overshoots the
+    // number of empties available. `seed` advances by 3 each turn to
+    // diversify the sequence without needing an RNG.
+    fn placeTile(mut self) {
+        mut U4 target = self.seed;
+        mut U4 i = 0;
+        mut Bool placed = false;
+        loop {
+            if self.grid.get(i) == 0 {
+                if target == 0 {
+                    self.grid.set(i, 1);
+                    placed = true;
+                    break;
+                }
+                target -= 1;
+            }
+            if i == 15 {
+                break;
+            }
+            i += 1;
+        }
+        if placed {
+            // already placed
+        } else {
+            mut U4 j = 0;
+            loop {
+                if self.grid.get(j) == 0 {
+                    self.grid.set(j, 1);
+                    break;
+                }
+                if j == 15 {
+                    break;
+                }
+                j += 1;
+            }
+        }
+        self.seed += 1;
+        self.seed += 1;
+        self.seed += 1;
+    }
+
+    fn hasWon(self): Bool {
+        mut U4 i = 0;
+        loop {
+            if self.grid.get(i) == 11 {
+                return true;
+            }
+            if i == 15 {
+                break;
+            }
+            i += 1;
+        }
+        false
+    }
+
+    fn canMove(self): Bool {
+        mut U4 i = 0;
+        loop {
+            if self.grid.get(i) == 0 {
+                return true;
+            }
+            if i == 15 {
+                break;
+            }
+            i += 1;
+        }
+        // Row adjacencies.
+        if self.grid.get(0) == self.grid.get(1) { return true; }
+        if self.grid.get(1) == self.grid.get(2) { return true; }
+        if self.grid.get(2) == self.grid.get(3) { return true; }
+        if self.grid.get(4) == self.grid.get(5) { return true; }
+        if self.grid.get(5) == self.grid.get(6) { return true; }
+        if self.grid.get(6) == self.grid.get(7) { return true; }
+        if self.grid.get(8) == self.grid.get(9) { return true; }
+        if self.grid.get(9) == self.grid.get(10) { return true; }
+        if self.grid.get(10) == self.grid.get(11) { return true; }
+        if self.grid.get(12) == self.grid.get(13) { return true; }
+        if self.grid.get(13) == self.grid.get(14) { return true; }
+        if self.grid.get(14) == self.grid.get(15) { return true; }
+        // Column adjacencies.
+        if self.grid.get(0) == self.grid.get(4) { return true; }
+        if self.grid.get(1) == self.grid.get(5) { return true; }
+        if self.grid.get(2) == self.grid.get(6) { return true; }
+        if self.grid.get(3) == self.grid.get(7) { return true; }
+        if self.grid.get(4) == self.grid.get(8) { return true; }
+        if self.grid.get(5) == self.grid.get(9) { return true; }
+        if self.grid.get(6) == self.grid.get(10) { return true; }
+        if self.grid.get(7) == self.grid.get(11) { return true; }
+        if self.grid.get(8) == self.grid.get(12) { return true; }
+        if self.grid.get(9) == self.grid.get(13) { return true; }
+        if self.grid.get(10) == self.grid.get(14) { return true; }
+        if self.grid.get(11) == self.grid.get(15) { return true; }
+        false
+    }
+
+    fn play(mut self) {
+        "2048 - 1:left 2:right 3:up 4:down".println();
+        self.placeTile();
+        self.placeTile();
+        loop {
+            self.display();
+            if self.hasWon() {
+                "You won!".println();
+                break;
+            }
+            if self.canMove() {
+                // continue
+            } else {
+                "Game over!".println();
+                break;
+            }
+            U4 input = U4::input();
+            self.changed = false;
+            if input == 1 { self.slideLeft(); }
+            if input == 2 { self.slideRight(); }
+            if input == 3 { self.slideUp(); }
+            if input == 4 { self.slideDown(); }
+            if self.changed {
+                self.placeTile();
+            }
+        }
+    }
+
+    fn main(): U4 {
+        mut Self g = Self::new();
+        g.play();
+        0
+    }
+}

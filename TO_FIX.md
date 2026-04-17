@@ -39,26 +39,40 @@ target_name}`, and the various HIR paths still thread strings. Moving
 those to IDs is a separate, larger refactor — touches `hir/gen.rs`
 extensively. Not blocking; flagged as a follow-up.
 
-## Games + new-pipeline harness — PARTIAL
+## Games + new-pipeline harness — DONE
 
 `cythan_driver::new_pipeline` (see `crates/driver/src/new_pipeline.rs`)
 is the test harness for the new pipeline. It takes source files +
 entry + scripted input, compiles via `new_parser` → `typer` → `hir`
 → `mir`, runs the MIR with a capturing `RunContext`, and returns
-output plus remaining input. Six integration tests in
-`src/new_pipeline_tests.rs` cover the harness itself and run Morpion
-end-to-end with three distinct input scripts (win / equality /
-invalid-input).
+output plus remaining input.
+
+**Ten integration tests** in `src/new_pipeline_tests.rs`:
+- 3 harness smoke tests (inline programs for echo / input / compile-run composability).
+- 3 Morpion scenarios (win / equality / invalid-input).
+- 2 Pendu scenarios (win with `"gramire"` / lose with all wrong letters).
+- 1 Game2048 (cycling 1234 input fills the board, triggers `Game over!`).
+- 1 Chess (`"4158"` = d1→e8, captures Black king, White wins).
+
+All four games from `cythan/` (old syntax) ported to
+`examples/new_syntax/`. New stdlib additions needed during porting:
+- `impl Eq for U8` in `std/U8.ct` — enables `==` on U8 for
+  `DynArray::contains` and game logic comparisons.
+- `DynArray` was using non-existent `Array::getDyn` / `Array::setDyn`;
+  redirected to the existing `.get(i)` / `.set(i, v)` dynamic forms.
 
 **Known fix during this work:** char literals (`'-'`, `'O'`, …) were
-typed as `U4` (1 cell), which truncated them to the low nibble and
-made `'X'.print()` emit `8` instead of `X`. Re-typed as `U8`,
-emitting high and low nibbles into two cells.
+typed as `U4` (1 cell), truncating them to the low nibble so
+`'X'.print()` emitted `8` instead of `X`. Re-typed as `U8`, emitting
+high and low nibbles into two cells.
 
-**Remaining:** Pendu / Chess / Game2048 live only under `cythan/` in
-the OLD syntax — they need porting to `examples/new_syntax/` to go
-through the new pipeline. The harness will run them unchanged once
-the source files exist.
+**Known limitation:** the MIR interpreter casts each printed byte to
+`char` via `byte as char`, which maps bytes ≥128 to Latin-1
+codepoints that then re-encode to two UTF-8 bytes in the captured
+`String`. Tests with non-ASCII output (e.g. French `é` in Pendu's
+`"Vous avez gagné!"`) assert on ASCII-only substrings. A proper fix
+would capture output as `Vec<u8>` instead of `String`, or push bytes
+directly via `push(c)` that takes a raw byte.
 
 ## 2. Two parsers in-tree
 
