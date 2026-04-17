@@ -18,7 +18,7 @@ clap = { version = "4", features = ["derive"] }
 debug = true
 
 [workspace]
-members = ["crates/lir", "crates/vm", "crates/mir", "crates/errors", "crates/frontend", "crates/driver", "crates/parser", "crates/new_parser", "crates/typer", "crates/hir"]
+members = ["crates/lir", "crates/vm", "crates/mir", "crates/errors", "crates/driver", "crates/new_parser", "crates/typer", "crates/hir"]
 
 [workspace.lints.clippy]
 # Error type from ariadne is inherently large (192 bytes); boxing it would require

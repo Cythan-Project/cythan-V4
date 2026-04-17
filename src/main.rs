@@ -1,439 +1,280 @@
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
-use cythan::format;
-use lir::CompilableInstruction;
-use mir::{MirState, StdIoContext};
-
-use cythan_driver::run_context::{compute_max_bin, run, run_bin};
-
-#[cfg(test)]
-mod tests;
+use cythan_driver::new_pipeline::{self, Backend};
 
 #[cfg(test)]
 mod new_pipeline_tests;
 
 #[derive(Parser)]
-#[command(name = "cythan", about = "Cythan V4 compiler and runtime")]
+#[command(
+    name = "cythan",
+    about = "Cythan V4 compiler and runtime — new_parser → typer → hir → mir → lir → bytecode."
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
-    /// Standard library directory (legacy pipeline).
-    #[arg(long, global = true, default_value = "cythan/std")]
-    std_dir: PathBuf,
-    /// Standard library directory for the new pipeline
-    /// (`new_parser` → `typer` → `hir` → `mir`).
+    /// Standard library directory.
     #[arg(long, global = true, default_value = "examples/new_syntax/std")]
-    new_std_dir: PathBuf,
+    std_dir: PathBuf,
 }
 
 #[derive(Subcommand)]
 enum Command {
-    /// Compile and run a Cythan program
-    Run {
-        /// Source file path (e.g. std/Morpion.ct)
-        file: PathBuf,
-        /// Enable MIR optimization
-        #[arg(short, long)]
-        optimize: bool,
-        /// Dump MIR before optimization
-        #[arg(long, value_name = "FILE")]
-        dump_mir_before: Option<PathBuf>,
-        /// Dump MIR after optimization
-        #[arg(long, value_name = "FILE")]
-        dump_mir_after: Option<PathBuf>,
-    },
-    /// Compile a Cythan program to binary
-    Build {
-        /// Source file path (e.g. std/Morpion.ct)
-        file: PathBuf,
-        /// Output binary file path
-        #[arg(short, long)]
-        output: PathBuf,
-        /// Enable MIR optimization
-        #[arg(short = 'O', long)]
-        optimize: bool,
-        /// Dump MIR (after optimization if enabled)
-        #[arg(long, value_name = "FILE")]
-        dump_mir: Option<PathBuf>,
-        /// Dump MIR before optimization
-        #[arg(long, value_name = "FILE")]
-        dump_mir_before: Option<PathBuf>,
-        /// Dump MIR after optimization
-        #[arg(long, value_name = "FILE")]
-        dump_mir_after: Option<PathBuf>,
-        /// Dump LIR (low-level IR) instructions
-        #[arg(long, value_name = "FILE")]
-        dump_lir: Option<PathBuf>,
-        /// Dump V3 assembly text
-        #[arg(long, value_name = "FILE")]
-        dump_asm: Option<PathBuf>,
-    },
-    /// Decode and inspect a compiled binary
-    Inspect {
-        /// Input binary file
-        input: PathBuf,
-        /// Output text file
-        output: PathBuf,
-    },
-    /// Pre-compute machine state from a binary
-    Precomp {
-        /// Input binary file
-        input: PathBuf,
-        /// Output binary file
-        output: PathBuf,
-    },
-    /// Execute a pre-compiled binary
-    Exe {
-        /// Input binary file
-        input: PathBuf,
-    },
-    /// New-pipeline toolchain (`new_parser` → `typer` → `hir` → `mir`)
-    New {
-        #[command(subcommand)]
-        command: NewCommand,
-    },
-}
-
-#[derive(Subcommand)]
-enum NewCommand {
-    /// Type-check + HIR-gen a program; report errors or a success summary.
-    /// Exits non-zero if any stage of the new pipeline fails.
+    /// Type-check + HIR-gen a program; report errors or a success
+    /// summary. Exits non-zero on any pipeline failure.
     Check {
         /// Main source file (e.g. `examples/new_syntax/Morpion.ct`).
         file: PathBuf,
     },
-    /// Compile to HIR and/or MIR and write human-readable text dumps.
-    /// At least one of `--hir` / `--mir` must be supplied.
+    /// Compile the program and dump any combination of the
+    /// intermediate representations as human-readable text.
+    /// `--hir` / `--mir` / `--lir` / `--cythan` are all optional; at
+    /// least one must be supplied. `--hir` is per-function and
+    /// doesn't need an entry point. `--mir` / `--lir` / `--cythan`
+    /// inline from an entry (`--entry-type`, `--entry-method`).
     Build {
         /// Main source file.
         file: PathBuf,
-        /// Write HIR text dump here (per-function; no entry needed).
+        /// Write per-function HIR dump.
         #[arg(long, value_name = "FILE")]
         hir: Option<PathBuf>,
-        /// Write MIR text dump here. Requires an entry point — inlining
-        /// starts there and the resulting flat `MirCodeBlock` is dumped.
+        /// Write flat MIR (post-inlining) dump.
         #[arg(long, value_name = "FILE")]
         mir: Option<PathBuf>,
-        /// Entry-point type name (for `--mir`). Defaults to the file's
-        /// stem (e.g. `Morpion.ct` → `Morpion`).
-        #[arg(long)]
-        entry_type: Option<String>,
-        /// Entry-point method (for `--mir`). Defaults to `main`.
-        #[arg(long, default_value = "main")]
-        entry_method: String,
-    },
-    /// Full compile + MIR-interpret against stdin/stdout.
-    Run {
-        /// Main source file.
-        file: PathBuf,
-        /// Entry-point type name. Defaults to the file's stem
-        /// (e.g. `Morpion.ct` → `Morpion`).
+        /// Write LIR (labelled assembly, post-`opt_asm`) dump.
+        #[arg(long, value_name = "FILE")]
+        lir: Option<PathBuf>,
+        /// Write raw Cythan bytecode as a space-separated list of
+        /// decimals. The same format `cythan inspect` accepted.
+        #[arg(long, value_name = "FILE")]
+        cythan: Option<PathBuf>,
+        /// Entry-point type name. Defaults to the file's stem.
         #[arg(long)]
         entry_type: Option<String>,
         /// Entry-point method. Defaults to `main`.
         #[arg(long, default_value = "main")]
         entry_method: String,
-        /// Memory budget in cells (one cell = 4 bits).
+    },
+    /// Full compile + execute. Backend chooses the runtime: the MIR
+    /// interpreter (`mir`), the bytecode path via LIR (`lir`), or
+    /// the Cythan VM (`cythan`). Input comes from stdin, output
+    /// goes to stdout.
+    Run {
+        /// Main source file.
+        file: PathBuf,
+        /// Runtime to execute on.
+        #[arg(long, default_value = "mir", value_parser = parse_backend)]
+        backend: Backend,
+        /// Entry-point type name. Defaults to file stem.
+        #[arg(long)]
+        entry_type: Option<String>,
+        /// Entry-point method. Defaults to `main`.
+        #[arg(long, default_value = "main")]
+        entry_method: String,
+        /// Memory budget in u4 cells (`mir` backend only).
         #[arg(long, default_value_t = 4096)]
         mem_cells: usize,
     },
 }
 
-fn compile_to_mir(file: &Path, std_dir: &Path, optimize: bool) -> mir::MirCodeBlock {
-    cythan_driver::build_context::compile(file, std_dir, optimize)
-}
-
-fn dump_mir(mir: &mir::MirCodeBlock, path: &PathBuf) {
-    std::fs::write(
-        path,
-        mir.0
-            .iter()
-            .map(|x| x.to_string())
-            .collect::<Vec<_>>()
-            .join("\n"),
-    )
-    .expect("Could not write MIR file");
+fn parse_backend(s: &str) -> Result<Backend, String> {
+    s.parse::<Backend>()
 }
 
 fn main() {
     let cli = Cli::parse();
-
     let std_dir = cli.std_dir;
     match cli.command {
-        Command::Run {
-            file,
-            optimize,
-            dump_mir_before,
-            dump_mir_after,
-        } => {
-            let raw_mir = compile_to_mir(&file, &std_dir, false);
-            if let Some(path) = &dump_mir_before {
-                dump_mir(&raw_mir, path);
-            }
-            let mir = if optimize {
-                let count = raw_mir.instr_count();
-                let optimized = raw_mir.optimize_code_new();
-                let ncount = optimized.instr_count();
-                eprintln!(
-                    "Optimized from {} to {} ({:.02}%)",
-                    count,
-                    ncount,
-                    (count - ncount) as f64 / count as f64 * 100.
-                );
-                optimized
-            } else {
-                raw_mir
-            };
-            if let Some(path) = &dump_mir_after {
-                dump_mir(&mir, path);
-            }
-            eprintln!("Compiled successfully!");
-            eprintln!("Now running...");
-            run(&mir, StdIoContext);
-        }
+        Command::Check { file } => run_check(&file, &std_dir),
         Command::Build {
-            file,
-            output,
-            optimize,
-            dump_mir: dump_mir_path,
-            dump_mir_before,
-            dump_mir_after,
-            dump_lir,
-            dump_asm,
-        } => {
-            let raw_mir = compile_to_mir(&file, &std_dir, false);
-            if let Some(path) = &dump_mir_before {
-                dump_mir(&raw_mir, path);
-            }
-            let compiled = if optimize {
-                let count = raw_mir.instr_count();
-                let optimized = raw_mir.optimize_code_new();
-                let ncount = optimized.instr_count();
-                eprintln!(
-                    "Optimized from {} to {} ({:.02}%)",
-                    count,
-                    ncount,
-                    (count - ncount) as f64 / count as f64 * 100.
-                );
-                optimized
-            } else {
-                raw_mir
-            };
-            if let Some(path) = &dump_mir_after {
-                dump_mir(&compiled, path);
-            }
-            if let Some(path) = &dump_mir_path {
-                dump_mir(&compiled, path);
-            }
-
-            let mut mirstate = MirState::default();
-            compiled.to_asm(&mut mirstate);
-            mirstate.opt_asm();
-
-            if let Some(path) = &dump_lir {
-                std::fs::write(
-                    path,
-                    mirstate
-                        .instructions
-                        .iter()
-                        .map(|x| x.to_string())
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                )
-                .expect("Could not write LIR file");
-            }
-
-            let asm_text = CompilableInstruction::compile_to_string(mirstate.instructions.clone());
-            if let Some(path) = &dump_asm {
-                std::fs::write(path, &asm_text).expect("Could not write ASM file");
-            }
-
-            let k: Vec<u32> = CompilableInstruction::compile_to_binary(mirstate.instructions)
-                .into_iter()
-                .map(|x| x as u32)
-                .collect();
-            std::fs::write(
-                &output,
-                cythan::format::encode_to_bytes(cythan::format::HeaderData::default(), &k)
-                    .expect("Could not create binary"),
-            )
-            .expect("Could not write binary file");
-            eprintln!("Compiled successfully!");
-        }
-        Command::Inspect { input, output } => {
-            let pg = format::decode_bytes(&std::fs::read(&input).unwrap())
-                .unwrap()
-                .1;
-            std::fs::write(
-                &output,
-                pg.iter()
-                    .map(|x| x.to_string())
-                    .collect::<Vec<_>>()
-                    .join(" "),
-            )
-            .unwrap();
-            eprintln!("Decoded successfully!");
-        }
-        Command::Precomp { input, output } => {
-            let pg = format::decode_bytes(&std::fs::read(&input).unwrap())
-                .unwrap()
-                .1;
-            eprintln!("Now running...");
-            let result = compute_max_bin(&pg.into_iter().map(|x| x as usize).collect::<Vec<_>>());
-            eprintln!("Advanced machine by: {} steps", result.0);
-            std::fs::write(
-                &output,
-                cythan::format::encode_to_bytes(
-                    cythan::format::HeaderData::default(),
-                    &result.1.iter().map(|x| *x as _).collect::<Vec<_>>(),
-                )
-                .expect("Could not create binary"),
-            )
-            .expect("Could not write file");
-        }
-        Command::Exe { input } => {
-            let pg = format::decode_bytes(&std::fs::read(&input).unwrap())
-                .unwrap()
-                .1;
-            eprintln!("Now running...");
-            let (k, _) = run_bin(
-                &pg.into_iter().map(|x| x as usize).collect::<Vec<_>>(),
-                StdIoContext,
-            );
-            eprintln!("Took {} steps", k);
-        }
-        Command::New { command } => run_new_command(command, &cli.new_std_dir),
-    }
-}
-
-fn run_new_command(command: NewCommand, new_std_dir: &Path) {
-    use cythan_driver::new_pipeline;
-
-    match command {
-        NewCommand::Check { file } => {
-            let files = gather_or_die(new_std_dir, &file);
-            let refs: Vec<(&str, String)> = files
-                .iter()
-                .map(|(n, s)| (n.as_str(), s.clone()))
-                .collect();
-            let report = new_pipeline::diagnose(&refs);
-            let sources: std::collections::HashMap<String, String> = files
-                .iter()
-                .map(|(n, s)| (n.clone(), s.clone()))
-                .collect();
-            for diag in report.errors.iter().chain(report.warnings.iter()) {
-                eprint!("{}", errors::render_diag(diag, &sources));
-            }
-            if report.has_errors() {
-                std::process::exit(1);
-            }
-            // No errors — print the success summary to match the old
-            // behavior; include a warning count when non-empty.
-            eprintln!(
-                "ok ({} warning{})",
-                report.warnings.len(),
-                if report.warnings.len() == 1 { "" } else { "s" }
-            );
-        }
-        NewCommand::Build {
             file,
             hir,
             mir,
+            lir,
+            cythan,
             entry_type,
             entry_method,
-        } => {
-            if hir.is_none() && mir.is_none() {
-                die("at least one of --hir / --mir must be supplied");
-            }
-            let files = gather_or_die(new_std_dir, &file);
-            let refs: Vec<(&str, String)> = files
-                .iter()
-                .map(|(n, s)| (n.as_str(), s.clone()))
-                .collect();
-
-            if let Some(hir_path) = &hir {
-                match new_pipeline::build_hir(&refs) {
-                    Ok(built) => {
-                        let text = new_pipeline::hir_to_text(&built.hir);
-                        std::fs::write(hir_path, text).unwrap_or_else(|e| {
-                            die(&format!("write {}: {}", hir_path.display(), e))
-                        });
-                        eprintln!(
-                            "wrote HIR for {} function(s) to {}",
-                            built.hir.len(),
-                            hir_path.display()
-                        );
-                    }
-                    Err(msg) => die(&msg),
-                }
-            }
-
-            if let Some(mir_path) = &mir {
-                let entry_type = entry_type.unwrap_or_else(|| {
-                    file.file_stem()
-                        .expect("main file has no stem")
-                        .to_string_lossy()
-                        .into_owned()
-                });
-                let entry = typer::FnSig::new(&entry_type, &entry_method);
-                match new_pipeline::compile(&refs, &entry) {
-                    Ok(mir_block) => {
-                        let text = new_pipeline::mir_to_text(&mir_block);
-                        std::fs::write(mir_path, text).unwrap_or_else(|e| {
-                            die(&format!("write {}: {}", mir_path.display(), e))
-                        });
-                        eprintln!(
-                            "wrote MIR ({} ops) for {}::{} to {}",
-                            mir_block.0.len(),
-                            entry_type,
-                            entry_method,
-                            mir_path.display()
-                        );
-                    }
-                    Err(msg) => die(&msg),
-                }
-            }
-        }
-        NewCommand::Run {
+        } => run_build(
+            &file,
+            &std_dir,
+            hir.as_deref(),
+            mir.as_deref(),
+            lir.as_deref(),
+            cythan.as_deref(),
+            entry_type.as_deref(),
+            &entry_method,
+        ),
+        Command::Run {
             file,
+            backend,
             entry_type,
             entry_method,
             mem_cells,
-        } => {
-            let entry_type = entry_type.unwrap_or_else(|| {
-                file.file_stem()
-                    .expect("main file has no stem")
-                    .to_string_lossy()
-                    .into_owned()
-            });
-            let files = gather_or_die(new_std_dir, &file);
-            let refs: Vec<(&str, String)> = files
-                .iter()
-                .map(|(n, s)| (n.as_str(), s.clone()))
-                .collect();
-            let entry = typer::FnSig::new(&entry_type, &entry_method);
-            let mir = match new_pipeline::compile(&refs, &entry) {
-                Ok(mir) => mir,
-                Err(msg) => die(&msg),
-            };
+        } => run_program(&file, &std_dir, backend, entry_type.as_deref(), &entry_method, mem_cells),
+    }
+}
+
+// ---- check ---------------------------------------------------------------
+
+fn run_check(file: &Path, std_dir: &Path) {
+    let files = gather_or_die(std_dir, file);
+    let refs: Vec<(&str, String)> = files.iter().map(|(n, s)| (n.as_str(), s.clone())).collect();
+    let report = new_pipeline::diagnose(&refs);
+    let sources: std::collections::HashMap<String, String> = files
+        .iter()
+        .map(|(n, s)| (n.clone(), s.clone()))
+        .collect();
+    for diag in report.errors.iter().chain(report.warnings.iter()) {
+        eprint!("{}", errors::render_diag(diag, &sources));
+    }
+    if report.has_errors() {
+        std::process::exit(1);
+    }
+    eprintln!(
+        "ok ({} warning{})",
+        report.warnings.len(),
+        if report.warnings.len() == 1 { "" } else { "s" }
+    );
+}
+
+// ---- build ---------------------------------------------------------------
+
+#[allow(clippy::too_many_arguments)]
+fn run_build(
+    file: &Path,
+    std_dir: &Path,
+    hir_out: Option<&Path>,
+    mir_out: Option<&Path>,
+    lir_out: Option<&Path>,
+    cythan_out: Option<&Path>,
+    entry_type_override: Option<&str>,
+    entry_method: &str,
+) {
+    if hir_out.is_none() && mir_out.is_none() && lir_out.is_none() && cythan_out.is_none() {
+        die("at least one of --hir / --mir / --lir / --cythan must be supplied");
+    }
+    let files = gather_or_die(std_dir, file);
+    let refs: Vec<(&str, String)> = files.iter().map(|(n, s)| (n.as_str(), s.clone())).collect();
+
+    if let Some(path) = hir_out {
+        let built = new_pipeline::build_hir(&refs).unwrap_or_else(|e| die(&e));
+        std::fs::write(path, new_pipeline::hir_to_text(&built.hir))
+            .unwrap_or_else(|e| die(&format!("write {}: {}", path.display(), e)));
+        eprintln!(
+            "wrote HIR for {} function(s) to {}",
+            built.hir.len(),
+            path.display()
+        );
+    }
+
+    // If any of mir/lir/cythan is requested, we need the compiled MIR
+    // with a concrete entry point.
+    let needs_mir = mir_out.is_some() || lir_out.is_some() || cythan_out.is_some();
+    if !needs_mir {
+        return;
+    }
+    let entry_type = entry_type_override
+        .map(String::from)
+        .unwrap_or_else(|| file_stem(file));
+    let entry = typer::FnSig::new(&entry_type, entry_method);
+    let mir = new_pipeline::compile(&refs, &entry).unwrap_or_else(|e| die(&e));
+
+    if let Some(path) = mir_out {
+        std::fs::write(path, new_pipeline::mir_to_text(&mir))
+            .unwrap_or_else(|e| die(&format!("write {}: {}", path.display(), e)));
+        eprintln!(
+            "wrote MIR ({} ops) for {}::{} to {}",
+            mir.0.len(),
+            entry_type,
+            entry_method,
+            path.display()
+        );
+    }
+
+    // LIR + Cythan share the same lowering; do it once if either
+    // output is requested.
+    if lir_out.is_some() || cythan_out.is_some() {
+        let lir = new_pipeline::mir_to_lir(&mir);
+        if let Some(path) = lir_out {
+            std::fs::write(path, new_pipeline::lir_to_text(&lir))
+                .unwrap_or_else(|e| die(&format!("write {}: {}", path.display(), e)));
             eprintln!(
-                "running {}::{} ({} cells)",
-                entry_type, entry_method, mem_cells
+                "wrote LIR ({} instructions) for {}::{} to {}",
+                lir.len(),
+                entry_type,
+                entry_method,
+                path.display()
             );
+        }
+        if let Some(path) = cythan_out {
+            let bytecode = new_pipeline::lir_to_bytecode(lir);
+            std::fs::write(path, new_pipeline::bytecode_to_text(&bytecode))
+                .unwrap_or_else(|e| die(&format!("write {}: {}", path.display(), e)));
+            eprintln!(
+                "wrote Cythan bytecode ({} words) for {}::{} to {}",
+                bytecode.len(),
+                entry_type,
+                entry_method,
+                path.display()
+            );
+        }
+    }
+}
+
+// ---- run -----------------------------------------------------------------
+
+fn run_program(
+    file: &Path,
+    std_dir: &Path,
+    backend: Backend,
+    entry_type_override: Option<&str>,
+    entry_method: &str,
+    mem_cells: usize,
+) {
+    let entry_type = entry_type_override
+        .map(String::from)
+        .unwrap_or_else(|| file_stem(file));
+    let files = gather_or_die(std_dir, file);
+    let refs: Vec<(&str, String)> = files.iter().map(|(n, s)| (n.as_str(), s.clone())).collect();
+    let entry = typer::FnSig::new(&entry_type, entry_method);
+    let mir = new_pipeline::compile(&refs, &entry).unwrap_or_else(|e| die(&e));
+
+    eprintln!(
+        "running {}::{} on backend `{}`",
+        entry_type, entry_method, backend
+    );
+    match backend {
+        Backend::Mir => {
+            // MIR interpreter: wire to stdin/stdout directly.
             let mut state = mir::MemoryState::new(mem_cells, 8);
             let mut ctx = mir::StdIoContext;
             state.execute_block(&mir, &mut ctx);
             eprintln!("done ({} MIR steps)", state.instr_count);
         }
+        Backend::Lir | Backend::Cythan => {
+            let lir = new_pipeline::mir_to_lir(&mir);
+            let bytecode = new_pipeline::lir_to_bytecode(lir);
+            let (steps, _) = cythan_driver::run_context::run_bin(&bytecode, mir::StdIoContext);
+            eprintln!("done ({} VM steps)", steps);
+        }
     }
 }
 
+// ---- helpers -------------------------------------------------------------
+
 fn gather_or_die(std_dir: &Path, main: &Path) -> Vec<(String, String)> {
-    match cythan_driver::new_pipeline::gather_files(std_dir, main) {
+    match new_pipeline::gather_files(std_dir, main) {
         Ok(v) => v,
         Err(msg) => die(&msg),
     }
+}
+
+fn file_stem(p: &Path) -> String {
+    p.file_stem()
+        .expect("source file has no stem")
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn die(msg: &str) -> ! {

@@ -246,6 +246,99 @@ fn toolchain_build_hir_produces_dump() {
 }
 
 #[test]
+fn toolchain_build_lir_produces_dump() {
+    let mut files = new_syntax_stdlib();
+    files.push((
+        "LirDump.ct",
+        "struct LirDump {} extension LirDump { fn main(): U4 { 7 } }".to_string(),
+    ));
+    let entry = typer::FnSig::new("LirDump", "main");
+    let mir = cythan_driver::new_pipeline::compile(&files, &entry).expect("compile");
+    let lir = cythan_driver::new_pipeline::mir_to_lir(&mir);
+    let text = cythan_driver::new_pipeline::lir_to_text(&lir);
+    assert!(!text.is_empty(), "LIR dump empty");
+    assert!(
+        !lir.is_empty(),
+        "LIR should have at least one instruction"
+    );
+}
+
+#[test]
+fn toolchain_build_cythan_bytecode_round_trips_to_text() {
+    let mut files = new_syntax_stdlib();
+    files.push((
+        "Cy.ct",
+        "struct Cy {} extension Cy { fn main(): U4 { 1 } }".to_string(),
+    ));
+    let entry = typer::FnSig::new("Cy", "main");
+    let mir = cythan_driver::new_pipeline::compile(&files, &entry).expect("compile");
+    let lir = cythan_driver::new_pipeline::mir_to_lir(&mir);
+    let bytecode = cythan_driver::new_pipeline::lir_to_bytecode(lir);
+    assert!(
+        !bytecode.is_empty(),
+        "expected non-empty bytecode for trivial program"
+    );
+    let text = cythan_driver::new_pipeline::bytecode_to_text(&bytecode);
+    // Format: space-separated decimals. Splitting should yield the
+    // original word list byte-for-byte after parsing back.
+    let parsed: Vec<usize> = text.split_whitespace().map(|s| s.parse().unwrap()).collect();
+    assert_eq!(parsed, bytecode);
+}
+
+#[test]
+fn run_with_cythan_backend_matches_mir_output() {
+    // Trivial program — well within the cythan_compiler's comfort
+    // zone (larger programs still hit a pre-existing limit in the
+    // external bytecode compiler, tracked separately).
+    let mut files = new_syntax_stdlib();
+    files.push((
+        "Greet.ct",
+        r#"
+            struct Greet {}
+            extension Greet {
+                fn main(): U4 {
+                    'h'.print();
+                    'i'.print();
+                    0
+                }
+            }
+        "#
+        .to_string(),
+    ));
+    let entry = typer::FnSig::new("Greet", "main");
+    let mir = cythan_driver::new_pipeline::compile(&files, &entry).expect("compile");
+    let via_mir = cythan_driver::new_pipeline::run_with_backend(
+        &mir,
+        cythan_driver::new_pipeline::Backend::Mir,
+        "",
+        512,
+        cythan_driver::new_pipeline::DEFAULT_STEP_LIMIT,
+    );
+    let via_vm = cythan_driver::new_pipeline::run_with_backend(
+        &mir,
+        cythan_driver::new_pipeline::Backend::Cythan,
+        "",
+        512,
+        cythan_driver::new_pipeline::DEFAULT_STEP_LIMIT,
+    );
+    assert!(!via_mir.aborted_by_limit);
+    assert!(!via_vm.aborted_by_limit);
+    assert_eq!(via_mir.output, "hi");
+    assert_eq!(via_vm.output, "hi");
+}
+
+#[test]
+fn backend_from_str_parses_the_three_known_names() {
+    use cythan_driver::new_pipeline::Backend;
+    assert_eq!("mir".parse::<Backend>().unwrap(), Backend::Mir);
+    assert_eq!("lir".parse::<Backend>().unwrap(), Backend::Lir);
+    assert_eq!("cythan".parse::<Backend>().unwrap(), Backend::Cythan);
+    assert_eq!("CYTHAN".parse::<Backend>().unwrap(), Backend::Cythan);
+    assert_eq!("vm".parse::<Backend>().unwrap(), Backend::Cythan);
+    assert!("bogus".parse::<Backend>().is_err());
+}
+
+#[test]
 fn toolchain_build_mir_produces_dump() {
     let mut files = new_syntax_stdlib();
     files.push((

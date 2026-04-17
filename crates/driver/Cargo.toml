@@ -8,7 +8,6 @@ errors = { path = "../errors" }
 mir = { path = "../mir" }
 lir = { path = "../lir" }
 cythan = { path = "../vm" }
-cythan-frontend = { path = "../frontend" }
 new-parser = { path = "../new_parser" }
 typer = { path = "../typer" }
 hir = { path = "../hir" }

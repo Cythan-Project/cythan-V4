@@ -159,6 +159,42 @@ MIR interpreter now masks `Set` / `Copy` to 4-bit cell range. New
 regression test `u4_literal_above_cell_range_still_terminates` in
 `src/new_pipeline_tests.rs` guards it.
 
+## New pipeline is the only pipeline — DONE
+
+The legacy CLI (`run` / `build` / `inspect` / `precomp` / `exe`
+subcommands), the `cythan-frontend` crate, the `crates/parser` crate,
+the legacy stdlib under `cythan/`, `crates/driver/src/build_context.rs`,
+and `src/tests/mod.rs` (legacy 20 tests) are all gone. The top-level
+CLI now has exactly three subcommands — `check` / `build` / `run` —
+and they all route through the new pipeline (`new_parser` → `typer`
+→ `hir` → `mir` → `lir` → bytecode).
+
+### `run --backend mir|lir|cythan`
+
+- `mir`: run on the MIR interpreter (`mir::MemoryState`). Fastest,
+  no bytecode lowering.
+- `lir`: lower MIR → LIR → bytecode, run on `InterruptedCythan`. Same
+  name kept to express "via the LIR path" — semantics identical
+  to `cythan`.
+- `cythan`: same bytecode + VM path as `lir`. Accepts `vm` as an
+  alias.
+
+### `build --hir/--mir/--lir/--cythan`
+
+Each flag is optional; at least one must be supplied. `--hir` is
+per-function (no entry needed); `--mir` / `--lir` / `--cythan` inline
+from the entry point (`--entry-type`, `--entry-method`, defaults to
+file stem / `main`). The cythan output is the raw bytecode as a
+space-separated list of decimal words — same format the legacy
+`inspect` command produced.
+
+### Known limitation
+
+Large programs (e.g. the full Morpion) trip a latent panic inside
+the third-party `cythan_compiler` crate on the LIR → bytecode step.
+Trivial programs work fine. Root cause is in the external compiler,
+not in our lowering; the `mir` backend is a clean workaround.
+
 ## CLI toolchain for the new pipeline — DONE
 
 `cythan new <command>` drives the new pipeline from the command line:

@@ -1,6 +1,0 @@
-class UnitTests {
-
-    Val main() {
-        "aejerjgernerzddd".println();
-    }
-}

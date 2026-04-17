@@ -15,8 +15,10 @@ use hir::{
     gen_function_with_natives, hir_to_mir, inline_program_full, text_dump, BuiltinNatives,
     HirFunction,
 };
-use mir::{MemoryState, MirCodeBlock};
+use lir::CompilableInstruction;
+use mir::{MemoryState, MirCodeBlock, MirState};
 
+use crate::run_context::run_bin_with_limit;
 use crate::test_context::TestContext;
 
 /// Parse every source file and build the typer registry + function
@@ -242,6 +244,155 @@ pub fn mir_to_text(block: &MirCodeBlock) -> String {
         .map(|op| op.to_string())
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Lower a MIR block to the LIR (flat `Vec<CompilableInstruction>`).
+/// Runs the LIR optimizer (`opt_asm`) afterwards so callers see the
+/// same form the bytecode compiler uses.
+pub fn mir_to_lir(block: &MirCodeBlock) -> Vec<CompilableInstruction> {
+    let mut state = MirState::default();
+    block.to_asm(&mut state);
+    state.opt_asm();
+    state.instructions
+}
+
+/// Render LIR as text — one instruction per line, using
+/// `CompilableInstruction`'s own `Display`.
+pub fn lir_to_text(lir: &[CompilableInstruction]) -> String {
+    lir.iter()
+        .map(|ins| ins.to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Compile LIR to raw Cythan bytecode (`Vec<usize>`).
+pub fn lir_to_bytecode(lir: Vec<CompilableInstruction>) -> Vec<usize> {
+    CompilableInstruction::compile_to_binary(lir)
+}
+
+/// Render raw Cythan bytecode as a single whitespace-separated list
+/// of decimal numbers — matches the `inspect` text format so users
+/// can diff dumps from different compiler runs.
+pub fn bytecode_to_text(bytecode: &[usize]) -> String {
+    bytecode
+        .iter()
+        .map(|n| n.to_string())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+// ---- Backend selection for `run` ---------------------------------------
+
+/// Which runtime a `run` invocation targets.
+///
+/// * `Mir` — `mir::MemoryState` interpreter. Fastest, no lowering to
+///   LIR/bytecode, easiest to step in a debugger.
+/// * `Lir` — lowers through LIR and bytecode, then interprets the
+///   bytecode on `cythan::InterruptedCythan`. Exercises the LIR
+///   optimizer (`opt_asm`). Semantics-identical to `Cythan` — kept
+///   as a distinct name so users can express "via the LIR path".
+/// * `Cythan` — same as `Lir` today. Retained because the bytecode /
+///   machine step-count is the metric most useful for perf checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Backend {
+    Mir,
+    Lir,
+    Cythan,
+}
+
+impl std::str::FromStr for Backend {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "mir" => Ok(Self::Mir),
+            "lir" => Ok(Self::Lir),
+            "cythan" | "vm" => Ok(Self::Cythan),
+            other => Err(format!(
+                "unknown backend `{}` (expected `mir`, `lir`, or `cythan`)",
+                other
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for Backend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Mir => "mir",
+            Self::Lir => "lir",
+            Self::Cythan => "cythan",
+        })
+    }
+}
+
+/// Run a compiled MIR block on the selected backend, capturing IO
+/// the same way `run_mir_with_input` does. Returns a `CapturedRun`
+/// whose `instr_count` is the backend's native unit (MIR ops for
+/// `Mir`, VM steps for `Lir`/`Cythan`).
+pub fn run_with_backend(
+    block: &MirCodeBlock,
+    backend: Backend,
+    input: &str,
+    mem_cells: usize,
+    step_limit: usize,
+) -> CapturedRun {
+    match backend {
+        Backend::Mir => run_mir_with_input_limited(block, input, mem_cells, step_limit),
+        Backend::Lir | Backend::Cythan => run_bytecode_with_input(block, input, step_limit),
+    }
+}
+
+fn run_bytecode_with_input(
+    block: &MirCodeBlock,
+    input: &str,
+    step_limit: usize,
+) -> CapturedRun {
+    let lir = mir_to_lir(block);
+    let bytecode = lir_to_bytecode(lir);
+    let ctx = TestContext::new(input);
+    let limit = if step_limit == 0 { 0 } else { step_limit };
+    // `run_bin_with_limit` already panics on overshoot — catch it
+    // with `catch_unwind` so we can turn the panic into an
+    // `aborted_by_limit` signal instead of blowing up the caller.
+    // `TestContext` is `Send` (inputs/prints are `String` / `VecDeque<u8>`),
+    // but the closures in `run_bin_with_limit` aren't `UnwindSafe`, so we
+    // mark the whole block as assert_unwind_safe.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_bin_with_limit(&bytecode, ctx, limit)
+    }));
+    match result {
+        Ok((steps, ctx_mutex)) => {
+            let ctx = ctx_mutex.lock().unwrap();
+            CapturedRun {
+                output: ctx.print.clone(),
+                remaining_input: ctx.inputs.iter().map(|b| *b as char).collect(),
+                instr_count: steps,
+                aborted_by_limit: false,
+            }
+        }
+        Err(panic_payload) => {
+            // Only swallow the "step limit" panic — propagate anything else.
+            let is_limit = panic_payload
+                .downcast_ref::<String>()
+                .map(|s| s.contains("step limit"))
+                .unwrap_or_else(|| {
+                    panic_payload
+                        .downcast_ref::<&'static str>()
+                        .map(|s| s.contains("step limit"))
+                        .unwrap_or(false)
+                });
+            if is_limit {
+                CapturedRun {
+                    output: String::new(),
+                    remaining_input: String::new(),
+                    instr_count: step_limit,
+                    aborted_by_limit: true,
+                }
+            } else {
+                std::panic::resume_unwind(panic_payload);
+            }
+        }
+    }
 }
 
 /// Compile a program through the new pipeline, producing the fully
