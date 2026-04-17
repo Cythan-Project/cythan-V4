@@ -607,17 +607,24 @@ impl TypeRegistry {
 
     /// Resolve a type reference to its size in cells.
     ///
-    /// For Phase 2 we only resolve non-generic types. Generic instantiations
-    /// (`Array<U4, 9, U4>`) are deferred to monomorphization in Phase 6.
+    /// Handles:
+    ///   - primitives (U4 = 1)
+    ///   - non-generic structs / enums (use computed layout)
+    ///   - `Array<T, N, F>` — compiler-known native type: `N * sizeof(T)`.
+    ///
+    /// Other generic instantiations (user-defined templated structs/enums
+    /// with concrete args) are deferred until the monomorphizer regenerates
+    /// them as concrete types.
     pub fn resolve_type_size(
         &self,
         ty: &ast::Type,
         sp: &new_parser::Span,
     ) -> Result<CellCount, TyperError> {
-        // For a templated-use (has template args in the *reference*), we
-        // currently punt and require the underlying base type to be concrete.
-        // The plan schedules monomorphization later; size resolution of
-        // generic instantiations is Phase 6's job.
+        // Native type: Array<T, N, F> has layout N * sizeof(T).
+        if ty.name.0 == "Array" && ty.templates.len() == 3 {
+            return self.array_layout_size(ty, sp);
+        }
+
         if !ty.templates.is_empty() {
             return Err(TyperError::at(
                 format!(
@@ -653,6 +660,39 @@ impl TypeRegistry {
                 sp.clone(),
             )),
         }
+    }
+
+    /// Compute the size of `Array<T, N, F>`: N cells per element, N fixed by
+    /// the second template argument. T must be a concrete (sizeable) type;
+    /// F (the index type) doesn't contribute to the array's own layout.
+    fn array_layout_size(
+        &self,
+        ty: &ast::Type,
+        sp: &new_parser::Span,
+    ) -> Result<CellCount, TyperError> {
+        let t_arg = &ty.templates[0];
+        let n_arg = &ty.templates[1];
+        let element_ty = match &t_arg.0 {
+            ast::TypeOrValue::Type(t) => t,
+            ast::TypeOrValue::Value(_) => {
+                return Err(TyperError::at(
+                    "Array's first template argument must be a type".to_string(),
+                    t_arg.1.clone(),
+                ));
+            }
+        };
+        let n = match &n_arg.0 {
+            ast::TypeOrValue::Value(v) => *v as CellCount,
+            ast::TypeOrValue::Type(_) => {
+                return Err(TyperError::at(
+                    "Array's second template argument must be an integer literal".to_string(),
+                    n_arg.1.clone(),
+                ));
+            }
+        };
+        let elem_size = self.resolve_type_size(element_ty, &t_arg.1)?;
+        let _ = sp;
+        Ok(elem_size * n)
     }
 
     /// Rough check: does this type reference a template parameter name, or

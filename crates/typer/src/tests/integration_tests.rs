@@ -116,6 +116,7 @@ fn morpion_registry_shape() {
                     e.message.contains("monomorphization")
                         || e.message.contains("unknown type")
                         || e.message.contains("not a known type")
+                        || e.message.contains("unknown trait")
                         || e.message.contains("Phase 6"),
                     "unexpected typer error: {}",
                     e.message

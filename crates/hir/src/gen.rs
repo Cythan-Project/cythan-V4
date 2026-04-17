@@ -981,6 +981,29 @@ impl<'a> Generator<'a> {
         dst: Option<SlotId>,
         block: &mut HirBlock,
     ) -> Result<(), HirError> {
+        // String-literal receiver shortcut: `"abc".print()` / `.println()`
+        // have no `String` type in the type registry. We lower them directly
+        // to per-byte register writes — the only primitive "print" path the
+        // VM supports. Everything else with strings still errors.
+        if let ast::Expr::String(s) = &receiver.0 {
+            let method = name.0.as_str();
+            if method == "print" || method == "println" {
+                if !args.is_empty() {
+                    return Err(HirError::at(
+                        format!("`\"...\".{}` takes no arguments", method),
+                        name.1.clone(),
+                    ));
+                }
+                let _ = templates;
+                self.emit_string_print(s, method == "println", block);
+                return Ok(());
+            }
+            return Err(HirError::at(
+                format!("string literals only support `.print()` / `.println()` — got `.{}`", method),
+                name.1.clone(),
+            ));
+        }
+
         // Infer receiver type.
         let recv_ty = self.infer_expr_type(&receiver.0, &receiver.1)?;
         let resolved_recv = self.resolve_ty_name(&recv_ty);
@@ -1156,6 +1179,31 @@ impl<'a> Generator<'a> {
             block.push(o);
         }
         Ok(true)
+    }
+
+    /// Emit HIR for `"str".print()` / `.println()`: for each byte, write
+    /// its high nibble to register 1, low nibble to register 2, then write
+    /// 1 (the "print char" command) to register 0. Matches the VM's
+    /// register protocol — same path U4::print uses for single chars.
+    fn emit_string_print(&mut self, s: &str, newline: bool, block: &mut HirBlock) {
+        for ch in s.chars() {
+            let mut byte_buf = [0u8; 4];
+            let bytes = ch.encode_utf8(&mut byte_buf).as_bytes().to_vec();
+            for byte in bytes {
+                let high = (byte >> 4) & 0xF;
+                let low = byte & 0xF;
+                block.push(HirOp::WriteRegister(1, Either::Left(high)));
+                block.push(HirOp::WriteRegister(2, Either::Left(low)));
+                block.push(HirOp::WriteRegister(0, Either::Left(1)));
+            }
+        }
+        if newline {
+            let high = (b'\n' >> 4) & 0xF;
+            let low = b'\n' & 0xF;
+            block.push(HirOp::WriteRegister(1, Either::Left(high)));
+            block.push(HirOp::WriteRegister(2, Either::Left(low)));
+            block.push(HirOp::WriteRegister(0, Either::Left(1)));
+        }
     }
 
     /// Type-size helper that falls back to 1 cell for unknown types (which
@@ -1396,8 +1444,45 @@ impl<'a> Generator<'a> {
                     .map(|s| self.infer_expr_type(&s.0, &s.1).unwrap_or_default())
                     .unwrap_or_default()
             }
-            ast::Expr::MethodCall { .. } | ast::Expr::Match { .. } | ast::Expr::Block(_)
-            | ast::Expr::Loop(_) | ast::Expr::Return(_) | ast::Expr::Break
+            ast::Expr::MethodCall { receiver, name, .. } => {
+                let recv_ty = self.infer_expr_type(&receiver.0, &receiver.1)?;
+                let resolved = self.resolve_ty_name(&recv_ty);
+                // Look up the method's return type in the FunctionDB. Try
+                // inherent, then any trait-keyed entry.
+                let return_type_of = |f: &typer::Fn| -> Option<String> {
+                    let ret = match f {
+                        typer::Fn::Simple(s) => s.body.sig.return_type.as_ref()?,
+                        typer::Fn::Templated(t) => t.body.sig.return_type.as_ref()?,
+                    };
+                    Some(self.resolve_ty_name(&ret.0.name.0))
+                };
+                if let Some(f) = self.db.get(&typer::FnSig::new(&resolved, &name.0)) {
+                    if let Some(t) = return_type_of(f) {
+                        return Ok(t);
+                    }
+                }
+                for (k, f) in &self.db.functions {
+                    if k.type_name == resolved && k.method_name == name.0 {
+                        if let Some(t) = return_type_of(f) {
+                            return Ok(t);
+                        }
+                    }
+                }
+                "<?>".into()
+            }
+            ast::Expr::Block(b) => {
+                // Type of a block = type of its last statement (if any).
+                b.0
+                    .stmts
+                    .last()
+                    .map(|s| self.infer_expr_type(&s.0, &s.1).unwrap_or_default())
+                    .unwrap_or_default()
+            }
+            ast::Expr::Match { arms, .. } => arms
+                .first()
+                .map(|arm| self.infer_expr_type(&arm.body.0, &arm.body.1).unwrap_or_default())
+                .unwrap_or_default(),
+            ast::Expr::Loop(_) | ast::Expr::Return(_) | ast::Expr::Break
             | ast::Expr::Continue | ast::Expr::Declaration { .. } | ast::Expr::Assign { .. }
             | ast::Expr::CompoundAssign { .. } => "<?>".into(),
         })

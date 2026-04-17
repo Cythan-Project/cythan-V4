@@ -21,13 +21,16 @@ extension Cell {
     }
 }
 
-trait Eq {
-    fn eq(self, Self other): Bool;
-}
-
+// Eq trait comes from the stdlib (std/Ops.ct). Since `Eq` is in the
+// compiler's OPERATOR_TRAITS list, no `use Eq;` is needed for `==` to
+// dispatch through this impl.
 impl Eq for Cell {
     fn eq(self, Cell other): Bool {
         self as U4 == other as U4
+    }
+
+    fn ne(self, Cell other): Bool {
+        if self.eq(other) { false } else { true }
     }
 }
 

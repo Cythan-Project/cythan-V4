@@ -223,9 +223,9 @@ fn test_parse_morpion() {
 
     let _ = find_extension(&items, "Cell");
 
-    // trait Eq
-    let has_eq_trait = items.iter().any(|(it, _)| matches!(it, Item::Trait(t) if t.name.0 == "Eq"));
-    assert!(has_eq_trait, "expected trait Eq");
+    // Morpion relies on the stdlib's `trait Eq` (declared in std/Ops.ct)
+    // and only provides the `impl Eq for Cell` block. The trait itself is
+    // NOT declared in this file.
 
     // impl Eq for Cell
     let eq_impl = items
@@ -235,7 +235,9 @@ fn test_parse_morpion() {
             _ => None,
         })
         .expect("expected impl Eq for Cell");
-    assert_eq!(eq_impl.methods.len(), 1);
+    // `impl Eq for Cell` now provides both `eq` and `ne` (Cythan's Eq trait
+    // doesn't yet have default methods; each impl must supply every method).
+    assert_eq!(eq_impl.methods.len(), 2);
 
     let morpion = find_struct(&items, "Morpion");
     assert_eq!(morpion.fields.len(), 1);

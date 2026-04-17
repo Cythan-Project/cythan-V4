@@ -8,6 +8,7 @@ mod construction_tests;
 mod mutability_tests;
 mod opt_tests;
 pub mod interp_tests;
+mod game_tests;
 mod lower_tests;
 mod natives_tests;
 mod operator_tests;
