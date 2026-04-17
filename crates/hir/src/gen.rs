@@ -894,9 +894,9 @@ impl<'a> Generator<'a> {
         };
         let then_block = self.gen_block(&then.0.stmts, dst)?;
 
-        // HirOp::If0(cond, when_zero, when_nonzero)
+        // `HirOp::if_zero(cond, when_zero, when_nonzero)` —
         // when_zero == else branch; when_nonzero == then branch.
-        block.push(HirOp::If0(cond_slot, else_block, then_block));
+        block.push(HirOp::if_zero(cond_slot, else_block, then_block));
         Ok(())
     }
 
@@ -1212,7 +1212,7 @@ impl<'a> Generator<'a> {
         if let Some(dst) = dst {
             when_zero.push(HirOp::Set(dst, 0));
         }
-        block.push(HirOp::If0(cond_slot, when_zero, when_nonzero));
+        block.push(HirOp::if_zero(cond_slot, when_zero, when_nonzero));
         Ok(())
     }
 
@@ -1235,7 +1235,7 @@ impl<'a> Generator<'a> {
         if let Some(dst) = dst {
             when_nonzero.push(HirOp::Set(dst, 1));
         }
-        block.push(HirOp::If0(cond_slot, when_zero, when_nonzero));
+        block.push(HirOp::if_zero(cond_slot, when_zero, when_nonzero));
         Ok(())
     }
 

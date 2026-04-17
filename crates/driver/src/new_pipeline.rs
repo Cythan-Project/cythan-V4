@@ -130,21 +130,40 @@ pub fn compile(
     hir_to_mir(&inlined.body).map_err(|e| format!("mir: {}", e))
 }
 
+/// Default MIR-step ceiling for test harnesses. Every interaction
+/// test runs with this cap so a runaway loop in the compiled program
+/// fails the test promptly instead of hanging the suite.
+pub const DEFAULT_STEP_LIMIT: usize = 5_000_000;
+
 /// Run a compiled MIR block against a scripted input stream, returning
 /// everything the program printed. `mem_cells` is the memory budget in
-/// cells (4-bit slots).
+/// cells (4-bit slots). Uses [`DEFAULT_STEP_LIMIT`] as the MIR-step
+/// ceiling — call [`run_mir_with_input_limited`] to pick another.
 pub fn run_mir_with_input(
     mir: &MirCodeBlock,
     input: &str,
     mem_cells: usize,
 ) -> CapturedRun {
+    run_mir_with_input_limited(mir, input, mem_cells, DEFAULT_STEP_LIMIT)
+}
+
+/// Run a compiled MIR block with an explicit step limit. `0` disables
+/// the limit entirely — reserve that for interactive execution, never
+/// for tests.
+pub fn run_mir_with_input_limited(
+    mir: &MirCodeBlock,
+    input: &str,
+    mem_cells: usize,
+    step_limit: usize,
+) -> CapturedRun {
     let mut ctx = TestContext::new(input);
-    let mut state = MemoryState::new(mem_cells, 8);
+    let mut state = MemoryState::new_with_limit(mem_cells, 8, step_limit);
     state.execute_block(mir, &mut ctx);
     CapturedRun {
         output: ctx.print,
         remaining_input: ctx.inputs.iter().map(|b| *b as char).collect(),
         instr_count: state.instr_count,
+        aborted_by_limit: state.aborted_by_limit,
     }
 }
 
@@ -162,11 +181,14 @@ pub fn compile_and_run(
 /// Outcome of a scripted run: what the program printed, anything that
 /// remained in the input queue (useful to confirm the program stopped
 /// when we expected), and how many MIR instructions it consumed.
+/// `aborted_by_limit` is `true` when execution hit the step ceiling
+/// (usually = infinite loop).
 #[derive(Debug, Clone)]
 pub struct CapturedRun {
     pub output: String,
     pub remaining_input: String,
     pub instr_count: usize,
+    pub aborted_by_limit: bool,
 }
 
 /// Build the conventional stdlib file-set for new-pipeline tests.

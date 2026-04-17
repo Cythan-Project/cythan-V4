@@ -53,8 +53,16 @@ fn run_program(
         load_file(program_path),
     ));
     let entry = typer::FnSig::new(entry_type, entry_method);
-    compile_and_run(&files, &entry, input, mem_cells)
-        .unwrap_or_else(|e| panic!("harness failed on {}: {}", program_path, e))
+    let run = compile_and_run(&files, &entry, input, mem_cells)
+        .unwrap_or_else(|e| panic!("harness failed on {}: {}", program_path, e));
+    // A runaway MIR program must not silently masquerade as success —
+    // any test that hits the step ceiling should fail loudly.
+    assert!(
+        !run.aborted_by_limit,
+        "program `{}` ({}::{}): exceeded MIR step limit ({}), likely infinite loop. Partial output:\n{}",
+        program_path, entry_type, entry_method, run.instr_count, run.output
+    );
+    run
 }
 
 // -----------------------------------------------------------------------
@@ -118,6 +126,7 @@ fn harness_captures_output_from_inline_program() {
     ));
     let entry = typer::FnSig::new("Echo", "main");
     let result = compile_and_run(&files, &entry, "", 512).expect("compile+run");
+    assert!(!result.aborted_by_limit, "Echo hit step limit — infinite loop?");
     assert_eq!(result.output, "hi\n");
     assert_eq!(result.remaining_input, "");
     assert!(result.instr_count > 0, "should have executed something");
@@ -145,7 +154,32 @@ fn harness_feeds_scripted_input() {
     ));
     let entry = typer::FnSig::new("InputEcho", "main");
     let result = compile_and_run(&files, &entry, "AB", 512).expect("compile+run");
+    assert!(!result.aborted_by_limit, "InputEcho hit step limit — infinite loop?");
     assert_eq!(result.output, "AB\n");
+}
+
+/// Regression: `42 - 40` on `U4` used to hang. `Set(slot, 42)` stored
+/// `42` in a 4-bit cell, and the `if_zero` Match (`[0]` vs `1..=15`)
+/// had no matching arm for that value, so the subtraction loop's
+/// condition check fell through silently inside the `Loop` and
+/// iterated forever. Fix: the interpreter masks `Set` / `Copy` to
+/// the u4 cell range. This test guards the mask.
+#[test]
+fn u4_literal_above_cell_range_still_terminates() {
+    let mut files = new_syntax_stdlib();
+    files.push((
+        "T.ct",
+        r#"
+            struct T {}
+            extension T {
+                fn main(): U4 { 42 - 40 }
+            }
+        "#
+        .to_string(),
+    ));
+    let entry = typer::FnSig::new("T", "main");
+    let r = compile_and_run(&files, &entry, "", 512).expect("run");
+    assert!(!r.aborted_by_limit);
 }
 
 // -----------------------------------------------------------------------
@@ -236,6 +270,7 @@ fn harness_compile_and_run_are_composable() {
     let mir = compile(&files, &entry).expect("compile");
     let r1 = run_mir_with_input(&mir, "A", 512);
     let r2 = run_mir_with_input(&mir, "Z", 512);
+    assert!(!r1.aborted_by_limit && !r2.aborted_by_limit, "hit step limit");
     assert_eq!(r1.output, "A!");
     assert_eq!(r2.output, "Z!");
 }

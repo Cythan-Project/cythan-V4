@@ -3,10 +3,18 @@
 use crate::ir::*;
 use crate::tests::compile;
 
+/// Locate the first `HirOp::if_zero`-shaped `Match` in `ops`.
+/// HIR has no `If0` variant; zero-vs-nonzero branches are expressed
+/// as a two-arm `Match` (`[0]` then `1..=15`).
 fn find_if0(ops: &[HirOp]) -> Option<(&SlotId, &HirBlock, &HirBlock)> {
     for op in ops {
-        if let HirOp::If0(s, then_, else_) = op {
-            return Some((s, then_, else_));
+        if let HirOp::Match(s, arms) = op {
+            if arms.len() == 2 && arms[0].1 == vec![0u8] {
+                let rest: Vec<u8> = (1u8..=15u8).collect();
+                if arms[1].1 == rest {
+                    return Some((s, &arms[0].0, &arms[1].0));
+                }
+            }
         }
     }
     None

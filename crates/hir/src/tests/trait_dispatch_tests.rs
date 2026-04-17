@@ -79,11 +79,6 @@ fn find_call_target(hir: &HirFunction, method: &str) -> Option<FnRef> {
                 HirOp::Call { target, .. } if target.method_name == method => {
                     return Some(target.clone())
                 }
-                HirOp::If0(_, a, b) => {
-                    if let Some(r) = find(&a.ops, method).or_else(|| find(&b.ops, method)) {
-                        return Some(r);
-                    }
-                }
                 HirOp::Loop(b) | HirOp::Block(b) => {
                     if let Some(r) = find(&b.ops, method) {
                         return Some(r);
@@ -188,7 +183,6 @@ fn inliner_resolves_trait_keyed_calls() {
     fn contains_call(block: &crate::HirBlock) -> bool {
         block.ops.iter().any(|op| match op {
             HirOp::Call { .. } => true,
-            HirOp::If0(_, a, b) => contains_call(a) || contains_call(b),
             HirOp::Loop(b) | HirOp::Block(b) => contains_call(b),
             HirOp::Match(_, arms) => arms.iter().any(|(b, _)| contains_call(b)),
             _ => false,

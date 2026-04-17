@@ -74,9 +74,20 @@ fn run_program(extra: &str, entry: &typer::FnSig) -> Vec<u8> {
         fn input(&mut self) -> u8 { 0 }
         fn print(&mut self, _: char) {}
     }
-    let mut state = mir::MemoryState::new((inlined.slot_count as usize + 64).max(256), 4);
+    // Cap the interpreter so a bug in the compiled code fails the
+    // test in bounded time instead of hanging.
+    let mut state = mir::MemoryState::new_with_limit(
+        (inlined.slot_count as usize + 64).max(256),
+        4,
+        5_000_000,
+    );
     let mut ctx = Null;
     state.execute_block(&mir_block, &mut ctx);
+    assert!(
+        !state.aborted_by_limit,
+        "MIR interpreter exceeded step limit — likely infinite loop (entry {}::{})",
+        entry.type_name, entry.method_name,
+    );
     let input_count = inlined.sig.input_count as usize;
     let output_count = inlined.sig.output_count as usize;
     (0..output_count)

@@ -7,7 +7,8 @@
 //!          ReadRegister dst, Match scrutinee — wait, match scrutinee is a
 //!          read — and Call `ret` slots).
 //!        - Fold `Copy(dst, src)` → `Set(dst, V)` when `src` is static.
-//!        - Fold `If0(src, then, else)` → picked branch when `src` is static.
+//!        - Fold a 2-arm `Match` (the if-zero shape produced by
+//!          `HirOp::if_zero`) → picked branch when `src` is static.
 //!        - Fold `Match(src, arms)` → matching arm when `src` is static.
 //!   2. Dead store elimination (Step 5.2)
 //!        - Within a block, if `Set(s, _)` is followed by another write to
@@ -88,10 +89,6 @@ fn gather_consts(block: &HirBlock) -> HashMap<SlotId, u8> {
                         poisoned.insert(*r);
                     }
                 }
-                HirOp::If0(_, a, b) => {
-                    visit(a, candidate, poisoned);
-                    visit(b, candidate, poisoned);
-                }
                 HirOp::Loop(b) | HirOp::Block(b) => {
                     visit(b, candidate, poisoned);
                 }
@@ -117,7 +114,7 @@ fn gather_consts(block: &HirBlock) -> HashMap<SlotId, u8> {
 }
 
 /// Apply the known constants throughout the block, recursively folding
-/// `If0`/`Match`/`Copy` as described in the module doc.
+/// `Match`/`Copy` as described in the module doc.
 fn fold_consts_block(block: HirBlock, consts: &HashMap<SlotId, u8>) -> HirBlock {
     let ops = fold_consts_ops(block.ops, consts);
     HirBlock {
@@ -130,17 +127,6 @@ fn fold_consts_ops(ops: Vec<HirOp>, consts: &HashMap<SlotId, u8>) -> Vec<HirOp> 
     let mut out: Vec<HirOp> = Vec::with_capacity(ops.len());
     for op in ops {
         match op {
-            HirOp::If0(s, a, b) if consts.contains_key(&s) => {
-                // Pick the branch whose condition matches:
-                // If0 executes `a` when s == 0; otherwise `b`.
-                let v = consts[&s];
-                let chosen = if v == 0 { a } else { b };
-                let folded = fold_consts_block(chosen, consts);
-                out.extend(folded.ops);
-                // result_slot of the folded block carries value up via its
-                // last expression — already encoded by the generator as a
-                // Copy/Set op inside. No extra handling needed.
-            }
             HirOp::Match(s, arms) if consts.contains_key(&s) => {
                 let v = consts[&s];
                 let matched_ix =
@@ -167,13 +153,6 @@ fn fold_consts_ops(ops: Vec<HirOp>, consts: &HashMap<SlotId, u8>) -> Vec<HirOp> 
             }
             HirOp::Copy(dst, src) if consts.contains_key(&src) => {
                 out.push(HirOp::Set(dst, consts[&src]));
-            }
-            HirOp::If0(s, a, b) => {
-                out.push(HirOp::If0(
-                    s,
-                    fold_consts_block(a, consts),
-                    fold_consts_block(b, consts),
-                ));
             }
             HirOp::Match(s, arms) => {
                 let arms = arms
@@ -214,7 +193,7 @@ fn eliminate_dead_stores_ops(mut ops: Vec<HirOp>) -> Vec<HirOp> {
     // `s` (remove the original).
     //
     // Only straight-line ops at this level are considered; control-flow ops
-    // (If0/Loop/Block/Match) act as barriers — we conservatively treat them
+    // (Loop/Block/Match) act as barriers — we conservatively treat them
     // as potential reads of every slot.
     let mut keep: Vec<bool> = vec![true; ops.len()];
     for i in 0..ops.len() {
@@ -242,11 +221,6 @@ fn eliminate_dead_stores_ops(mut ops: Vec<HirOp>) -> Vec<HirOp> {
 
 fn recurse_dead(op: HirOp) -> HirOp {
     match op {
-        HirOp::If0(s, a, b) => HirOp::If0(
-            s,
-            eliminate_dead_stores_block(a),
-            eliminate_dead_stores_block(b),
-        ),
         HirOp::Loop(b) => HirOp::Loop(eliminate_dead_stores_block(b)),
         HirOp::Block(b) => HirOp::Block(eliminate_dead_stores_block(b)),
         HirOp::Match(s, arms) => HirOp::Match(
@@ -264,7 +238,7 @@ fn op_reads_or_barrier(op: &HirOp, slot: SlotId) -> bool {
         HirOp::Set(_, _) => false,
         HirOp::Copy(dst, src) => *src == slot || *dst == slot_next_to(slot, dst), // src read
         HirOp::Inc(s) | HirOp::Dec(s) => *s == slot, // read-modify-write
-        HirOp::If0(s, _, _) | HirOp::Match(s, _) => *s == slot,
+        HirOp::Match(s, _) => *s == slot,
         HirOp::ReadRegister(_, _) => false,
         HirOp::WriteRegister(_, Either::Right(s)) => *s == slot,
         HirOp::WriteRegister(_, Either::Left(_)) => false,

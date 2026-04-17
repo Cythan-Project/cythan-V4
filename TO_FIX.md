@@ -74,6 +74,32 @@ codepoints that then re-encode to two UTF-8 bytes in the captured
 would capture output as `Vec<u8>` instead of `String`, or push bytes
 directly via `push(c)` that takes a raw byte.
 
+## HIR `If0` → unified `Match` — DONE
+
+`HirOp::If0` removed from the IR. All zero-versus-nonzero branching
+now routes through a 2-arm `Match` constructed by the new helper
+`HirOp::if_zero(slot, then, else)` (first arm = `[0]`, second arm =
+`1..=15`). The HIR→MIR lowering drops its `If0` branch entirely —
+everything lowers through `Mir::Match`. `text_dump` detects the
+if-zero shape and pretty-prints it as `if s == 0 { … } else { … }`
+for readability.
+
+**Defense in depth added during this work:** the MIR interpreter and
+the HIR interpreter gained step-limit fields (`MemoryState::step_limit`
+/ `Interpreter::step_limit`). Tests use `MemoryState::new_with_limit`
+with 5M ops; the HIR interpreter defaults to 2M. Runaway programs
+now fail loudly via `InterpError::StepLimit` / `aborted_by_limit`
+instead of hanging CI.
+
+**Bug surfaced + fixed:** a silent-fall-through in the MIR `Match`
+interpreter for the if-zero shape. `Set(slot, 42)` on a u4 cell
+stored `42` literally, but the if-zero arms only covered `0` and
+`1..=15`. Inside a `Loop` the `Match` fell through and the condition
+never took a branch → infinite loop in `42 - 40` on `U4`. Fix: the
+MIR interpreter now masks `Set` / `Copy` to 4-bit cell range. New
+regression test `u4_literal_above_cell_range_still_terminates` in
+`src/new_pipeline_tests.rs` guards it.
+
 ## CLI toolchain for the new pipeline — DONE
 
 `cythan new <command>` drives the new pipeline from the command line:

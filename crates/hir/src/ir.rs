@@ -17,9 +17,12 @@ impl std::fmt::Display for SlotId {
     }
 }
 
-/// One HIR operation. Keeps the same shape as `mir::Mir` plus the unresolved
-/// `Call` variant. A few MIR variants that the new language doesn't need
-/// directly (`Skip`) are still present so the two IRs share a vocabulary.
+/// One HIR operation. Mirrors `mir::Mir` plus the unresolved `Call`
+/// variant. Unlike MIR, HIR has *no* `If0` — zero-versus-nonzero
+/// branching is expressed as a two-arm `Match`. Rationale: keeps
+/// control flow uniform so optimizer / interpreter / text-dump
+/// have one pattern-match shape to handle. Use
+/// [`HirOp::if_zero`] to construct the conventional shape.
 #[derive(Debug, Clone, PartialEq)]
 pub enum HirOp {
     Set(SlotId, u8),
@@ -27,7 +30,6 @@ pub enum HirOp {
     Copy(SlotId, SlotId),
     Inc(SlotId),
     Dec(SlotId),
-    If0(SlotId, HirBlock, HirBlock),
     Loop(HirBlock),
     Break,
     Continue,
@@ -37,6 +39,8 @@ pub enum HirOp {
     Block(HirBlock),
     Skip,
     /// `Match(discr, arms)`. Each arm: (block, matching_discriminant_values).
+    /// Arms are tried in order; the first arm whose values contain the
+    /// runtime discriminant fires.
     Match(SlotId, Vec<(HirBlock, Vec<u8>)>),
 
     /// Unresolved call. `target` is a `FnRef`. `args` is the flat list of
@@ -47,6 +51,21 @@ pub enum HirOp {
         args: Vec<SlotId>,
         ret: Vec<SlotId>,
     },
+}
+
+impl HirOp {
+    /// Build a `Match` equivalent to the old `If0(slot, then, else)`:
+    /// `then_block` fires when `slot == 0`, `else_block` when
+    /// `slot ∈ 1..=15` (every non-zero value a single u4 cell can hold).
+    pub fn if_zero(slot: SlotId, then_block: HirBlock, else_block: HirBlock) -> HirOp {
+        HirOp::Match(
+            slot,
+            vec![
+                (then_block, vec![0]),
+                (else_block, (1..=15).collect()),
+            ],
+        )
+    }
 }
 
 /// A block carries an optional `result_slot`, used for expression-based

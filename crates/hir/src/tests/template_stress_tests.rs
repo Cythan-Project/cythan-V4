@@ -83,7 +83,7 @@ fn try_run_program(extra: &str, entry: &typer::FnSig) -> Result<Vec<u8>, String>
             fn print(&mut self, _: char) {}
         }
         let mut state =
-            mir::MemoryState::new((inlined.slot_count as usize + 64).max(256), 4);
+            mir::MemoryState::new_with_limit((inlined.slot_count as usize + 64).max(256), 4, 5_000_000);
         let mut ctx = Null;
         state.execute_block(&mir_block, &mut ctx);
         let input_count = inlined.sig.input_count as usize;

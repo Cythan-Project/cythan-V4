@@ -29,6 +29,14 @@ pub struct MemoryState {
     pub memory: Vec<u8>,
     pub registers: Vec<u8>,
     pub instr_count: usize,
+    /// Abort the interpreter after this many MIR ops have executed.
+    /// `0` disables the limit. Tests should set a finite value so a
+    /// runaway loop fails the test quickly instead of hanging CI.
+    pub step_limit: usize,
+    /// Set to true when `step_limit` is exceeded. The interpreter
+    /// stops executing further ops once this flips (via the same
+    /// `SkipStatus::End` path as a `Stop` op).
+    pub aborted_by_limit: bool,
 }
 
 impl MemoryState {
@@ -37,6 +45,25 @@ impl MemoryState {
             memory: vec![0; memory_size],
             registers: vec![0; register_size],
             instr_count: 0,
+            step_limit: 0,
+            aborted_by_limit: false,
+        }
+    }
+
+    /// Build a memory state that bounds total MIR steps. Use this in
+    /// tests to guarantee termination — exceeding the limit returns
+    /// `SkipStatus::End` and flips `aborted_by_limit = true`.
+    pub fn new_with_limit(
+        memory_size: usize,
+        register_size: usize,
+        step_limit: usize,
+    ) -> MemoryState {
+        MemoryState {
+            memory: vec![0; memory_size],
+            registers: vec![0; register_size],
+            instr_count: 0,
+            step_limit,
+            aborted_by_limit: false,
         }
     }
 
@@ -75,9 +102,18 @@ impl MemoryState {
 
     pub fn execute(&mut self, mir: &Mir, printer: &mut impl RunContext) -> SkipStatus {
         self.instr_count += 1;
+        if self.step_limit > 0 && self.instr_count > self.step_limit {
+            self.aborted_by_limit = true;
+            return SkipStatus::End;
+        }
         match mir {
-            Mir::Set(a, b) => self.set_mem(*a, *b),
-            Mir::Copy(a, b) => self.set_mem(*a, self.get_mem(*b)),
+            // Each memory cell holds a u4 (0..=15). `Set` masks the
+            // literal to the cell's range so that e.g. `Set(slot, 42)`
+            // stores `10` — otherwise the cell escapes the range the
+            // `if_zero` Match (`[0]` vs `1..=15`) can dispatch on and
+            // we'd fall through silently inside loops.
+            Mir::Set(a, b) => self.set_mem(*a, *b & 0x0F),
+            Mir::Copy(a, b) => self.set_mem(*a, self.get_mem(*b) & 0x0F),
             Mir::Increment(a) => self.set_mem(*a, self.get_mem(*a).wrapping_add(1) % 16),
             Mir::Decrement(a) => self.set_mem(*a, self.get_mem(*a).wrapping_sub(1) % 16),
             Mir::If0(a, b, c) => {

@@ -123,7 +123,6 @@ fn inline_removes_all_call_ops() {
 fn contains_call(block: &crate::HirBlock) -> bool {
     block.ops.iter().any(|op| match op {
         HirOp::Call { .. } => true,
-        HirOp::If0(_, a, b) => contains_call(a) || contains_call(b),
         HirOp::Loop(b) | HirOp::Block(b) => contains_call(b),
         HirOp::Match(_, arms) => arms.iter().any(|(b, _)| contains_call(b)),
         _ => false,
@@ -219,8 +218,10 @@ fn hir_to_mir_rejects_remaining_call() {
 #[test]
 fn hir_to_mir_handles_control_flow() {
     use mir::Mir;
+    // HIR has no If0: `if_zero` builds a 2-arm `Match` (`[0]` then
+    // `1..=15`), which lowers to `Mir::Match` with the same shape.
     let block = crate::HirBlock {
-        ops: vec![HirOp::If0(
+        ops: vec![HirOp::if_zero(
             SlotId(0),
             crate::HirBlock {
                 ops: vec![HirOp::Set(SlotId(1), 10)],
@@ -235,12 +236,15 @@ fn hir_to_mir_handles_control_flow() {
     };
     let mir = hir_to_mir(&block).expect("convert");
     match &mir.0[0] {
-        Mir::If0(s, a, b) => {
+        Mir::Match(s, arms) => {
             assert_eq!(*s, 0);
-            assert!(matches!(a.0[0], Mir::Set(1, 10)));
-            assert!(matches!(b.0[0], Mir::Set(1, 20)));
+            assert_eq!(arms.len(), 2);
+            assert_eq!(arms[0].1, vec![0u8]);
+            assert_eq!(arms[1].1, (1u8..=15u8).collect::<Vec<_>>());
+            assert!(matches!(arms[0].0 .0[0], Mir::Set(1, 10)));
+            assert!(matches!(arms[1].0 .0[0], Mir::Set(1, 20)));
         }
-        _ => panic!("expected If0"),
+        _ => panic!("expected Match"),
     }
 }
 
@@ -269,7 +273,7 @@ fn end_to_end_simple_program_compiles_to_mir_and_runs() {
         }
         fn print(&mut self, _: char) {}
     }
-    let mut state = mir::MemoryState::new((inlined.slot_count as usize + 4).max(16), 4);
+    let mut state = mir::MemoryState::new_with_limit((inlined.slot_count as usize + 4).max(16), 4, 5_000_000);
     let mut ctx = Null;
     state.execute_block(&mir_block, &mut ctx);
     // The caller's _ret slot is index `input_count` of the caller sig = 0,

@@ -90,19 +90,6 @@ fn dump_op(op: &HirOp, depth: usize, out: &mut String) {
         HirOp::Dec(s) => {
             let _ = writeln!(out, "{}--", s);
         }
-        HirOp::If0(cond, then_b, else_b) => {
-            let _ = writeln!(out, "if {} == 0 {{", cond);
-            dump_block(then_b, depth + 1, out);
-            indent(depth, out);
-            if else_b.ops.is_empty() && else_b.result_slot.is_none() {
-                let _ = writeln!(out, "}}");
-            } else {
-                let _ = writeln!(out, "}} else {{");
-                dump_block(else_b, depth + 1, out);
-                indent(depth, out);
-                let _ = writeln!(out, "}}");
-            }
-        }
         HirOp::Loop(body) => {
             let _ = writeln!(out, "loop {{");
             dump_block(body, depth + 1, out);
@@ -139,17 +126,36 @@ fn dump_op(op: &HirOp, depth: usize, out: &mut String) {
             let _ = writeln!(out, "skip");
         }
         HirOp::Match(discr, arms) => {
-            let _ = writeln!(out, "match {} {{", discr);
-            for (body, vals) in arms {
-                indent(depth + 1, out);
-                let vs: Vec<String> = vals.iter().map(|v| v.to_string()).collect();
-                let _ = writeln!(out, "{} => {{", vs.join(" | "));
-                dump_block(body, depth + 2, out);
-                indent(depth + 1, out);
+            // Detect the `if_zero` shape — two arms, first matches
+            // just `0`, second matches all of 1..=15 — and pretty
+            // print as `if s == 0 { then } else { else }`.
+            if is_if_zero_shape(arms) {
+                let (then_b, _) = &arms[0];
+                let (else_b, _) = &arms[1];
+                let _ = writeln!(out, "if {} == 0 {{", discr);
+                dump_block(then_b, depth + 1, out);
+                indent(depth, out);
+                if else_b.ops.is_empty() && else_b.result_slot.is_none() {
+                    let _ = writeln!(out, "}}");
+                } else {
+                    let _ = writeln!(out, "}} else {{");
+                    dump_block(else_b, depth + 1, out);
+                    indent(depth, out);
+                    let _ = writeln!(out, "}}");
+                }
+            } else {
+                let _ = writeln!(out, "match {} {{", discr);
+                for (body, vals) in arms {
+                    indent(depth + 1, out);
+                    let vs: Vec<String> = vals.iter().map(|v| v.to_string()).collect();
+                    let _ = writeln!(out, "{} => {{", vs.join(" | "));
+                    dump_block(body, depth + 2, out);
+                    indent(depth + 1, out);
+                    let _ = writeln!(out, "}}");
+                }
+                indent(depth, out);
                 let _ = writeln!(out, "}}");
             }
-            indent(depth, out);
-            let _ = writeln!(out, "}}");
         }
         HirOp::Call { target, args, ret } => {
             let _ = writeln!(
@@ -211,4 +217,15 @@ fn slot_list(slots: &[SlotId]) -> String {
         .map(|s| s.to_string())
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+fn is_if_zero_shape(arms: &[(crate::ir::HirBlock, Vec<u8>)]) -> bool {
+    if arms.len() != 2 {
+        return false;
+    }
+    if arms[0].1 != vec![0u8] {
+        return false;
+    }
+    let expected: Vec<u8> = (1u8..=15u8).collect();
+    arms[1].1 == expected
 }

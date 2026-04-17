@@ -17,6 +17,22 @@ fn block(ops: Vec<HirOp>) -> HirBlock {
     }
 }
 
+/// Is `op` the two-arm `Match` produced by `HirOp::if_zero`?
+/// (first arm values = `[0]`, second arm values = `1..=15`.)
+fn is_if_zero_match(op: &HirOp) -> bool {
+    if let HirOp::Match(_, arms) = op {
+        if arms.len() != 2 {
+            return false;
+        }
+        if arms[0].1 != vec![0u8] {
+            return false;
+        }
+        let rest: Vec<u8> = (1u8..=15u8).collect();
+        return arms[1].1 == rest;
+    }
+    false
+}
+
 // ---------- Step 5.1: constant propagation ----------
 
 #[test]
@@ -24,7 +40,7 @@ fn if0_folds_to_zero_branch_when_cond_is_zero() {
     // Set(s0, 0); If0(s0, X, Y)  →  X (because s0 == 0)
     let input = block(vec![
         HirOp::Set(sid(0), 0),
-        HirOp::If0(
+        HirOp::if_zero(
             sid(0),
             block(vec![HirOp::Set(sid(1), 10)]),
             block(vec![HirOp::Set(sid(1), 99)]),
@@ -44,7 +60,7 @@ fn if0_folds_to_zero_branch_when_cond_is_zero() {
         out.ops
     );
     assert!(
-        out.ops.iter().all(|op| !matches!(op, HirOp::If0(..))),
+        out.ops.iter().all(|op| !is_if_zero_match(op)),
         "If0 not folded"
     );
 }
@@ -53,7 +69,7 @@ fn if0_folds_to_zero_branch_when_cond_is_zero() {
 fn if0_folds_to_nonzero_branch_when_cond_is_nonzero() {
     let input = block(vec![
         HirOp::Set(sid(0), 5),
-        HirOp::If0(
+        HirOp::if_zero(
             sid(0),
             block(vec![HirOp::Set(sid(1), 10)]),
             block(vec![HirOp::Set(sid(1), 99)]),
@@ -76,7 +92,7 @@ fn if0_not_folded_when_slot_has_multiple_writes() {
     let input = block(vec![
         HirOp::Set(sid(0), 0),
         HirOp::Inc(sid(0)),
-        HirOp::If0(
+        HirOp::if_zero(
             sid(0),
             block(vec![HirOp::Set(sid(1), 10)]),
             block(vec![HirOp::Set(sid(1), 99)]),
@@ -84,7 +100,7 @@ fn if0_not_folded_when_slot_has_multiple_writes() {
     ]);
     let out = optimize_block(input);
     assert!(
-        out.ops.iter().any(|op| matches!(op, HirOp::If0(..))),
+        out.ops.iter().any(|op| is_if_zero_match(op)),
         "If0 should survive when slot is re-written"
     );
 }
@@ -156,7 +172,7 @@ fn nested_if_inside_loop_folded_when_safe() {
     let input = block(vec![
         HirOp::Set(sid(0), 0),
         HirOp::Loop(block(vec![
-            HirOp::If0(
+            HirOp::if_zero(
                 sid(0),
                 block(vec![HirOp::Set(sid(1), 10)]),
                 block(vec![HirOp::Set(sid(1), 99)]),
@@ -170,7 +186,7 @@ fn nested_if_inside_loop_folded_when_safe() {
         _ => None,
     }).expect("Loop present");
     assert!(lop.ops.iter().any(|op| matches!(op, HirOp::Set(SlotId(1), 10))));
-    assert!(lop.ops.iter().all(|op| !matches!(op, HirOp::If0(..))));
+    assert!(lop.ops.iter().all(|op| !is_if_zero_match(op)));
 }
 
 #[test]
@@ -180,7 +196,7 @@ fn loop_writing_slot_disables_const_prop() {
     let input = block(vec![
         HirOp::Set(sid(0), 0),
         HirOp::Loop(block(vec![HirOp::Inc(sid(0))])),
-        HirOp::If0(
+        HirOp::if_zero(
             sid(0),
             block(vec![HirOp::Set(sid(1), 10)]),
             block(vec![HirOp::Set(sid(1), 99)]),
@@ -188,7 +204,7 @@ fn loop_writing_slot_disables_const_prop() {
     ]);
     let out = optimize_block(input);
     assert!(
-        out.ops.iter().any(|op| matches!(op, HirOp::If0(..))),
+        out.ops.iter().any(|op| is_if_zero_match(op)),
         "If0 should survive because s0 is written by Inc inside the loop"
     );
 }

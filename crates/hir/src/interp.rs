@@ -68,6 +68,9 @@ impl IoContext for CapturedIo {
 pub enum InterpError {
     UnknownFunction(String, String),
     TargetNotSimple(String, String),
+    /// Step ceiling hit — almost always indicates an infinite loop.
+    /// Carries the step count so callers can log a useful diagnostic.
+    StepLimit(usize),
     Custom(String),
 }
 
@@ -75,6 +78,11 @@ impl std::fmt::Display for InterpError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::UnknownFunction(t, m) => write!(f, "unknown function {}::{}", t, m),
+            Self::StepLimit(n) => write!(
+                f,
+                "HIR interpreter exceeded step limit ({} ops) — likely infinite loop",
+                n
+            ),
             Self::TargetNotSimple(t, m) => write!(
                 f,
                 "call target {}::{} is templated (not yet monomorphized)",
@@ -98,6 +106,12 @@ pub struct Interpreter<'a, C: IoContext> {
     functions: HashMap<crate::FnSigKey, HirFunction>,
     ctx: &'a mut C,
     registers: [u8; 4],
+    /// Operations executed so far — compared against `step_limit` to
+    /// bound runaway programs.
+    step_count: usize,
+    /// Max ops to run before bailing with `InterpError::StepLimit`.
+    /// `0` disables the limit.
+    pub step_limit: usize,
 }
 
 /// Re-exported from `typer::FnSig` for convenience so call sites don't need
@@ -107,12 +121,26 @@ pub struct Interpreter<'a, C: IoContext> {
 pub type FnSigKey = typer::FnSig;
 
 impl<'a, C: IoContext> Interpreter<'a, C> {
+    /// Default op ceiling for the HIR interpreter. Tests that compile
+    /// real programs can top out in the low millions; beyond that is
+    /// virtually always an infinite loop.
+    pub const DEFAULT_STEP_LIMIT: usize = 2_000_000;
+
     pub fn new(functions: HashMap<FnSigKey, HirFunction>, ctx: &'a mut C) -> Self {
         Self {
             functions,
             ctx,
             registers: [0; 4],
+            step_count: 0,
+            step_limit: Self::DEFAULT_STEP_LIMIT,
         }
+    }
+
+    /// Override the default step limit. Pass `0` to disable (only
+    /// sensible for interactive runs — tests should always cap).
+    pub fn with_step_limit(mut self, limit: usize) -> Self {
+        self.step_limit = limit;
+        self
     }
 
     /// Run the function identified by `entry`, passing `args` as the input
@@ -160,6 +188,10 @@ impl<'a, C: IoContext> Interpreter<'a, C> {
     }
 
     fn exec_op(&mut self, op: &HirOp, slots: &mut Vec<u8>) -> Result<Flow, InterpError> {
+        self.step_count += 1;
+        if self.step_limit > 0 && self.step_count > self.step_limit {
+            return Err(InterpError::StepLimit(self.step_count));
+        }
         match op {
             HirOp::Set(s, v) => {
                 slots[s.0 as usize] = *v;
@@ -174,11 +206,6 @@ impl<'a, C: IoContext> Interpreter<'a, C> {
             HirOp::Dec(s) => {
                 let cur = slots[s.0 as usize];
                 slots[s.0 as usize] = cur.wrapping_sub(1) % 16;
-            }
-            HirOp::If0(s, when_zero, when_nonzero) => {
-                let v = slots[s.0 as usize];
-                let chosen = if v == 0 { when_zero } else { when_nonzero };
-                return self.exec_block(chosen, slots);
             }
             HirOp::Loop(body) => loop {
                 match self.exec_block(body, slots)? {

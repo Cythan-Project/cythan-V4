@@ -67,10 +67,6 @@ fn collect_callees(block: &HirBlock, out: &mut HashSet<FnSigKey>) {
                 };
                 out.insert(key);
             }
-            HirOp::If0(_, a, b) => {
-                collect_callees(a, out);
-                collect_callees(b, out);
-            }
             HirOp::Loop(b) | HirOp::Block(b) => collect_callees(b, out),
             HirOp::Match(_, arms) => {
                 for (arm, _) in arms {

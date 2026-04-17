@@ -92,7 +92,6 @@ fn hir_op_to_mir(op: &HirOp) -> Result<Mir, String> {
         HirOp::Copy(dst, src) => Mir::Copy(dst.0, src.0),
         HirOp::Inc(s) => Mir::Increment(s.0),
         HirOp::Dec(s) => Mir::Decrement(s.0),
-        HirOp::If0(s, a, b) => Mir::If0(s.0, hir_to_mir(a)?, hir_to_mir(b)?),
         HirOp::Loop(b) => Mir::Loop(hir_to_mir(b)?),
         HirOp::Break => Mir::Break,
         HirOp::Continue => Mir::Continue,
@@ -179,11 +178,6 @@ impl<'a> Inliner<'a> {
             HirOp::Copy(a, b) => out.push(HirOp::Copy(self.remap(*a, base), self.remap(*b, base))),
             HirOp::Inc(s) => out.push(HirOp::Inc(self.remap(*s, base))),
             HirOp::Dec(s) => out.push(HirOp::Dec(self.remap(*s, base))),
-            HirOp::If0(s, a, b) => out.push(HirOp::If0(
-                self.remap(*s, base),
-                self.inline_block(a, base)?,
-                self.inline_block(b, base)?,
-            )),
             HirOp::Loop(b) => out.push(HirOp::Loop(self.inline_block(b, base)?)),
             HirOp::Break => out.push(HirOp::Break),
             HirOp::Continue => out.push(HirOp::Continue),
@@ -406,10 +400,6 @@ fn stop_to_skip_in_block(block: &mut HirBlock) {
 fn stop_to_skip_in_op(op: &mut HirOp) {
     match op {
         HirOp::Stop => *op = HirOp::Skip,
-        HirOp::If0(_, a, b) => {
-            stop_to_skip_in_block(a);
-            stop_to_skip_in_block(b);
-        }
         HirOp::Loop(b) | HirOp::Block(b) => stop_to_skip_in_block(b),
         HirOp::Match(_, arms) => {
             for (arm, _) in arms {
