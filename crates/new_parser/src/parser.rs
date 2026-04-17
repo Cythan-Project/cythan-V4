@@ -133,12 +133,38 @@ fn bare_type_parser() -> impl Parser<Token, Spanned<Type>, Error = PErr> + Clone
                     .allow_trailing(),
             )
             .then_ignore(just(Token::Gt));
-        type_name_spanned()
+        // Optional module-path prefix: zero or more `lowercase_ident::`
+        // segments, followed by the final TypeName head. Lowercase-only
+        // keeps disambiguation simple at the expression level:
+        //   - `user::Foo { ... }`    struct literal on type `user::Foo`.
+        //   - `user::Foo::new(...)`  static call, path_tail handles the
+        //                            trailing `::new(...)`.
+        //   - `Foo::Bar(data)`       enum variant — no lowercase prefix,
+        //                            so path consumes only `Foo`, and
+        //                            path_tail handles `::Bar(data)`.
+        //
+        // Convention: module paths use lowercase segments; final type
+        // names are TypeName. A type declared in a file whose name
+        // itself looks uppercase would break this, so the tests use
+        // lowercase file names for disambiguated scenarios.
+        let path_prefix = ident_tok()
+            .then_ignore(just(Token::PathSep))
+            .repeated();
+        path_prefix
+            .then(type_name_spanned())
             .then(templates.or_not())
-            .map_with_span(|(name, templates), sp| {
+            .map_with_span(|((prefix, name), templates), sp| {
+                let full_name = if prefix.is_empty() {
+                    name.0
+                } else {
+                    let mut out = prefix.join("::");
+                    out.push_str("::");
+                    out.push_str(&name.0);
+                    out
+                };
                 (
                     Type {
-                        name,
+                        name: (full_name, name.1),
                         templates: templates.unwrap_or_default(),
                         qself: None,
                     },

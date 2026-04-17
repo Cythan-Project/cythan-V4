@@ -95,9 +95,7 @@ fn minimal_stdlib() -> Vec<(&'static str, String)> {
 
 #[test]
 fn qualified_path_reference() {
-    // Path in a type-annotation position. Struct-literal construction
-    // still uses the bare name because the expression-level parser
-    // does not yet accept path-qualified struct literals.
+    // Path in both a type-annotation AND a struct-literal position.
     let mut parts = minimal_stdlib();
     parts.push((
         "user.ct",
@@ -105,7 +103,7 @@ fn qualified_path_reference() {
             struct Foo { U4 v, }
             extension U4 {
                 fn test(): U4 {
-                    user::Foo f = Foo { v: 7, };
+                    user::Foo f = user::Foo { v: 7, };
                     f.v
                 }
             }
@@ -124,7 +122,7 @@ fn qualified_path_reference() {
 #[test]
 fn use_with_path_imports_type_by_short_name() {
     let lib = (
-        "lib/Widget.ct",
+        "lib/ui.ct",
         r#"
             struct Widget { U4 n, }
             extension Widget {
@@ -136,7 +134,7 @@ fn use_with_path_imports_type_by_short_name() {
     let user = (
         "user.ct",
         r#"
-            use lib::Widget::Widget;
+            use lib::ui::Widget;
             extension U4 {
                 fn test(): U4 {
                     Widget w = Widget::new(5);
@@ -161,7 +159,7 @@ fn use_with_path_imports_type_by_short_name() {
 #[test]
 fn qualified_reference_in_sig_and_body() {
     let lib = (
-        "lib/Pt.ct",
+        "lib/geom.ct",
         r#"
             struct Pt { U4 x, U4 y, }
         "#
@@ -171,13 +169,9 @@ fn qualified_reference_in_sig_and_body() {
         "user.ct",
         r#"
             extension U4 {
-                fn sum(lib::Pt::Pt p): U4 { p.x + p.y }
+                fn sum(lib::geom::Pt p): U4 { p.x + p.y }
                 fn test(): U4 {
-                    // Path in the type annotation of a declaration.
-                    // Value expression still uses bare `Pt` for the
-                    // struct literal (expression-level path prefixes
-                    // in struct literals aren't parsed yet).
-                    lib::Pt::Pt p = Pt { x: 3, y: 4, };
+                    lib::geom::Pt p = lib::geom::Pt { x: 3, y: 4, };
                     U4::sum(p)
                 }
             }
@@ -192,32 +186,44 @@ fn qualified_reference_in_sig_and_body() {
 }
 
 // =========================================================================
-// Collision: two files each declare a struct `Foo`. The current typer
-// treats both as the same bare `Foo` and errors on the duplicate. Test
-// that the error message identifies the collision.
+// Collision: two files each declare a struct `Foo`. Both coexist — each
+// file references its own `Foo` by bare name (resolved via file-local
+// declarations), and a third file disambiguates via path or `use`.
 // =========================================================================
 
 #[test]
-fn duplicate_bare_name_across_files_errors() {
+fn duplicate_bare_name_across_files_coexist() {
     let a = (
-        "a.ct",
+        "lib/a.ct",
         r#"
             struct Foo { U4 v, }
+            extension Foo {
+                fn make(): Self { Self { v: 1, } }
+            }
         "#
         .to_string(),
     );
     let b = (
-        "b.ct",
+        "lib/b.ct",
         r#"
             struct Foo { U4 w, }
+            extension Foo {
+                fn make(): Self { Self { w: 2, } }
+            }
         "#
         .to_string(),
     );
+    // A third file picks one of them by full path and verifies both
+    // are reachable via their FQ names.
     let user = (
         "user.ct",
         r#"
             extension U4 {
-                fn test(): U4 { 0 }
+                fn test(): U4 {
+                    lib::a::Foo fa = lib::a::Foo::make();
+                    lib::b::Foo fb = lib::b::Foo::make();
+                    fa.v + fb.w
+                }
             }
         "#
         .to_string(),
@@ -227,13 +233,54 @@ fn duplicate_bare_name_across_files_errors() {
     parts.push(b);
     parts.push(user);
     let entry = typer::FnSig::new("U4", "test");
-    let err = compile_files(&parts, &entry).unwrap_err();
-    assert!(
-        err.contains("duplicate type definition"),
-        "expected a duplicate-type error, got: {}",
-        err
+    assert_eq!(compile_files(&parts, &entry).unwrap(), vec![3]);
+}
+
+#[test]
+fn duplicate_bare_name_bare_references_resolve_locally() {
+    // Each file uses its OWN `Foo` by bare name. The resolver must
+    // prefer file-local declarations over the ambiguous global.
+    let a = (
+        "lib/a.ct",
+        r#"
+            struct Foo { U4 v, }
+            extension Foo {
+                fn make(): Self { Self { v: 5, } }
+                fn val(self): U4 { self.v }
+            }
+        "#
+        .to_string(),
     );
-    assert!(err.contains("Foo"), "expected the colliding name in the error: {}", err);
+    let b = (
+        "lib/b.ct",
+        r#"
+            struct Foo { U4 w, }
+            extension Foo {
+                fn make(): Self { Self { w: 7, } }
+                fn val(self): U4 { self.w }
+            }
+        "#
+        .to_string(),
+    );
+    let user = (
+        "user.ct",
+        r#"
+            extension U4 {
+                fn test(): U4 {
+                    lib::a::Foo fa = lib::a::Foo::make();
+                    lib::b::Foo fb = lib::b::Foo::make();
+                    fa.val() + fb.val()
+                }
+            }
+        "#
+        .to_string(),
+    );
+    let mut parts = minimal_stdlib();
+    parts.push(a);
+    parts.push(b);
+    parts.push(user);
+    let entry = typer::FnSig::new("U4", "test");
+    assert_eq!(compile_files(&parts, &entry).unwrap(), vec![12]);
 }
 
 // =========================================================================
@@ -279,7 +326,7 @@ fn duplicate_within_single_file_errors() {
 #[test]
 fn path_with_wrong_prefix_falls_back_to_bare_leaf() {
     let lib = (
-        "lib/A.ct",
+        "lib/helpers.ct",
         r#"
             struct Foo { U4 v, }
             extension Foo {
@@ -319,7 +366,7 @@ fn path_with_wrong_prefix_falls_back_to_bare_leaf() {
 #[test]
 fn use_path_trait_brings_it_into_scope() {
     let lib = (
-        "lib/Math.ct",
+        "lib/math.ct",
         r#"
             trait Triple { fn triple(self): U4; }
             impl Triple for U4 {
@@ -331,7 +378,7 @@ fn use_path_trait_brings_it_into_scope() {
     let user = (
         "user.ct",
         r#"
-            use lib::Math::Triple;
+            use lib::math::Triple;
             extension U4 {
                 fn test(): U4 {
                     U4 x = 2;
@@ -356,7 +403,7 @@ fn use_path_trait_brings_it_into_scope() {
 #[test]
 fn multiple_files_agree_on_path_form() {
     let lib = (
-        "lib/Box.ct",
+        "lib/containers.ct",
         r#"
             struct Box<T> { T v, }
             extension Box<T> {
@@ -369,7 +416,7 @@ fn multiple_files_agree_on_path_form() {
         "helpers.ct",
         r#"
             extension U4 {
-                fn unwrap(lib::Box::Box<U4> b): U4 { b.v }
+                fn unwrap(lib::containers::Box<U4> b): U4 { b.v }
             }
         "#
         .to_string(),
@@ -379,9 +426,8 @@ fn multiple_files_agree_on_path_form() {
         r#"
             extension U4 {
                 fn test(): U4 {
-                    // Path in the local-binding type; bare `Box` for
-                    // the static-call factory.
-                    lib::Box::Box<U4> b = Box::new(6);
+                    // Full path in both positions.
+                    lib::containers::Box<U4> b = lib::containers::Box::new(6);
                     U4::unwrap(b)
                 }
             }
@@ -435,7 +481,7 @@ fn use_of_nonexistent_path_then_use_bare_fails() {
 #[test]
 fn path_in_trait_bound() {
     let lib = (
-        "lib/Tag.ct",
+        "lib/tags.ct",
         r#"
             trait Tag { fn tag(self): U4; }
             impl Tag for U4 {
@@ -447,9 +493,9 @@ fn path_in_trait_bound() {
     let user = (
         "user.ct",
         r#"
-            use lib::Tag::Tag;
+            use lib::tags::Tag;
             trait Proxy { fn proxy(self): U4; }
-            impl<T: lib::Tag::Tag> Proxy for T {
+            impl<T: lib::tags::Tag> Proxy for T {
                 fn proxy(self): U4 { self.tag() + 10 }
             }
             use Proxy;

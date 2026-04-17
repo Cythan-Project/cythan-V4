@@ -123,7 +123,12 @@ impl FunctionDB {
         let mut db = Self::new();
         let mut errors: Vec<TyperError> = Vec::new();
 
-        for info in reg.types.values() {
+        // Iterate with the storage key so that — after cross-file
+        // collision migration — FnSig keys align with the storage-key
+        // form that type-name lookups resolve to. For unambiguous
+        // types storage_key == info.name so this is a no-op.
+        for (storage_key, info) in &reg.types {
+            let type_name = storage_key.clone();
             let type_templates = info.templates.clone();
             for m in &info.methods {
                 let method_templates: Vec<String> = m
@@ -135,9 +140,9 @@ impl FunctionDB {
                     .collect();
 
                 let key = match &m.from_trait {
-                    None => FnSig::new(info.name.clone(), m.function.sig.name.0.clone()),
+                    None => FnSig::new(type_name.clone(), m.function.sig.name.0.clone()),
                     Some(t) => FnSig::new_trait(
-                        info.name.clone(),
+                        type_name.clone(),
                         m.function.sig.name.0.clone(),
                         t.clone(),
                     ),
@@ -154,11 +159,11 @@ impl FunctionDB {
                     && type_templates.is_empty()
                     && method_templates.is_empty();
                 let f = if is_simple {
-                    match FlatSig::flatten(&m.function.sig, &info.name, reg) {
+                    match FlatSig::flatten(&m.function.sig, &type_name, reg) {
                         Ok(flat) => Fn::Simple(SimpleFn {
                             body: m.function.clone(),
                             sig: flat,
-                            type_name: info.name.clone(),
+                            type_name: type_name.clone(),
                             from_trait: m.from_trait.clone(),
                             file_id: m.file_id,
                             type_template_args: Vec::new(),
@@ -183,7 +188,7 @@ impl FunctionDB {
                     templates.extend(method_templates);
                     Fn::Templated(TemplatedFn {
                         body: m.function.clone(),
-                        type_name: info.name.clone(),
+                        type_name: type_name.clone(),
                         templates,
                         from_trait: m.from_trait.clone(),
                         file_id: m.file_id,

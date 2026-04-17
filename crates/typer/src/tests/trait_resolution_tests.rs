@@ -643,9 +643,10 @@ fn use_an_unknown_name_doesnt_panic_but_has_no_effect() {
 }
 
 #[test]
-fn duplicate_trait_name_across_files_is_rejected() {
-    // Trait names live in a single global namespace — no module system
-    // yet. Defining `trait Foo` in two files is an outright error.
+fn duplicate_trait_name_across_files_coexists_via_path() {
+    // Trait names now follow the same path-aware collision rules as
+    // types: two files can both declare `trait Foo` and both survive
+    // under their fully-qualified storage keys.
     let parsed = parse_files(&[
         ("a", "trait Foo { fn bar(self): U4; }"),
         ("b", "trait Foo { fn bar(self): U4; }"),
@@ -654,14 +655,29 @@ fn duplicate_trait_name_across_files_is_rejected() {
         .iter()
         .map(|(n, items)| (n.as_str(), items.as_slice()))
         .collect();
-    let result = TypeRegistry::from_files(&as_refs);
-    assert!(result.is_err(), "expected duplicate-trait error");
-    let msg = format!("{:?}", result.unwrap_err());
-    assert!(
-        msg.contains("duplicate trait"),
-        "unexpected error: {}",
-        msg
+    let reg = TypeRegistry::from_files(&as_refs).expect("both traits should coexist");
+    assert!(reg.traits.contains_key("a::Foo"));
+    assert!(reg.traits.contains_key("b::Foo"));
+    // Bare lookups resolve to the file-local decl in each file.
+    assert_eq!(
+        reg.canonicalize_type_name("Foo", Some(0)).as_deref(),
+        Some("a::Foo")
     );
+    assert_eq!(
+        reg.canonicalize_type_name("Foo", Some(1)).as_deref(),
+        Some("b::Foo")
+    );
+    // Path-qualified references resolve directly.
+    assert_eq!(
+        reg.canonicalize_type_name("a::Foo", None).as_deref(),
+        Some("a::Foo")
+    );
+    assert_eq!(
+        reg.canonicalize_type_name("b::Foo", None).as_deref(),
+        Some("b::Foo")
+    );
+    // Bare lookup from an unrelated file is ambiguous, returns None.
+    assert_eq!(reg.canonicalize_type_name("Foo", Some(99)), None);
 }
 
 #[test]

@@ -8,10 +8,10 @@ use crate::types::*;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TypeRegistry {
-    /// Keyed by canonical (fully-qualified) type name. For a type
-    /// declared in a file whose module path is `std::ArrayList`, the
-    /// canonical name is `std::ArrayList::ArrayList`. Primitives like
-    /// `U4` use their bare name as canonical.
+    /// Keyed by each type's storage name. For a type that's
+    /// unambiguous across files, the storage name equals the bare
+    /// name. When two files declare the same bare name, both get
+    /// migrated to fully-qualified keys like `<module>::<bare>`.
     pub types: HashMap<String, TypeInfo>,
     pub traits: HashMap<String, TraitInfo>,
     pub impls: Vec<ImplInfo>,
@@ -32,13 +32,21 @@ pub struct TypeRegistry {
     /// short name (the leaf) to its canonical full name, scoped to
     /// the file that issued the `use`.
     pub type_aliases: HashMap<FileId, HashMap<String, String>>,
-    /// Global bare-name → canonical map, for names that exist in only
-    /// one file. Ambiguous names (declared in multiple files) aren't
-    /// here — consumers must qualify or `use` to disambiguate.
+    /// Global bare-name → storage-name map, for names that exist in
+    /// only one file. Ambiguous names (declared in multiple files)
+    /// aren't here — consumers must qualify or `use` to disambiguate.
     pub bare_aliases: HashMap<String, String>,
     /// Names that got declared in multiple files. Stored so we can
     /// emit a useful "ambiguous; qualify or use" error at lookup time.
     pub ambiguous_bare: HashSet<String>,
+    /// The first file that declared each bare name. Used to migrate
+    /// the earlier-registered type to its fully-qualified storage
+    /// key when a later file declares the same bare name.
+    pub first_declarer: HashMap<String, FileId>,
+    /// Per-file mapping `bare_name → storage_name` for types (and
+    /// traits) declared in that file. Lets `canonicalize_type_name`
+    /// prefer a file's own declaration over an ambiguous bare lookup.
+    pub file_declarations: HashMap<FileId, HashMap<String, String>>,
 }
 
 /// Traits that operator sugar desugars into. Calls routed through these
@@ -189,28 +197,6 @@ impl TypeRegistry {
         }
     }
 
-    /// Add a canonical name to the bare-name index. If the bare name
-    /// was already mapped, mark it ambiguous and remove it from the
-    /// unambiguous alias map — subsequent bare references will error
-    /// unless the caller uses a path or a `use` alias.
-    fn add_bare_alias(&mut self, bare: &str, canonical: &str) {
-        if self.ambiguous_bare.contains(bare) {
-            return;
-        }
-        match self.bare_aliases.get(bare) {
-            None => {
-                self.bare_aliases.insert(bare.to_string(), canonical.to_string());
-            }
-            Some(existing) if existing == canonical => {
-                // same registration, no-op (e.g. primitive U4 pre-seed).
-            }
-            Some(_) => {
-                self.bare_aliases.remove(bare);
-                self.ambiguous_bare.insert(bare.to_string());
-            }
-        }
-    }
-
     /// Resolve a type reference written in source (bare `Foo`,
     /// path-qualified `a::b::Foo`, or via a per-file `use` alias) to
     /// its registry-keyed storage name. The registry currently keys
@@ -229,33 +215,56 @@ impl TypeRegistry {
         file_id: Option<FileId>,
     ) -> Option<String> {
         if let Some(idx) = name.rfind("::") {
-            // Path-qualified. Validate the full path is a known alias
-            // for the leaf; return the leaf as the storage name.
-            if let Some(leaf) = self.bare_aliases.get(name) {
-                return Some(leaf.clone());
+            // Path-qualified. After a cross-file collision the storage
+            // key IS the FQ form, so check directly first.
+            if self.types.contains_key(name) || self.traits.contains_key(name) {
+                return Some(name.to_string());
             }
-            // Permissive fallback: if the leaf alone is a known type,
-            // accept it. Keeps existing tests with user-written paths
-            // working without a declared module path for the leaf's
-            // file.
+            if let Some(storage) = self.bare_aliases.get(name) {
+                return Some(storage.clone());
+            }
+            // Permissive fallback: if the leaf alone is a known (and
+            // unambiguous) type, accept it.
             let leaf = &name[idx + 2..];
-            if self.types.contains_key(leaf) || self.traits.contains_key(leaf) {
+            if !self.ambiguous_bare.contains(leaf)
+                && (self.types.contains_key(leaf) || self.traits.contains_key(leaf))
+            {
                 return Some(leaf.to_string());
             }
             return None;
         }
+        // Bare name. A file's own declaration beats any global alias —
+        // this is what makes coexistence work when two files declare
+        // the same bare name.
         if let Some(fid) = file_id {
+            if let Some(storage) = self
+                .file_declarations
+                .get(&fid)
+                .and_then(|m| m.get(name))
+            {
+                return Some(storage.clone());
+            }
             if let Some(alias) = self.type_aliases.get(&fid).and_then(|m| m.get(name)) {
                 // The alias is the full path the user wrote in `use`.
-                // Resolve to the storage (bare) name.
-                if let Some(bare) = self.bare_aliases.get(alias) {
-                    return Some(bare.clone());
+                // Recurse through the path-qualified branch.
+                if self.types.contains_key(alias) || self.traits.contains_key(alias) {
+                    return Some(alias.clone());
+                }
+                if let Some(storage) = self.bare_aliases.get(alias) {
+                    return Some(storage.clone());
                 }
                 let leaf = alias.rsplit("::").next().unwrap_or(alias);
                 if self.types.contains_key(leaf) || self.traits.contains_key(leaf) {
                     return Some(leaf.to_string());
                 }
             }
+        }
+        // Unambiguous global bare name.
+        if self.ambiguous_bare.contains(name) {
+            return None;
+        }
+        if let Some(storage) = self.bare_aliases.get(name) {
+            return Some(storage.clone());
         }
         if self.types.contains_key(name) || self.traits.contains_key(name) {
             return Some(name.to_string());
@@ -287,18 +296,17 @@ impl TypeRegistry {
         self.register_trait_core(def)
     }
 
-    /// File-aware struct registration. Keeps `types` keyed by bare
-    /// name (for back-compat with every call site that lookups by
-    /// bare name), but records the bare-name-as-FQ mapping so
-    /// `a::b::Foo` path syntax resolves when `b` matches the file's
-    /// module path. Collisions across files surface as errors.
+    /// File-aware struct registration. Storage key is the bare name
+    /// when unambiguous; on collision with a type declared in another
+    /// file, both entries get migrated to fully-qualified keys (the
+    /// earlier one is moved lazily on the second declarer's arrival).
     pub fn register_struct_with_file(
         &mut self,
         def: &ast::StructDef,
         file_id: FileId,
     ) -> Result<(), TyperError> {
-        self.register_path_alias_for(&def.name.0, file_id);
-        self.register_struct_core(def)
+        let key = self.reserve_registration_key(&def.name.0, file_id);
+        self.register_struct_core_at(def, &key)
     }
 
     pub fn register_enum_with_file(
@@ -306,8 +314,8 @@ impl TypeRegistry {
         def: &ast::EnumDef,
         file_id: FileId,
     ) -> Result<(), TyperError> {
-        self.register_path_alias_for(&def.name.0, file_id);
-        self.register_enum_core(def)
+        let key = self.reserve_registration_key(&def.name.0, file_id);
+        self.register_enum_core_at(def, &key)
     }
 
     pub fn register_trait_with_file(
@@ -315,34 +323,116 @@ impl TypeRegistry {
         def: &ast::TraitDef,
         file_id: FileId,
     ) -> Result<(), TyperError> {
-        self.register_path_alias_for(&def.name.0, file_id);
-        self.register_trait_core(def)
+        let key = self.reserve_registration_key(&def.name.0, file_id);
+        self.register_trait_core_at(def, &key)
     }
 
-    /// Record that `bare` is also reachable via `<file's module>::bare`.
-    /// Future type references written as `a::b::bare` can look up the
-    /// bare name through this alias table.
-    fn register_path_alias_for(&mut self, bare: &str, file_id: FileId) {
+    /// Pick the storage key for a type/trait about to be registered.
+    ///
+    /// Also maintains the side tables that make bare-and-path lookups
+    /// work across files:
+    ///   - `first_declarer`: which file first claimed this bare name
+    ///   - `bare_aliases`: `<fq> → <storage>` and `<bare> → <storage>`
+    ///     for unambiguous names
+    ///   - `ambiguous_bare`: bare names declared in 2+ files
+    ///   - `file_declarations`: per-file `<bare> → <storage>` so a
+    ///     declaring file can still bare-reference its own type
+    ///
+    /// On a cross-file collision, the earlier registered entry is
+    /// *migrated*: its storage key changes from bare to
+    /// `<prev_module>::<bare>`, and this function returns the new
+    /// declarer's own FQ key for the caller to register under.
+    fn reserve_registration_key(&mut self, bare: &str, file_id: FileId) -> String {
         let module = self
             .file_module_paths
             .get(&file_id)
             .cloned()
             .unwrap_or_default();
-        if module.is_empty() {
-            return;
+        let fq = Self::join_path(&module, bare);
+
+        match self.first_declarer.get(bare).copied() {
+            None => {
+                self.first_declarer.insert(bare.to_string(), file_id);
+                self.file_declarations
+                    .entry(file_id)
+                    .or_default()
+                    .insert(bare.to_string(), bare.to_string());
+                if !module.is_empty() {
+                    self.bare_aliases.insert(fq, bare.to_string());
+                }
+                self.bare_aliases
+                    .entry(bare.to_string())
+                    .or_insert_with(|| bare.to_string());
+                bare.to_string()
+            }
+            Some(prev) if prev == file_id => {
+                // Same file redeclares: return whatever key the file
+                // originally registered under. The core's duplicate
+                // check fires afterwards and reports the real error.
+                self.file_declarations
+                    .get(&file_id)
+                    .and_then(|m| m.get(bare))
+                    .cloned()
+                    .unwrap_or_else(|| bare.to_string())
+            }
+            Some(prev_file_id) => {
+                // Cross-file collision. Migrate the earlier entry (if
+                // it's still at the bare key) and register this one
+                // under its own FQ key.
+                if !self.ambiguous_bare.contains(bare) {
+                    let prev_module = self
+                        .file_module_paths
+                        .get(&prev_file_id)
+                        .cloned()
+                        .unwrap_or_default();
+                    let prev_fq = Self::join_path(&prev_module, bare);
+                    if prev_fq != bare {
+                        if let Some(info) = self.types.remove(bare) {
+                            self.types.insert(prev_fq.clone(), info);
+                        }
+                        if let Some(info) = self.traits.remove(bare) {
+                            self.traits.insert(prev_fq.clone(), info);
+                        }
+                        self.bare_aliases.insert(prev_fq.clone(), prev_fq.clone());
+                    }
+                    self.bare_aliases.remove(bare);
+                    self.ambiguous_bare.insert(bare.to_string());
+                    self.file_declarations
+                        .entry(prev_file_id)
+                        .or_default()
+                        .insert(bare.to_string(), prev_fq);
+                }
+                if !module.is_empty() {
+                    self.bare_aliases.insert(fq.clone(), fq.clone());
+                }
+                self.file_declarations
+                    .entry(file_id)
+                    .or_default()
+                    .insert(bare.to_string(), fq.clone());
+                fq
+            }
         }
-        let full = Self::join_path(&module, bare);
-        self.bare_aliases.insert(full, bare.to_string());
-        // Also seed the bare → bare identity so `canonicalize_type_name`
-        // can recognize a plain reference from the declaring file.
-        self.bare_aliases
-            .entry(bare.to_string())
-            .or_insert_with(|| bare.to_string());
     }
 
     fn register_struct_core(&mut self, def: &ast::StructDef) -> Result<(), TyperError> {
+        self.register_struct_core_at(def, &def.name.0)
+    }
+
+    fn register_enum_core(&mut self, def: &ast::EnumDef) -> Result<(), TyperError> {
+        self.register_enum_core_at(def, &def.name.0)
+    }
+
+    fn register_trait_core(&mut self, def: &ast::TraitDef) -> Result<(), TyperError> {
+        self.register_trait_core_at(def, &def.name.0)
+    }
+
+    fn register_struct_core_at(
+        &mut self,
+        def: &ast::StructDef,
+        storage_key: &str,
+    ) -> Result<(), TyperError> {
         let name = def.name.0.clone();
-        if self.types.contains_key(&name) && name != U4_NAME {
+        if self.types.contains_key(storage_key) && name != U4_NAME {
             return Err(TyperError::at(
                 format!("duplicate type definition: {}", name),
                 def.name.1.clone(),
@@ -374,7 +464,7 @@ impl TypeRegistry {
         };
 
         self.types.insert(
-            name.clone(),
+            storage_key.to_string(),
             TypeInfo {
                 name,
                 templates,
@@ -385,9 +475,13 @@ impl TypeRegistry {
         Ok(())
     }
 
-    fn register_enum_core(&mut self, def: &ast::EnumDef) -> Result<(), TyperError> {
+    fn register_enum_core_at(
+        &mut self,
+        def: &ast::EnumDef,
+        storage_key: &str,
+    ) -> Result<(), TyperError> {
         let name = def.name.0.clone();
-        if self.types.contains_key(&name) {
+        if self.types.contains_key(storage_key) {
             return Err(TyperError::at(
                 format!("duplicate type definition: {}", name),
                 def.name.1.clone(),
@@ -419,7 +513,7 @@ impl TypeRegistry {
         };
 
         self.types.insert(
-            name.clone(),
+            storage_key.to_string(),
             TypeInfo {
                 name,
                 templates,
@@ -430,16 +524,20 @@ impl TypeRegistry {
         Ok(())
     }
 
-    fn register_trait_core(&mut self, def: &ast::TraitDef) -> Result<(), TyperError> {
+    fn register_trait_core_at(
+        &mut self,
+        def: &ast::TraitDef,
+        storage_key: &str,
+    ) -> Result<(), TyperError> {
         let name = def.name.0.clone();
-        if self.traits.contains_key(&name) {
+        if self.traits.contains_key(storage_key) {
             return Err(TyperError::at(
                 format!("duplicate trait definition: {}", name),
                 def.name.1.clone(),
             ));
         }
         self.traits.insert(
-            name.clone(),
+            storage_key.to_string(),
             TraitInfo {
                 name,
                 templates: def.templates.iter().map(|t| t.0.clone()).collect(),
