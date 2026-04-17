@@ -124,6 +124,44 @@ fn subst_tv(
     }
 }
 
+/// Compute the Self binding for a blanket-attached monomorph. Walks
+/// the binding's `sources` to find either:
+///   - A `Target` source → Self is that template_arg directly (the
+///     full receiver type from the call site).
+///   - No `Target` source (generic-target case) → Self is built from
+///     the TargetArg sources as `templated.type_name<args...>`.
+fn resolve_self_from_blanket(
+    blanket: &typer::BlanketBinding,
+    template_args: &[ConcreteTemplateArg],
+    type_name: &str,
+) -> Option<ConcreteTemplateArg> {
+    // Bare-target branch: one of the sources is `Target`; whatever
+    // template_arg sits at that position is Self.
+    for (i, source) in blanket.sources.iter().enumerate() {
+        if matches!(source, typer::GenericSource::Target) {
+            return template_args.get(i).cloned();
+        }
+    }
+    // Generic-target branch: build Self from every TargetArg source.
+    // The sources are iterated in target-declaration order; each
+    // position produces one arg of Self.
+    let mut args: Vec<ConcreteTemplateArg> = Vec::new();
+    for (i, source) in blanket.sources.iter().enumerate() {
+        match source {
+            typer::GenericSource::TargetArg(_) => {
+                if let Some(tv) = template_args.get(i) {
+                    args.push(tv.clone());
+                }
+            }
+            _ => return None,
+        }
+    }
+    Some(ConcreteTemplateArg::Type(ConcreteType {
+        name: type_name.to_string(),
+        args,
+    }))
+}
+
 fn concrete_type_to_ast(ct: &ConcreteType, span: &new_parser::Span) -> ast::Spanned<ast::Type> {
     let templates = ct
         .args
@@ -369,26 +407,36 @@ pub fn monomorphize(
     // synthetic binding so `subst_type` replaces `Self` wherever it
     // appears in the body's type references.
     //
-    // The number of enclosing-type template params is inferred by looking
-    // at the owning type in the registry. If present, we take the first
-    // N args as its template args.
-    if let Some(info) = reg.types.get(&templated.type_name) {
-        let n_type_templates = info.templates.len();
-        if n_type_templates <= key.template_args.len() {
-            let self_args: Vec<ConcreteTemplateArg> = key
-                .template_args
-                .iter()
-                .take(n_type_templates)
-                .cloned()
-                .collect();
-            bindings.insert(
-                "Self".to_string(),
-                ConcreteTemplateArg::Type(ConcreteType {
+    // For blanket-attached methods, the `BlanketBinding` directly tells
+    // us which template_arg becomes Self — use it. The `Target` source
+    // carries the full receiver type; `TargetArg(i)` sources together
+    // compose it for generic-target blankets.
+    //
+    // For non-blanket generic methods, fall back to the historical rule:
+    // first N template_args = Self's args (N = info.templates.len()).
+    let self_binding = if let Some(b) = &templated.blanket {
+        resolve_self_from_blanket(b, &key.template_args, &templated.type_name)
+    } else {
+        reg.types.get(&templated.type_name).and_then(|info| {
+            let n_type_templates = info.templates.len();
+            if n_type_templates <= key.template_args.len() {
+                let self_args: Vec<ConcreteTemplateArg> = key
+                    .template_args
+                    .iter()
+                    .take(n_type_templates)
+                    .cloned()
+                    .collect();
+                Some(ConcreteTemplateArg::Type(ConcreteType {
                     name: templated.type_name.clone(),
                     args: self_args,
-                }),
-            );
-        }
+                }))
+            } else {
+                None
+            }
+        })
+    };
+    if let Some(self_arg) = self_binding {
+        bindings.insert("Self".to_string(), self_arg);
     }
 
     // Substitute into the function body.

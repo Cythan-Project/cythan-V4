@@ -427,10 +427,125 @@ fn two_string_iters_independent() {
 }
 
 // =========================================================================
-// Counting elements via direct method dispatch (not a blanket over Iter).
-// Written as an extension on ArrayIter so the method is inherent — the
-// more general `impl<T, I: Iter<T>> Countable for I` pattern requires a
-// generic-target unification path that isn't implemented yet.
+// The canonical Iter-blanket pattern: `impl<T, I: Iter<T>> Countable
+// for I` attaches `count()` to every iterator in one go. Exercises
+// generic-candidate attachment + candidate-arg binding in the unifier.
+// =========================================================================
+
+#[test]
+fn countable_blanket_over_iter_trait_on_array_iter() {
+    let src = r#"
+        use Iter;
+        use Countable;
+        trait Countable { fn count(mut self): U4; }
+        impl<T, I: Iter<T>> Countable for I {
+            fn count(mut self): U4 {
+                mut U4 n = 0;
+                loop {
+                    if let Option::Some(_) = self.next() {
+                        n += 1;
+                    } else {
+                        break;
+                    }
+                }
+                n
+            }
+        }
+        extension U4 {
+            fn test(): U4 {
+                mut Array<U4, 3, U4> a = Array::new();
+                a.set(0, 1);
+                a.set(1, 2);
+                a.set(2, 3);
+                mut ArrayIter<U4, 3, U4> it = ArrayIter::new(a);
+                it.count()
+            }
+        }
+    "#;
+    let entry = typer::FnSig::new("U4", "test");
+    assert_eq!(run_program(src, &entry), vec![3]);
+}
+
+// =========================================================================
+// The same Countable blanket dispatches to StringIter too — a different
+// generic head, same `Iter<T>` bound.
+// =========================================================================
+
+#[test]
+fn countable_blanket_applies_to_string_iter() {
+    let src = r#"
+        use Iter;
+        use Countable;
+        trait Countable { fn count(mut self): U4; }
+        impl<T, I: Iter<T>> Countable for I {
+            fn count(mut self): U4 {
+                mut U4 n = 0;
+                loop {
+                    if let Option::Some(_) = self.next() {
+                        n += 1;
+                    } else {
+                        break;
+                    }
+                }
+                n
+            }
+        }
+        extension U4 {
+            fn test(): U4 {
+                mut String<4> s = String::new();
+                s.push(U8 { lower: 1, higher: 0, });
+                s.push(U8 { lower: 2, higher: 0, });
+                s.push(U8 { lower: 3, higher: 0, });
+                mut StringIter<4> it = s.iter();
+                it.count()
+            }
+        }
+    "#;
+    let entry = typer::FnSig::new("U4", "test");
+    assert_eq!(run_program(src, &entry), vec![3]);
+}
+
+// =========================================================================
+// Early termination in the Iter blanket: `impl<T, I: Iter<T>> Take3
+// for I` only pulls up to 3 items.
+// =========================================================================
+
+#[test]
+fn take3_blanket_over_iter_trait() {
+    let src = r#"
+        use Iter;
+        use Take3;
+        trait Take3 { fn take3_count(mut self): U4; }
+        impl<T, I: Iter<T>> Take3 for I {
+            fn take3_count(mut self): U4 {
+                mut U4 n = 0;
+                loop {
+                    if n == 3 { break; }
+                    if let Option::Some(_) = self.next() {
+                        n += 1;
+                    } else {
+                        break;
+                    }
+                }
+                n
+            }
+        }
+        extension U4 {
+            fn test(): U4 {
+                mut Array<U4, 10, U4> a = Array::new();
+                a.set(0, 1);
+                mut ArrayIter<U4, 10, U4> it = ArrayIter::new(a);
+                it.take3_count()
+            }
+        }
+    "#;
+    let entry = typer::FnSig::new("U4", "test");
+    assert_eq!(run_program(src, &entry), vec![3]);
+}
+
+// =========================================================================
+// Counting elements via direct method dispatch (kept as a baseline so a
+// blanket regression can be distinguished from an inherent-method one).
 // =========================================================================
 
 #[test]

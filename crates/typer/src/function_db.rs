@@ -94,6 +94,13 @@ pub struct TemplatedFn {
     pub templates: Vec<String>,
     pub from_trait: Option<String>,
     pub file_id: crate::types::FileId,
+    /// Blanket-impl attachment info, if this method came from a
+    /// blanket. The monomorphizer uses it to resolve `Self` directly
+    /// from the binding's `Target`/`TargetArg` sources rather than
+    /// falling back to "first N template_args = Self's args" — which
+    /// breaks down when the blanket's generic list doesn't align
+    /// with the candidate's own template params.
+    pub blanket: Option<crate::types::BlanketBinding>,
 }
 
 impl FunctionDB {
@@ -180,6 +187,7 @@ impl FunctionDB {
                         templates,
                         from_trait: m.from_trait.clone(),
                         file_id: m.file_id,
+                        blanket: m.blanket.clone(),
                     })
                 };
                 db.insert(key, f);

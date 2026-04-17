@@ -203,6 +203,11 @@ pub struct ImplInfo {
     /// `impl<T> Trait for T` this is empty. Each entry is a generic
     /// param name — validated by `register_impl`.
     pub target_template_args: Vec<String>,
+    /// Raw template args on the trait reference as written in the
+    /// impl header — preserved in AST form so blanket attachments can
+    /// translate them to candidate-template names (for downstream
+    /// bound-unification by other blankets).
+    pub trait_template_args: Vec<ast::TypeOrValue>,
     /// Generic parameters declared on the impl header. Non-empty only
     /// for blanket impls (`impl<T: A + B> Trait for T`), which are also
     /// stored separately in `TypeRegistry.blanket_impls`.

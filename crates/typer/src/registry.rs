@@ -500,6 +500,7 @@ impl TypeRegistry {
                 trait_name,
                 target_name,
                 target_template_args,
+                trait_template_args: trait_args.clone(),
                 generics,
                 associated_bindings: def
                     .associated_types
@@ -541,6 +542,7 @@ impl TypeRegistry {
             trait_name,
             target_name,
             target_template_args: Vec::new(),
+            trait_template_args: trait_args.clone(),
             generics,
             associated_bindings: def
                 .associated_types
@@ -631,15 +633,23 @@ impl TypeRegistry {
             if generic_order.iter().any(|n| *n == type_name) {
                 continue;
             }
-            let info_ref = self.types.get(&type_name).unwrap();
-            if !info_ref.templates.is_empty() {
-                continue;
-            }
+            // Pass the candidate's own template-param names to unify
+            // as `candidate_params`. For non-generic candidates this
+            // is empty; for generic ones (ArrayIter with `[T, N, F]`)
+            // it's the declared names, letting unify emit positional
+            // `CandidateArg(i)` bindings instead of stalling on
+            // placeholder-to-placeholder matches.
+            let candidate_params: Vec<String> = self
+                .types
+                .get(&type_name)
+                .map(|info| info.templates.clone())
+                .unwrap_or_default();
             let Some(assignment) = self.satisfy_bounds(
                 &type_name,
                 &target_generic.name,
                 &target_generic.bounds,
                 &free_names,
+                &candidate_params,
             ) else {
                 continue;
             };
@@ -701,7 +711,7 @@ impl TypeRegistry {
     fn build_sources_for_bare(
         generics: &[GenericParamInfo],
         target_index: usize,
-        assignment: &HashMap<String, ast::TypeOrValue>,
+        assignment: &HashMap<String, crate::resolution::ResolvedArg>,
     ) -> Option<Vec<GenericSource>> {
         let mut out = Vec::with_capacity(generics.len());
         for (i, g) in generics.iter().enumerate() {
@@ -709,7 +719,12 @@ impl TypeRegistry {
                 out.push(GenericSource::Target);
             } else {
                 match assignment.get(&g.name) {
-                    Some(v) => out.push(GenericSource::Bound(v.clone())),
+                    Some(crate::resolution::ResolvedArg::Concrete(v)) => {
+                        out.push(GenericSource::Bound(v.clone()));
+                    }
+                    Some(crate::resolution::ResolvedArg::CandidateArg(idx)) => {
+                        out.push(GenericSource::TargetArg(*idx));
+                    }
                     None => return None,
                 }
             }
@@ -720,12 +735,41 @@ impl TypeRegistry {
     /// Attach all of `blanket.methods` to `type_name` with the given
     /// binding, skipping any method that's already provided by the
     /// same trait.
+    ///
+    /// The `trait_template_args` stored on each attached method is the
+    /// blanket impl's trait args, rewritten to reference the candidate
+    /// type's own template-param names (for generic-target blankets)
+    /// or the concrete candidate (for bare-target blankets). This lets
+    /// another blanket's bound check unify its free generics against
+    /// what this impl "exposes."
     fn attach_blanket_method_on(
         &mut self,
         type_name: &str,
         blanket: &ImplInfo,
         binding: BlanketBinding,
     ) {
+        // Look up the impl's original trait_ty args (kept on the
+        // blanket impl via its methods — they're the `trait_ty.0.templates`
+        // we didn't yet store. As a stand-in, reconstruct from the
+        // blanket's own generics reference if possible.) For phase 1
+        // we take the blanket's generics names that appear in the
+        // trait args — but that info isn't easily accessible here.
+        // Instead we forge trait_template_args by walking the blanket's
+        // target mapping: each blanket generic's position in the target
+        // tells us the candidate's template arg index. If the trait
+        // head args reference blanket generic names, we replace each
+        // with the candidate's template name at that index.
+        let candidate_params: Vec<String> = self
+            .types
+            .get(type_name)
+            .map(|info| info.templates.clone())
+            .unwrap_or_default();
+        let attached_trait_args = translate_trait_args_for_candidate(
+            blanket,
+            type_name,
+            &candidate_params,
+        );
+
         let ty = self.types.get_mut(type_name).unwrap();
         for method in &blanket.methods {
             let already = ty.methods.iter().any(|m| {
@@ -739,7 +783,7 @@ impl TypeRegistry {
                 function: method.clone(),
                 file_id: blanket.file_id,
                 from_trait: Some(blanket.trait_name.clone()),
-                trait_template_args: Vec::new(),
+                trait_template_args: attached_trait_args.clone(),
                 blanket: Some(binding.clone()),
             });
         }
@@ -760,7 +804,9 @@ impl TypeRegistry {
         target_name: &str,
         bounds: &[BoundRef],
         free_names: &[String],
-    ) -> Option<HashMap<String, ast::TypeOrValue>> {
+        candidate_params: &[String],
+    ) -> Option<HashMap<String, crate::resolution::ResolvedArg>> {
+        use crate::resolution::{ResolvedArg, unify_args};
         let info = self.types.get(candidate)?;
         // Treat the target generic as an additional free name, pre-bound
         // to the candidate. Bounds that mention `T` (the target) then
@@ -768,14 +814,14 @@ impl TypeRegistry {
         // unknown head.
         let mut all_free: Vec<String> = free_names.to_vec();
         all_free.push(target_name.to_string());
-        let mut assignment: HashMap<String, ast::TypeOrValue> = HashMap::new();
+        let mut assignment: HashMap<String, ResolvedArg> = HashMap::new();
         assignment.insert(
             target_name.to_string(),
-            ast::TypeOrValue::Type(ast::Type {
+            ResolvedArg::Concrete(ast::TypeOrValue::Type(ast::Type {
                 name: (candidate.to_string(), 0..0),
                 templates: Vec::new(),
                 qself: None,
-            }),
+            })),
         );
         'each_bound: for bound in bounds {
             for m in &info.methods {
@@ -788,9 +834,13 @@ impl TypeRegistry {
                 // blanket that already landed on this type counts as
                 // "the type implements this trait" for bound purposes.
                 let start = assignment.clone();
-                if let Some(next) =
-                    unify_args(&bound.trait_args, &m.trait_template_args, &all_free, start)
-                {
+                if let Some(next) = unify_args(
+                    &bound.trait_args,
+                    &m.trait_template_args,
+                    &all_free,
+                    candidate_params,
+                    start,
+                ) {
                     assignment = next;
                     continue 'each_bound;
                 }
@@ -1626,6 +1676,92 @@ impl ImplDefExt for ast::ImplDef {
 /// precise multi-instantiation dispatch can narrow further.
 fn impl_target_matches(impl_target_name: &str, target: &ast::Type) -> bool {
     impl_target_name == target.name.0
+}
+
+/// Translate the trait args of a blanket impl's header into the
+/// candidate's template-name namespace.
+///
+/// Example: `impl<T, N, F> Iter<T> for ArrayIter<T, N, F>` attached to
+/// `ArrayIter` (whose own template params are `[Elem, Size, Idx]`) —
+/// the blanket's `T` at target position 0 corresponds to the
+/// candidate's param at position 0 (`Elem`). So the translated trait
+/// args become `[Type(Elem)]`, ready for a later blanket to unify
+/// against.
+///
+/// For bare-target blankets (`impl<T: B> Trait for T`), the blanket
+/// has no target_template_args, so nothing to translate; the trait
+/// args are preserved but any bare generic name references are
+/// replaced with the candidate's literal name (since the "candidate"
+/// IS the blanket's T at attach time).
+fn translate_trait_args_for_candidate(
+    blanket: &ImplInfo,
+    candidate_name: &str,
+    candidate_params: &[String],
+) -> Vec<ast::TypeOrValue> {
+    blanket
+        .trait_template_args
+        .iter()
+        .map(|tv| translate_tv(tv, blanket, candidate_name, candidate_params))
+        .collect()
+}
+
+fn translate_tv(
+    tv: &ast::TypeOrValue,
+    blanket: &ImplInfo,
+    candidate_name: &str,
+    candidate_params: &[String],
+) -> ast::TypeOrValue {
+    match tv {
+        ast::TypeOrValue::Value(n) => ast::TypeOrValue::Value(*n),
+        ast::TypeOrValue::Type(ty) => {
+            // Bare generic name reference: does it match one of the
+            // blanket's declared generics? If yes, translate via the
+            // target-template-args → candidate_params position mapping.
+            if ty.templates.is_empty() && ty.qself.is_none() {
+                // Bare-target case: if the name is the blanket's target
+                // (e.g. T for `impl<T> ... for T`), use the candidate
+                // itself as the substitution.
+                if ty.name.0 == blanket.target_name
+                    && blanket.target_template_args.is_empty()
+                {
+                    return ast::TypeOrValue::Type(ast::Type {
+                        name: (candidate_name.to_string(), ty.name.1.clone()),
+                        templates: Vec::new(),
+                        qself: None,
+                    });
+                }
+                // Generic-target case: the blanket generic appears at
+                // target_template_args[i]; the candidate's template
+                // param at position i is the translated name.
+                if let Some(i) =
+                    blanket.target_template_args.iter().position(|n| *n == ty.name.0)
+                {
+                    if let Some(cand_name) = candidate_params.get(i) {
+                        return ast::TypeOrValue::Type(ast::Type {
+                            name: (cand_name.clone(), ty.name.1.clone()),
+                            templates: Vec::new(),
+                            qself: None,
+                        });
+                    }
+                }
+            }
+            // Concrete head — recurse into template args.
+            ast::TypeOrValue::Type(ast::Type {
+                name: ty.name.clone(),
+                templates: ty
+                    .templates
+                    .iter()
+                    .map(|(inner, sp)| {
+                        (
+                            translate_tv(inner, blanket, candidate_name, candidate_params),
+                            sp.clone(),
+                        )
+                    })
+                    .collect(),
+                qself: ty.qself.clone(),
+            })
+        }
+    }
 }
 
 // Unification / structural-eq helpers live in `typer::resolution`. We
