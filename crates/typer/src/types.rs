@@ -150,20 +150,39 @@ pub struct MethodInfo {
 
 /// Per-attachment data for a blanket impl method. Produced by the typer
 /// post-pass when a concrete type satisfies the blanket's target bounds.
+///
+/// One entry per declared blanket generic, in order. Each entry describes
+/// where the binding should come from at call time. Unifies the two
+/// structural cases:
+///   1. `impl<T: Foo> Bar for T` — target is a bare generic; `T` binds
+///      to the receiver's full concrete type.
+///   2. `impl<T: Foo> Bar for Container<T>` — target is a generic
+///      instantiation; `T` binds to one of the receiver type's
+///      template args.
+/// plus:
+///   3. `impl<T, E: Wrap<T>> Bar for E` — `T` is "free"; resolved from
+///      the target's bound impls at attachment time and pre-bound.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BlanketBinding {
-    /// Ordered list matching the blanket's `generics` declaration.
-    /// Every non-target slot is `Some(concrete)` — pre-bound from the
-    /// target type's bound impls via unification. The target slot
-    /// itself is `None`; HIR gen fills it with the receiver's concrete
-    /// type at each call site.
-    pub generic_args: Vec<Option<ast::TypeOrValue>>,
-    /// Index into `generic_args` of the blanket's target generic (the
-    /// one the impl is "for"). Always the position with `None`.
-    pub target_index: usize,
-    /// Names of the blanket's generics, mirroring `generic_args`.
-    /// Stored for diagnostics and for builders that walk by name.
+    /// Names of the blanket's generics, mirroring `sources`. Stored for
+    /// diagnostics and name-based lookups.
     pub generic_names: Vec<String>,
+    /// Where each generic binding comes from at dispatch time.
+    pub sources: Vec<GenericSource>,
+}
+
+/// Source of a single blanket generic's value at call time.
+#[derive(Debug, Clone, PartialEq)]
+pub enum GenericSource {
+    /// The receiver's full concrete type — for `impl<T> Trait for T`,
+    /// `T` at the call site IS the receiver.
+    Target,
+    /// The receiver's i-th template arg — for `impl<T> Trait for
+    /// Container<T>`, `T` comes from `receiver_args[i]`.
+    TargetArg(usize),
+    /// Pre-bound at attachment time from satisfying the blanket's
+    /// bounds (a "free" generic appearing in bounds but not the target).
+    Bound(ast::TypeOrValue),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -179,6 +198,11 @@ pub struct TraitInfo {
 pub struct ImplInfo {
     pub trait_name: String,
     pub target_name: String,
+    /// Template args on the target type. For `impl<T> Trait for Container<T>`
+    /// this is `[T]`; for a bare target `impl Trait for Foo` or
+    /// `impl<T> Trait for T` this is empty. Each entry is a generic
+    /// param name — validated by `register_impl`.
+    pub target_template_args: Vec<String>,
     /// Generic parameters declared on the impl header. Non-empty only
     /// for blanket impls (`impl<T: A + B> Trait for T`), which are also
     /// stored separately in `TypeRegistry.blanket_impls`.
@@ -207,6 +231,16 @@ pub struct BoundRef {
     /// Template args on the bound's trait head — may reference free
     /// generics by name (e.g. `T` in `Wrap<T>`).
     pub trait_args: Vec<ast::TypeOrValue>,
+}
+
+/// Unified result of resolving a method call — the trait it dispatches
+/// through (if any) plus, for blanket-attached methods, the per-generic
+/// `BlanketBinding` the HIR generator needs to build the callee's
+/// template args.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MethodDispatch {
+    pub trait_name: Option<String>,
+    pub blanket: Option<BlanketBinding>,
 }
 
 // ---- error type -----------------------------------------------------------

@@ -315,24 +315,39 @@ impl TypeRegistry {
             ))?
             .clone();
 
-        // Blanket-impl detection. For `impl<T: A + B> Trait for T { ... }`
-        // the target is literally a reference to one of the generic
-        // params. Phase 1 requires the target to be a *bare* reference
-        // to a single generic param (no further template args).
+        // A blanket impl is anything with a non-empty generic list on
+        // the `impl` header. Two shapes are supported:
+        //
+        //   `impl<T: ...> Trait for T`              (bare target)
+        //   `impl<T: ...> Trait for Container<T>`   (generic target)
+        //
+        // For the generic-target case, the target's template args must
+        // each be a bare reference to one of the declared generics (so
+        // we know how to source each generic from a call site).
         let generic_names: Vec<String> =
             def.generics.iter().map(|g| g.name.0.clone()).collect();
-        let is_blanket = !def.generics.is_empty()
-            && generic_names.contains(&target_name)
-            && def.target.0.templates.is_empty();
-        if !def.generics.is_empty() && !is_blanket {
-            return Err(TyperError::at(
-                format!(
-                    "generic impl target must be a bare generic parameter \
-                     — `impl<T> {} for T` is supported, not `{}`",
-                    trait_name, target_name
-                ),
-                def.target.1.clone(),
-            ));
+        let is_blanket = !def.generics.is_empty();
+        if is_blanket {
+            let target_is_bare_generic = generic_names.contains(&target_name)
+                && def.target.0.templates.is_empty();
+            let target_is_generic_instance = !def.target.0.templates.is_empty()
+                && def.target.0.templates.iter().all(|(tv, _)| match tv {
+                    ast::TypeOrValue::Type(t) => {
+                        t.templates.is_empty() && generic_names.contains(&t.name.0)
+                    }
+                    _ => false,
+                });
+            if !target_is_bare_generic && !target_is_generic_instance {
+                return Err(TyperError::at(
+                    format!(
+                        "generic impl target must be a bare generic or a \
+                         generic instantiation whose args are all declared \
+                         generics — `{}` does not match",
+                        target_name
+                    ),
+                    def.target.1.clone(),
+                ));
+            }
         }
         let generics: Vec<GenericParamInfo> = def
             .generics
@@ -460,6 +475,23 @@ impl TypeRegistry {
             .map(|(tv, _)| tv.clone())
             .collect();
 
+        // Collect target template arg names for blanket impls. For
+        // `impl<T> Trait for Container<T>`, this is `["T"]`. For bare
+        // targets or non-blanket impls, this is empty.
+        let target_template_args: Vec<String> = if is_blanket {
+            def.target
+                .0
+                .templates
+                .iter()
+                .filter_map(|(tv, _)| match tv {
+                    ast::TypeOrValue::Type(t) if t.templates.is_empty() => Some(t.name.0.clone()),
+                    _ => None,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         // Blanket impls are deferred: the post-pass (attach_blanket_impls)
         // walks them once all regular impls have been processed so we can
         // check each candidate type's bound satisfaction accurately.
@@ -467,6 +499,7 @@ impl TypeRegistry {
             self.blanket_impls.push(ImplInfo {
                 trait_name,
                 target_name,
+                target_template_args,
                 generics,
                 associated_bindings: def
                     .associated_types
@@ -507,6 +540,7 @@ impl TypeRegistry {
         self.impls.push(ImplInfo {
             trait_name,
             target_name,
+            target_template_args: Vec::new(),
             generics,
             associated_bindings: def
                 .associated_types
@@ -558,106 +592,156 @@ impl TypeRegistry {
     /// twice with no new satisfactions is a no-op.
     fn attach_blanket_pass(&mut self, blankets: &[ImplInfo]) {
         for blanket in blankets {
-            // Identify the target generic param — the one the impl is
-            // "for". `register_impl` already validated that the target is
-            // a bare generic-param reference; find it by name.
-            let target_index = match blanket
-                .generics
-                .iter()
-                .position(|g| g.name == blanket.target_name)
-            {
-                Some(i) => i,
-                None => continue,
+            if blanket.target_template_args.is_empty() {
+                // Bare target case: `impl<T: B> Trait for T`.
+                self.attach_blanket_bare(blanket);
+            } else {
+                // Generic-target case: `impl<T: B> Trait for Container<T>`.
+                self.attach_blanket_generic_target(blanket);
+            }
+        }
+    }
+
+    /// `impl<T: B> Trait for T` — attach to every concrete non-generic
+    /// type that satisfies the blanket's bounds. The binding sources
+    /// `T` from the receiver itself (`GenericSource::Target`) and any
+    /// other free generics from the bound-resolution assignment.
+    fn attach_blanket_bare(&mut self, blanket: &ImplInfo) {
+        let target_index = match blanket
+            .generics
+            .iter()
+            .position(|g| g.name == blanket.target_name)
+        {
+            Some(i) => i,
+            None => return,
+        };
+        let target_generic = &blanket.generics[target_index];
+        let free_names: Vec<String> = blanket
+            .generics
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != target_index)
+            .map(|(_, g)| g.name.clone())
+            .collect();
+        let generic_order: Vec<String> =
+            blanket.generics.iter().map(|g| g.name.clone()).collect();
+
+        let candidates: Vec<String> = self.types.keys().cloned().collect();
+        for type_name in candidates {
+            if generic_order.iter().any(|n| *n == type_name) {
+                continue;
+            }
+            let info_ref = self.types.get(&type_name).unwrap();
+            if !info_ref.templates.is_empty() {
+                continue;
+            }
+            let Some(assignment) = self.satisfy_bounds(
+                &type_name,
+                &target_generic.name,
+                &target_generic.bounds,
+                &free_names,
+            ) else {
+                continue;
             };
-            let target_generic = &blanket.generics[target_index];
-            let free_names: Vec<String> = blanket
-                .generics
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| *i != target_index)
-                .map(|(_, g)| g.name.clone())
-                .collect();
-            let generic_order: Vec<String> =
-                blanket.generics.iter().map(|g| g.name.clone()).collect();
+            let sources = Self::build_sources_for_bare(
+                &blanket.generics,
+                target_index,
+                &assignment,
+            );
+            let Some(sources) = sources else { continue };
+            let binding = BlanketBinding {
+                generic_names: generic_order.clone(),
+                sources,
+            };
+            self.attach_blanket_method_on(&type_name, blanket, binding);
+        }
+    }
 
-            let candidates: Vec<String> = self.types.keys().cloned().collect();
-            for type_name in candidates {
-                // Skip the generic param names (they're placeholders and
-                // usually don't shadow real types, but guard anyway).
-                if generic_order.iter().any(|n| *n == type_name) {
-                    continue;
-                }
-                // Phase 1: non-generic targets only.
-                let info_ref = self.types.get(&type_name).unwrap();
-                if !info_ref.templates.is_empty() {
-                    continue;
-                }
-                // Try to satisfy every bound on the target generic,
-                // building up a consistent assignment for the free
-                // generics along the way. The target generic itself is
-                // pre-bound to the candidate type — bounds like
-                // `T: Add<T>` need that to unify.
-                let Some(assignment) = self.satisfy_bounds(
-                    &type_name,
-                    &target_generic.name,
-                    &target_generic.bounds,
-                    &free_names,
-                ) else {
-                    continue;
-                };
+    /// `impl<T: B> Trait for Container<T>` — attach to `Container`'s
+    /// head (generic type). Each blanket generic is sourced from a
+    /// position in the receiver's template args at call time. Bound
+    /// satisfaction can't be fully checked here (specific X for
+    /// `Container<X>` isn't known); the monomorph catches any
+    /// violation at inline time.
+    fn attach_blanket_generic_target(&mut self, blanket: &ImplInfo) {
+        // Container must be a registered type.
+        if !self.types.contains_key(&blanket.target_name) {
+            return;
+        }
+        let generic_order: Vec<String> =
+            blanket.generics.iter().map(|g| g.name.clone()).collect();
 
-                // Build the ordered generic_args: target slot is None;
-                // every free slot gets its resolved binding.
-                let mut generic_args: Vec<Option<ast::TypeOrValue>> =
-                    Vec::with_capacity(blanket.generics.len());
-                for (i, g) in blanket.generics.iter().enumerate() {
-                    if i == target_index {
-                        generic_args.push(None);
-                    } else {
-                        // If the bound resolution didn't touch this free
-                        // generic (it's referenced nowhere in the
-                        // bounds), we have no information. Skip this
-                        // attachment — it's an ill-formed impl anyway.
-                        match assignment.get(&g.name) {
-                            Some(v) => generic_args.push(Some(v.clone())),
-                            None => {
-                                // Can't resolve → skip candidate silently.
-                                // (A stricter mode would push an error.)
-                                generic_args.clear();
-                                break;
-                            }
-                        }
-                    }
-                }
-                if generic_args.is_empty() && !blanket.generics.is_empty() {
-                    continue;
-                }
+        // Each blanket generic is sourced from a position in the
+        // target's template args. A generic that doesn't appear in the
+        // target is "free" — not supported for generic-target blankets
+        // in this phase (we have no X to resolve against).
+        let mut sources: Vec<GenericSource> = Vec::with_capacity(blanket.generics.len());
+        for g in &blanket.generics {
+            let pos = blanket.target_template_args.iter().position(|n| *n == g.name);
+            match pos {
+                Some(i) => sources.push(GenericSource::TargetArg(i)),
+                None => return, // ill-formed: skip this blanket
+            }
+        }
 
-                let binding = BlanketBinding {
-                    generic_args,
-                    target_index,
-                    generic_names: generic_order.clone(),
-                };
+        let binding = BlanketBinding {
+            generic_names: generic_order,
+            sources,
+        };
+        // Clone target_name before the mutable borrow.
+        let target = blanket.target_name.clone();
+        self.attach_blanket_method_on(&target, blanket, binding);
+    }
 
-                let ty = self.types.get_mut(&type_name).unwrap();
-                for method in &blanket.methods {
-                    let already = ty.methods.iter().any(|m| {
-                        m.function.sig.name.0 == method.sig.name.0
-                            && m.from_trait.as_deref()
-                                == Some(blanket.trait_name.as_str())
-                    });
-                    if already {
-                        continue;
-                    }
-                    ty.methods.push(MethodInfo {
-                        function: method.clone(),
-                        file_id: blanket.file_id,
-                        from_trait: Some(blanket.trait_name.clone()),
-                        trait_template_args: Vec::new(),
-                        blanket: Some(binding.clone()),
-                    });
+    /// Build the per-generic `GenericSource` list for a bare-target
+    /// blanket. The target slot becomes `GenericSource::Target`; other
+    /// slots read from the already-resolved `assignment`. Returns
+    /// `None` if any free generic is missing from the assignment
+    /// (indicates an ill-formed impl).
+    fn build_sources_for_bare(
+        generics: &[GenericParamInfo],
+        target_index: usize,
+        assignment: &HashMap<String, ast::TypeOrValue>,
+    ) -> Option<Vec<GenericSource>> {
+        let mut out = Vec::with_capacity(generics.len());
+        for (i, g) in generics.iter().enumerate() {
+            if i == target_index {
+                out.push(GenericSource::Target);
+            } else {
+                match assignment.get(&g.name) {
+                    Some(v) => out.push(GenericSource::Bound(v.clone())),
+                    None => return None,
                 }
             }
+        }
+        Some(out)
+    }
+
+    /// Attach all of `blanket.methods` to `type_name` with the given
+    /// binding, skipping any method that's already provided by the
+    /// same trait.
+    fn attach_blanket_method_on(
+        &mut self,
+        type_name: &str,
+        blanket: &ImplInfo,
+        binding: BlanketBinding,
+    ) {
+        let ty = self.types.get_mut(type_name).unwrap();
+        for method in &blanket.methods {
+            let already = ty.methods.iter().any(|m| {
+                m.function.sig.name.0 == method.sig.name.0
+                    && m.from_trait.as_deref() == Some(blanket.trait_name.as_str())
+            });
+            if already {
+                continue;
+            }
+            ty.methods.push(MethodInfo {
+                function: method.clone(),
+                file_id: blanket.file_id,
+                from_trait: Some(blanket.trait_name.clone()),
+                trait_template_args: Vec::new(),
+                blanket: Some(binding.clone()),
+            });
         }
     }
 
@@ -739,6 +823,27 @@ impl TypeRegistry {
         info.methods.iter().find(|m| {
             m.function.sig.name.0 == method_name && m.from_trait.as_deref() == trait_name
         })
+    }
+
+    /// One-shot resolver: for a method call at `file_id` on
+    /// `type_name::method_name` (optionally pinned to a trait via
+    /// `trait_hint`), return the trait-scope plus any blanket
+    /// attachment. This is the canonical accessor that HIR gen uses to
+    /// build a FnRef — centralizes every "peek at resolution state"
+    /// rule in one place.
+    pub fn resolve_method_dispatch(
+        &self,
+        file_id: FileId,
+        type_name: &str,
+        method_name: &str,
+        trait_hint: Option<&str>,
+    ) -> MethodDispatch {
+        let trait_name = match self.resolve_method(file_id, type_name, method_name, trait_hint) {
+            MethodResolution::Trait { trait_name } => Some(trait_name),
+            _ => None,
+        };
+        let blanket = self.method_blanket(type_name, method_name, trait_name.as_deref());
+        MethodDispatch { trait_name, blanket }
     }
 
     /// If `(type_name, method_name, trait_name)` matches a method that

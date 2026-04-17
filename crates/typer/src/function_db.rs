@@ -164,9 +164,15 @@ impl FunctionDB {
                 } else {
                     let mut templates: Vec<String> = Vec::new();
                     if let Some(b) = &m.blanket {
+                        // Blanket methods use the blanket's own generic
+                        // list in place of the type's template params —
+                        // for `impl<T> Trait for Container<T>`, the
+                        // blanket's `T` already covers Container's single
+                        // template slot. Including both would double-count.
                         templates.extend(b.generic_names.iter().cloned());
+                    } else {
+                        templates.extend(type_templates.clone());
                     }
-                    templates.extend(type_templates.clone());
                     templates.extend(method_templates);
                     Fn::Templated(TemplatedFn {
                         body: m.function.clone(),

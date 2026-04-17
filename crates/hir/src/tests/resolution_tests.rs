@@ -808,6 +808,137 @@ fn trait_bound_with_two_template_args() {
 }
 
 // =========================================================================
+// Generic-target blanket: `impl<T> Trait for Container<T>`. Attaches to
+// Container's head; each call at Container<X> threads X as the T
+// binding via `GenericSource::TargetArg(0)`.
+// =========================================================================
+
+#[test]
+fn blanket_on_generic_target_container() {
+    let src = r#"
+        use Id;
+        struct Box<T> { T v, }
+        extension Box<T> {
+            fn new(T v): Self { Self { v: v, } }
+        }
+        trait Id { fn id_of(self): Box<T>; }
+        // Applies to every Box<X>. T is sourced from the receiver's
+        // 0th template arg.
+        impl<T> Id for Box<T> {
+            fn id_of(self): Box<T> { self }
+        }
+
+        extension U4 {
+            fn test(): U4 {
+                Box<U4> b = Box::new(7);
+                Box<U4> c = b.id_of();
+                c.v
+            }
+        }
+    "#;
+    let entry = typer::FnSig::new("U4", "test");
+    assert_eq!(run_program(src, &entry), vec![7]);
+}
+
+// =========================================================================
+// Generic-target blanket with a body using T.
+// =========================================================================
+
+#[test]
+fn generic_target_blanket_body_uses_t() {
+    let src = r#"
+        use Twice;
+        struct Box<T> { T v, }
+        extension Box<T> {
+            fn new(T v): Self { Self { v: v, } }
+            fn inner(self): T { self.v }
+        }
+        trait Twice { fn twice(self): T; }
+        impl<T> Twice for Box<T> {
+            fn twice(self): T { self.inner() }
+        }
+
+        extension U4 {
+            fn test(): U4 {
+                Box<U4> b = Box::new(9);
+                b.twice()
+            }
+        }
+    "#;
+    let entry = typer::FnSig::new("U4", "test");
+    assert_eq!(run_program(src, &entry), vec![9]);
+}
+
+// =========================================================================
+// Generic-target blanket dispatches to two different instantiations —
+// Box<U4> and Box<U8> — each with its own monomorph.
+// =========================================================================
+
+#[test]
+fn generic_target_blanket_multiple_instantiations() {
+    let src = r#"
+        use Inner;
+        struct Box<T> { T v, }
+        extension Box<T> {
+            fn new(T v): Self { Self { v: v, } }
+        }
+        trait Inner { fn inner(self): T; }
+        impl<T> Inner for Box<T> {
+            fn inner(self): T { self.v }
+        }
+
+        extension U4 {
+            fn test(): U4 {
+                Box<U4> b4 = Box::new(3);
+                Box<U8> b8 = Box::new(U8 { lower: 4, higher: 0, });
+                b4.inner() + b8.inner().lower
+            }
+        }
+    "#;
+    let entry = typer::FnSig::new("U4", "test");
+    // 3 + 4 = 7
+    assert_eq!(run_program(src, &entry), vec![7]);
+}
+
+// =========================================================================
+// Blanket on generic target with a bound — the bound is on T, and body
+// calls T-trait methods via self. Since T's bound-impl existence
+// isn't verified at attach time (we don't know concrete X up front),
+// a violating X surfaces at monomorph time.
+// =========================================================================
+
+#[test]
+fn generic_target_blanket_body_calls_bound_method() {
+    let src = r#"
+        use Stringify;
+        use Show;
+        struct Box<T> { T v, }
+        extension Box<T> {
+            fn new(T v): Self { Self { v: v, } }
+        }
+        trait Stringify { fn repr(self): U4; }
+        impl Stringify for U4 { fn repr(self): U4 { self + 10 } }
+
+        trait Show { fn show(self): U4; }
+        // T must satisfy Stringify. Container case: the bound acts on
+        // the receiver's type arg at call time.
+        impl<T: Stringify> Show for Box<T> {
+            fn show(self): U4 { self.v.repr() }
+        }
+
+        extension U4 {
+            fn test(): U4 {
+                Box<U4> b = Box::new(3);
+                b.show()
+            }
+        }
+    "#;
+    let entry = typer::FnSig::new("U4", "test");
+    // 3 + 10 = 13
+    assert_eq!(run_program(src, &entry), vec![13]);
+}
+
+// =========================================================================
 // Blanket over an operator trait with Output: `impl<T, U: Add<T>> ...`.
 // Add has Output as its template arg; unification resolves T against
 // the impl's Output.
@@ -838,4 +969,125 @@ fn blanket_over_add_with_output() {
     "#;
     let entry = typer::FnSig::new("U4", "test");
     assert_eq!(run_program(src, &entry), vec![6]);
+}
+
+// =========================================================================
+// Generic target carrying two type params. Both get sourced from the
+// receiver's template args.
+// =========================================================================
+
+#[test]
+fn generic_target_with_two_params() {
+    let src = r#"
+        use First;
+        struct Pair<A, B> { A a, B b, }
+        extension Pair<A, B> {
+            fn new(A a, B b): Self { Self { a: a, b: b, } }
+        }
+        trait First { fn first(self): A; }
+        // T1 sources from position 0, T2 from position 1.
+        impl<T1, T2> First for Pair<T1, T2> {
+            fn first(self): T1 { self.a }
+        }
+
+        extension U4 {
+            fn test(): U4 {
+                Pair<U4, U4> p = Pair::new(5, 9);
+                p.first()
+            }
+        }
+    "#;
+    let entry = typer::FnSig::new("U4", "test");
+    assert_eq!(run_program(src, &entry), vec![5]);
+}
+
+// =========================================================================
+// Generic target blanket combined with a direct method on the same
+// generic head: the direct method wins.
+// =========================================================================
+
+#[test]
+fn direct_method_on_generic_head_wins_over_generic_target_blanket() {
+    let src = r#"
+        use Mark;
+        struct Box<T> { T v, }
+        extension Box<T> {
+            fn new(T v): Self { Self { v: v, } }
+        }
+        trait Mark { fn mark(self): U4; }
+        impl Mark for Box<U4> { fn mark(self): U4 { 7 } }
+        impl<T> Mark for Box<T> { fn mark(self): U4 { 0 } }
+
+        extension U4 {
+            fn test(): U4 {
+                Box<U4> b = Box::new(3);
+                b.mark()
+            }
+        }
+    "#;
+    let entry = typer::FnSig::new("U4", "test");
+    assert_eq!(run_program(src, &entry), vec![7]);
+}
+
+// =========================================================================
+// Sanity: a blanket on a generic target with a body that references
+// the target's template arg in a local binding.
+// =========================================================================
+
+#[test]
+fn generic_target_blanket_binds_t_in_local() {
+    let src = r#"
+        use Take;
+        struct Holder<T> { T v, }
+        extension Holder<T> {
+            fn new(T v): Self { Self { v: v, } }
+        }
+        trait Take { fn take(self): T; }
+        impl<T> Take for Holder<T> {
+            fn take(self): T {
+                T x = self.v;
+                x
+            }
+        }
+
+        extension U4 {
+            fn test(): U4 {
+                Holder<U4> h = Holder::new(4);
+                h.take()
+            }
+        }
+    "#;
+    let entry = typer::FnSig::new("U4", "test");
+    assert_eq!(run_program(src, &entry), vec![4]);
+}
+
+// =========================================================================
+// The unified `resolve_method_dispatch` accessor returns consistent
+// results for a plain inherent method, a direct trait impl method, and
+// a blanket-attached one. Implicit test: all these dispatches work
+// from the same call site without per-case special-casing.
+// =========================================================================
+
+#[test]
+fn dispatch_uniform_across_inherent_direct_and_blanket() {
+    let src = r#"
+        use A;
+        use B;
+        struct Foo { U4 v, }
+        extension Foo { fn inh(self): U4 { self.v + 1 } }    // inherent
+        trait A { fn a(self): U4; }
+        trait B { fn b(self): U4; }
+        impl A for Foo { fn a(self): U4 { self.v + 2 } }     // direct trait
+        impl<T: A> B for T { fn b(self): U4 { self.a() + 3 } } // blanket
+
+        extension U4 {
+            fn test(): U4 {
+                Foo f = Foo { v: 0, };
+                f.inh() + f.a() + f.b()
+            }
+        }
+    "#;
+    let entry = typer::FnSig::new("U4", "test");
+    // inh=1, a=2, b=5 → 8
+    assert_eq!(run_program(src, &entry), vec![8]);
 }

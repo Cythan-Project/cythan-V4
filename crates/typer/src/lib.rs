@@ -12,7 +12,8 @@ pub use function_db::{Fn, FnSig, FunctionDB, SimpleFn, TemplatedFn};
 pub use registry::TypeRegistry;
 pub use registry::OPERATOR_TRAITS;
 pub use types::{
-    discriminant_size_for, CellCount, EnumKind, EnumLayout, EnumVariantLayout, FieldLayout,
-    FileId, ImplInfo, MethodInfo, MethodResolution, StructKind, StructLayout, TemplatedVariant,
+    discriminant_size_for, BlanketBinding, BoundRef, CellCount, EnumKind, EnumLayout,
+    EnumVariantLayout, FieldLayout, FileId, GenericParamInfo, GenericSource, ImplInfo,
+    MethodDispatch, MethodInfo, MethodResolution, StructKind, StructLayout, TemplatedVariant,
     TraitInfo, TypeInfo, TypeKind, TyperError, U4_NAME, U4_SIZE,
 };

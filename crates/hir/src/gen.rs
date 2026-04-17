@@ -1306,39 +1306,39 @@ impl<'a> Generator<'a> {
 
         let tpl = lower_templates(templates);
         let recv_ty_args = self.infer_receiver_type_args(&receiver.0);
-        // Detect blanket-impl dispatch up front so both the return-size
-        // lookup and the emitted Call include the blanket's full binding.
-        let early_trait = self.resolve_trait_for(&resolved_recv, &name.0);
-        let blanket_info = self
-            .reg
-            .method_blanket(&resolved_recv, &name.0, early_trait.as_deref());
-        // `method_args_for_size` mirrors `combined` below — it's the
-        // ordered concrete args list that the callee's Templated templates
-        // consume. For blankets, fill the target slot with the receiver
-        // and the rest from pre-resolved bindings.
-        let method_args_for_size: Vec<ConcreteTemplateArg> = if let Some(b) = &blanket_info {
-            let mut v = Vec::with_capacity(b.generic_args.len() + tpl.len());
-            for (i, slot) in b.generic_args.iter().enumerate() {
-                if i == b.target_index {
-                    v.push(ConcreteTemplateArg::Type(ConcreteType {
-                        name: resolved_recv.clone(),
-                        args: recv_ty_args.clone(),
-                    }));
-                } else if let Some(tv) = slot {
-                    v.push(lower_tv(tv));
-                } else {
-                    // Shouldn't happen — post-pass only attaches with
-                    // fully resolved non-target slots.
-                    v.push(ConcreteTemplateArg::Type(ConcreteType {
-                        name: "<?>".to_string(),
-                        args: Vec::new(),
-                    }));
-                }
+        // One-shot dispatch resolution: trait scope + blanket info.
+        // Centralizes what used to be separate `resolve_trait_for` +
+        // `method_blanket` queries.
+        let dispatch = self.reg.resolve_method_dispatch(
+            self.simple.file_id,
+            &resolved_recv,
+            &name.0,
+            /*trait_hint=*/ None,
+        );
+        let early_trait = dispatch.trait_name.clone();
+        let blanket_info = dispatch.blanket.clone();
+        // Build the args list that matches the callee's Templated
+        // template list positionally.
+        //
+        // For a blanket, the Templated templates are the blanket's own
+        // generic_names — so `sources` supplies the full list, and we
+        // feed it as `method_args` with empty `recv_args` (avoids
+        // double-counting against `info.templates`).
+        //
+        // For a non-blanket, templates = type_templates ++ method_templates.
+        // `recv_args` covers the type side and `tpl` covers the method side.
+        let (recv_args_for_size, method_args_for_size): (
+            Vec<ConcreteTemplateArg>,
+            Vec<ConcreteTemplateArg>,
+        ) = if let Some(b) = &blanket_info {
+            let mut v = Vec::with_capacity(b.sources.len() + tpl.len());
+            for source in &b.sources {
+                v.push(blanket_source_to_arg(source, &resolved_recv, &recv_ty_args));
             }
             v.extend(tpl.clone());
-            v
+            (Vec::new(), v)
         } else {
-            tpl.clone()
+            (recv_ty_args.clone(), tpl.clone())
         };
         let ret_slots: Vec<SlotId> = match dst {
             Some(d) => {
@@ -1347,7 +1347,7 @@ impl<'a> Generator<'a> {
                         self.lookup_return_size_full(
                             &resolved_recv,
                             &name.0,
-                            &recv_ty_args,
+                            &recv_args_for_size,
                             &method_args_for_size,
                         )
                     })
@@ -1381,17 +1381,10 @@ impl<'a> Generator<'a> {
         // Templated template list, so we prepend the receiver type here.
         let mut combined: Vec<ConcreteTemplateArg> = Vec::new();
         if let Some(b) = &blanket_info {
-            // Emit the blanket's full args in declaration order; the
-            // target slot carries the concrete receiver type.
-            for (i, slot) in b.generic_args.iter().enumerate() {
-                if i == b.target_index {
-                    combined.push(ConcreteTemplateArg::Type(ConcreteType {
-                        name: resolved_recv.clone(),
-                        args: recv_ty_args.clone(),
-                    }));
-                } else if let Some(tv) = slot {
-                    combined.push(lower_tv(tv));
-                }
+            // Emit the blanket's full args in declaration order via the
+            // source-walking helper.
+            for source in &b.sources {
+                combined.push(blanket_source_to_arg(source, &resolved_recv, &recv_ty_args));
             }
         } else {
             combined.extend(recv_ty_args);
@@ -1621,36 +1614,49 @@ impl<'a> Generator<'a> {
                 typer::Fn::Simple(s) => return Some(s.sig.output_count),
                 typer::Fn::Templated(t) => t.body.sig.return_type.as_ref()?,
             };
-            // Build param-name → concrete-arg bindings across both scopes.
-            // Also bind `Self` to the concrete instantiation so that
-            // return types like `fn new(): Self` resolve correctly.
-            let info = self.reg.types.get(type_name)?;
-            if info.templates.len() != recv_args.len() {
+            // Build bindings by zipping `t.templates` against the
+            // concatenated (recv_args, method_args) list. This handles
+            // every shape:
+            //   - Regular generic type:  t.templates = [T];       recv_args = [X].
+            //   - Method-level template: t.templates = [T];       method_args = [X].
+            //   - Combined: Container<T>::map<V>:  t.templates = [T, V];
+            //                                      recv_args = [X]; method_args = [Y].
+            //   - Blanket on non-generic target:  t.templates = [T];
+            //                                     recv_args = []; method_args = [X].
+            //   - Blanket on generic target:       t.templates = [T1, T2];
+            //                                     recv_args = []; method_args = [X, Y].
+            let t = match f {
+                typer::Fn::Templated(t) => t,
+                _ => return None,
+            };
+            let mut combined_args: Vec<ConcreteTemplateArg> = Vec::new();
+            combined_args.extend(recv_args.iter().cloned());
+            combined_args.extend(method_args.iter().cloned());
+            if t.templates.len() != combined_args.len() {
                 return None;
             }
-            let mut bindings: std::collections::HashMap<String, ConcreteTemplateArg> = info
-                .templates
-                .iter()
-                .zip(recv_args.iter())
-                .map(|(n, a)| (n.clone(), a.clone()))
-                .collect();
-            // Method-level template params. Layout: templated.templates =
-            // type-params ++ method-params, so the method-level names are
-            // whatever the Templated fn declares.
-            if let typer::Fn::Templated(t) = f {
-                let n_type = info.templates.len();
-                let method_names: Vec<String> = t.templates[n_type..].to_vec();
-                if method_names.len() == method_args.len() {
-                    for (n, a) in method_names.iter().zip(method_args.iter()) {
-                        bindings.insert(n.clone(), a.clone());
-                    }
-                }
-            }
+            let mut bindings: std::collections::HashMap<String, ConcreteTemplateArg> =
+                t.templates
+                    .iter()
+                    .zip(combined_args.iter())
+                    .map(|(n, a)| (n.clone(), a.clone()))
+                    .collect();
+            // Bind `Self` — for non-blanket calls, this mirrors the
+            // monomorphizer's Self injection (Self = the owning type
+            // instantiated with its N type-level templates). For
+            // blanket calls, Self is supplied via the sources, so we
+            // use the first `info.templates.len()` args (or the full
+            // list if info isn't a known type).
+            let info = self.reg.types.get(type_name);
+            let self_arg_count = info.map(|i| i.templates.len()).unwrap_or(0);
+            let take = self_arg_count.min(combined_args.len());
+            let self_args: Vec<ConcreteTemplateArg> =
+                combined_args.iter().take(take).cloned().collect();
             bindings.insert(
                 "Self".to_string(),
                 ConcreteTemplateArg::Type(ConcreteType {
                     name: type_name.to_string(),
-                    args: recv_args.to_vec(),
+                    args: self_args,
                 }),
             );
             // Substitute into the return type. If the return type uses a
@@ -2816,6 +2822,33 @@ pub(crate) fn subst_ast_type_with_qself(
                 ),
             })
         }),
+    }
+}
+
+/// Convert a blanket `GenericSource` to the concrete `ConcreteTemplateArg`
+/// it should produce at a specific call site. Handles all three
+/// source shapes:
+///   - `Target` → the full receiver type.
+///   - `TargetArg(i)` → the receiver's i-th template arg.
+///   - `Bound(tv)` → pre-resolved AST type, lowered.
+pub(crate) fn blanket_source_to_arg(
+    source: &typer::GenericSource,
+    resolved_recv: &str,
+    recv_ty_args: &[ConcreteTemplateArg],
+) -> ConcreteTemplateArg {
+    match source {
+        typer::GenericSource::Target => ConcreteTemplateArg::Type(ConcreteType {
+            name: resolved_recv.to_string(),
+            args: recv_ty_args.to_vec(),
+        }),
+        typer::GenericSource::TargetArg(i) => recv_ty_args
+            .get(*i)
+            .cloned()
+            .unwrap_or_else(|| ConcreteTemplateArg::Type(ConcreteType {
+                name: "<?>".to_string(),
+                args: Vec::new(),
+            })),
+        typer::GenericSource::Bound(tv) => lower_tv(tv),
     }
 }
 
