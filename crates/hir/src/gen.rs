@@ -2051,15 +2051,29 @@ impl<'a> Generator<'a> {
                 let (recv_name, recv_args) = self.concrete_type_of(&receiver.0)?;
                 let resolved = self.resolve_ty_name(&recv_name);
                 let info = self.reg.types.get(&resolved)?;
-                // Find the Templated function's declared return type.
+                // Find the method's declared return type. Inherent first
+                // (FnSig::new), then any trait-keyed method on the same
+                // type (scan all functions). Trait-keyed methods are the
+                // main way a type reaches a generic return type.
                 let mut ret_ty: Option<ast::Type> = None;
-                if let Some(f) = self.db.get(&typer::FnSig::new(&resolved, &name.0)) {
+                let extract_ret = |f: &typer::Fn| -> Option<ast::Type> {
                     let rt = match f {
                         typer::Fn::Simple(s) => s.body.sig.return_type.as_ref(),
                         typer::Fn::Templated(t) => t.body.sig.return_type.as_ref(),
-                    };
-                    if let Some((rt, _)) = rt {
-                        ret_ty = Some(rt.clone());
+                    }?;
+                    Some(rt.0.clone())
+                };
+                if let Some(f) = self.db.get(&typer::FnSig::new(&resolved, &name.0)) {
+                    ret_ty = extract_ret(f);
+                }
+                if ret_ty.is_none() {
+                    for (k, f) in &self.db.functions {
+                        if k.type_name == resolved && k.method_name == name.0 {
+                            if let Some(rt) = extract_ret(f) {
+                                ret_ty = Some(rt);
+                                break;
+                            }
+                        }
                     }
                 }
                 let ret_ty = ret_ty?;

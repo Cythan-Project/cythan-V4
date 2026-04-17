@@ -1,6 +1,7 @@
 pub mod flat_sig;
 pub mod function_db;
 pub mod registry;
+pub mod resolution;
 pub mod types;
 
 #[cfg(test)]

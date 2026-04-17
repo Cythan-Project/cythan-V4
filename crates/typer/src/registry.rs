@@ -535,7 +535,29 @@ impl TypeRegistry {
         // Snapshot the blanket list — we'll mutate `self.types` below.
         let blankets = self.blanket_impls.clone();
 
-        for blanket in &blankets {
+        // Iterate to fixpoint: a blanket might rely on another blanket's
+        // attachment to satisfy its bounds (transitive satisfaction). An
+        // upper bound on iterations = number of blankets × types; a
+        // round that attaches nothing terminates the loop.
+        let max_rounds = blankets.len().saturating_add(1).saturating_mul(
+            self.types.len().saturating_add(1),
+        );
+        for _round in 0..=max_rounds {
+            let before = self.types.iter().map(|(_, i)| i.methods.len()).sum::<usize>();
+            self.attach_blanket_pass(&blankets);
+            let after = self.types.iter().map(|(_, i)| i.methods.len()).sum::<usize>();
+            if before == after {
+                break;
+            }
+        }
+        let _ = errors;
+    }
+
+    /// One pass of blanket attachment. Iterates all blankets × types
+    /// and attaches anything newly satisfiable. Idempotent — running
+    /// twice with no new satisfactions is a no-op.
+    fn attach_blanket_pass(&mut self, blankets: &[ImplInfo]) {
+        for blanket in blankets {
             // Identify the target generic param — the one the impl is
             // "for". `register_impl` already validated that the target is
             // a bare generic-param reference; find it by name.
@@ -637,7 +659,6 @@ impl TypeRegistry {
                 }
             }
         }
-        let _ = errors;
     }
 
     /// Try to satisfy every bound on a candidate type. Returns `Some`
@@ -677,14 +698,11 @@ impl TypeRegistry {
                 if m.from_trait.as_deref() != Some(&bound.trait_name) {
                     continue;
                 }
-                // Don't recurse into attachments from blanket impls —
-                // trait-impl membership is only about direct impls for
-                // now. (A full implementation could chase these.)
-                if m.blanket.is_some() {
-                    continue;
-                }
                 // Candidate impl: try to unify bound.trait_args against
-                // the concrete impl's trait_template_args.
+                // the concrete impl's trait_template_args. Both direct
+                // impls AND blanket-attached methods participate — a
+                // blanket that already landed on this type counts as
+                // "the type implements this trait" for bound purposes.
                 let start = assignment.clone();
                 if let Some(next) =
                     unify_args(&bound.trait_args, &m.trait_template_args, &all_free, start)
@@ -702,6 +720,27 @@ impl TypeRegistry {
         Some(assignment)
     }
 
+    /// Locate the first `MethodInfo` on `type_name` matching both the
+    /// method name AND the given trait scope. `trait_name = None`
+    /// selects inherent methods (extensions); `Some(name)` selects
+    /// trait-impl methods, including blanket-attached ones.
+    ///
+    /// This is the shared entry point for every "peek at a method's
+    /// metadata" caller (blanket info, operator resolution, etc.) —
+    /// keeping the walk in one place prevents drift between the rules
+    /// each caller applies.
+    pub fn find_method_info(
+        &self,
+        type_name: &str,
+        method_name: &str,
+        trait_name: Option<&str>,
+    ) -> Option<&MethodInfo> {
+        let info = self.types.get(type_name)?;
+        info.methods.iter().find(|m| {
+            m.function.sig.name.0 == method_name && m.from_trait.as_deref() == trait_name
+        })
+    }
+
     /// If `(type_name, method_name, trait_name)` matches a method that
     /// was attached via a blanket impl, return its BlanketBinding. HIR
     /// gen uses this to thread receiver + pre-resolved bindings into
@@ -713,19 +752,9 @@ impl TypeRegistry {
         method_name: &str,
         trait_name: Option<&str>,
     ) -> Option<BlanketBinding> {
-        let info = self.types.get(type_name)?;
-        for m in &info.methods {
-            if m.function.sig.name.0 != method_name {
-                continue;
-            }
-            if m.from_trait.as_deref() != trait_name {
-                continue;
-            }
-            if let Some(b) = &m.blanket {
-                return Some(b.clone());
-            }
-        }
-        None
+        self.find_method_info(type_name, method_name, trait_name)?
+            .blanket
+            .clone()
     }
 
     // --- method resolution (trait-aware) --------------------------------
@@ -1494,99 +1523,12 @@ fn impl_target_matches(impl_target_name: &str, target: &ast::Type) -> bool {
     impl_target_name == target.name.0
 }
 
-/// Unify two argument lists position-wise, extending `assignment` with
-/// any new bindings discovered for free generics. Returns `None` on any
-/// contradiction.
-fn unify_args(
-    bound_args: &[ast::TypeOrValue],
-    impl_args: &[ast::TypeOrValue],
-    free: &[String],
-    mut assignment: std::collections::HashMap<String, ast::TypeOrValue>,
-) -> Option<std::collections::HashMap<String, ast::TypeOrValue>> {
-    if bound_args.len() != impl_args.len() {
-        return None;
-    }
-    for (b, i) in bound_args.iter().zip(impl_args.iter()) {
-        assignment = unify_tv(b, i, free, assignment)?;
-    }
-    Some(assignment)
-}
-
-fn unify_tv(
-    bound: &ast::TypeOrValue,
-    impl_arg: &ast::TypeOrValue,
-    free: &[String],
-    mut assignment: std::collections::HashMap<String, ast::TypeOrValue>,
-) -> Option<std::collections::HashMap<String, ast::TypeOrValue>> {
-    match (bound, impl_arg) {
-        (ast::TypeOrValue::Value(a), ast::TypeOrValue::Value(b)) => {
-            if a == b {
-                Some(assignment)
-            } else {
-                None
-            }
-        }
-        (ast::TypeOrValue::Type(bt), ast::TypeOrValue::Type(it)) => {
-            // Bare-name free generic on the bound side → bind/check.
-            if bt.templates.is_empty() && free.iter().any(|f| f == &bt.name.0) {
-                let proposed = ast::TypeOrValue::Type(it.clone());
-                match assignment.get(&bt.name.0) {
-                    Some(existing) if !tv_structural_eq(existing, &proposed) => return None,
-                    Some(_) => {}
-                    None => {
-                        assignment.insert(bt.name.0.clone(), proposed);
-                    }
-                }
-                return Some(assignment);
-            }
-            // Concrete: heads and args must match.
-            if bt.name.0 != it.name.0 {
-                return None;
-            }
-            let b_args: Vec<ast::TypeOrValue> =
-                bt.templates.iter().map(|(t, _)| t.clone()).collect();
-            let i_args: Vec<ast::TypeOrValue> =
-                it.templates.iter().map(|(t, _)| t.clone()).collect();
-            unify_args(&b_args, &i_args, free, assignment)
-        }
-        _ => None,
-    }
-}
-
-/// Structural equality on `TypeOrValue`, ignoring spans. `#[derive(PartialEq)]`
-/// on `ast::Type` compares spans, which makes synthesized types (with
-/// `0..0` spans) compare unequal to parsed ones even when they represent
-/// the same type.
-fn tv_structural_eq(a: &ast::TypeOrValue, b: &ast::TypeOrValue) -> bool {
-    match (a, b) {
-        (ast::TypeOrValue::Value(x), ast::TypeOrValue::Value(y)) => x == y,
-        (ast::TypeOrValue::Type(x), ast::TypeOrValue::Type(y)) => ty_structural_eq(x, y),
-        _ => false,
-    }
-}
-
-fn ty_structural_eq(a: &ast::Type, b: &ast::Type) -> bool {
-    if a.name.0 != b.name.0 {
-        return false;
-    }
-    if a.templates.len() != b.templates.len() {
-        return false;
-    }
-    for ((av, _), (bv, _)) in a.templates.iter().zip(b.templates.iter()) {
-        if !tv_structural_eq(av, bv) {
-            return false;
-        }
-    }
-    // qself equality: require both none or both structurally equal.
-    match (&a.qself, &b.qself) {
-        (None, None) => true,
-        (Some(ax), Some(bx)) => {
-            ty_structural_eq(&ax.self_ty.0, &bx.self_ty.0)
-                && ty_structural_eq(&ax.trait_ty.0, &bx.trait_ty.0)
-        }
-        _ => false,
-    }
-}
+// Unification / structural-eq helpers live in `typer::resolution`. We
+// re-export the names we use here as shorthand aliases so call sites
+// read the same way as before.
+use crate::resolution::{unify_args, tv_structural_eq};
+#[allow(unused_imports)]
+use crate::resolution::{unify_tv, ty_structural_eq};
 
 /// Substitute template parameter references in an AST type with concrete
 /// bindings. Used by `resolve_struct_layout` to specialize a generic
