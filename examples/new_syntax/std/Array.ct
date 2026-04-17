@@ -1,17 +1,30 @@
+// Array<T, E, F> — statically-sized array of `E` elements of type `T`,
+// indexed by `F`. Methods have empty bodies in the stdlib because the
+// compiler SYNTHESIZES them per concrete instantiation:
+//   - Array<T, E, F>::new       — zero-fills E*sizeof(T) cells.
+//   - Array<T, E, F>::get(i)    — Match on `i`; each arm copies the
+//                                  i-th T-sized slice out.
+//   - Array<T, E, F>::set(i, v) — Match on `i`; each arm copies `v` into
+//                                  the i-th T-sized slice.
+//   - Array<T, E, F>::len       — writes the compile-time `E` into the
+//                                  return F cells.
+//
+// No static-index variants (`get<N>`, `set<N>`). Runtime `get(i)` /
+// `set(i, _)` already lower to a jump-table `Match`, so the static form
+// wouldn't be any faster.
 struct Array<T, E, F> {}
 
 extension Array<T, E, F> {
-    fn set<N>(mut self, T value) {}
-    fn setDyn(mut self, F index, T value) {}
-    fn get<N>(self): T {}
-    fn getDyn(self, F index): T {}
+    fn new(): Self {}
+    fn get(self, F index): T {}
+    fn set(mut self, F index, T value) {}
     fn len(self): F {}
 
     fn print(Self<U8, E, F> self) {
         mut F index = F::zero();
         loop {
             if self.len() > index {
-                self.getDyn(index).print();
+                self.get(index).print();
                 index += 1;
             } else {
                 break;
@@ -25,7 +38,7 @@ extension Array<T, E, F> {
             if self.len() == index {
                 break;
             } else {
-                self.getDyn(index).print();
+                self.get(index).print();
                 index += 1;
             }
         }
@@ -39,7 +52,7 @@ extension Array<T, E, F> {
                 return false;
             }
             size -= 1;
-            if self.getDyn(size) == t {
+            if self.get(size) == t {
                 return true;
             }
         }

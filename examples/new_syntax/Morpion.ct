@@ -44,15 +44,11 @@ extension Morpion {
     }
 
     fn set(mut self, U4 pos, Cell val) {
-        self.grid.setDyn(pos, val);
+        self.grid.set(pos, val);
     }
 
-    fn getDyn(self, U4 pos): Cell {
-        self.grid.getDyn(pos)
-    }
-
-    fn get<TE>(self): Cell {
-        self.grid.get<TE>()
+    fn get(self, U4 pos): Cell {
+        self.grid.get(pos)
     }
 
     fn display(self) {
@@ -65,7 +61,7 @@ extension Morpion {
             if count == 3 || count == 6 {
                 '\n'.print();
             }
-            self.getDyn(count).print();
+            self.get(count).print();
             count += 1;
         }
     }
@@ -80,7 +76,7 @@ extension Morpion {
             if pos > 8 {
                 continue;
             }
-            if self.getDyn(pos).isEmpty() {
+            if self.get(pos).isEmpty() {
                 self.set(pos, currentPlayer);
                 count -= 1;
                 self.display();
@@ -104,27 +100,27 @@ extension Morpion {
     }
 
     fn winner(self, Cell tocheck): Bool {
-        if self.get<0>() == tocheck {
-            if self.get<1>() == tocheck && self.get<2>() == tocheck {
+        if self.get(0) == tocheck {
+            if self.get(1) == tocheck && self.get(2) == tocheck {
                 return true;
             }
-            if self.get<3>() == tocheck && self.get<6>() == tocheck {
+            if self.get(3) == tocheck && self.get(6) == tocheck {
                 return true;
             }
-            if self.get<4>() == tocheck && self.get<8>() == tocheck {
+            if self.get(4) == tocheck && self.get(8) == tocheck {
                 return true;
             }
         }
-        if self.get<1>() == tocheck && self.get<4>() == tocheck && self.get<7>() == tocheck {
+        if self.get(1) == tocheck && self.get(4) == tocheck && self.get(7) == tocheck {
             return true;
         }
-        if self.get<2>() == tocheck && self.get<4>() == tocheck && self.get<6>() == tocheck {
+        if self.get(2) == tocheck && self.get(4) == tocheck && self.get(6) == tocheck {
             return true;
         }
-        if self.get<3>() == tocheck && self.get<4>() == tocheck && self.get<5>() == tocheck {
+        if self.get(3) == tocheck && self.get(4) == tocheck && self.get(5) == tocheck {
             return true;
         }
-        if self.get<6>() == tocheck && self.get<7>() == tocheck && self.get<8>() == tocheck {
+        if self.get(6) == tocheck && self.get(7) == tocheck && self.get(8) == tocheck {
             return true;
         }
         false

@@ -65,6 +65,10 @@ pub struct FieldLayout {
     pub name: String,
     pub offset: CellCount,
     pub size: CellCount,
+    /// Original AST type of the field. Kept so downstream passes (HIR gen,
+    /// the Array monomorphizer) can recover concrete template args like
+    /// `Array<Cell, 9, U4>` from a field reference.
+    pub ast_type: ast::Type,
 }
 
 #[derive(Debug, Clone, PartialEq)]

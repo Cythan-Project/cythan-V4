@@ -1,3 +1,4 @@
+pub mod array_synth;
 pub mod call_graph;
 pub mod error;
 pub mod gen;
@@ -11,6 +12,7 @@ pub mod opt;
 #[cfg(test)]
 mod tests;
 
+pub use array_synth::{ArrayMonomorphCache, ArraySpec};
 pub use call_graph::{build_call_graph, CallGraph};
 pub use error::HirError;
 pub use gen::{gen_function, gen_function_with_natives};

@@ -528,6 +528,7 @@ impl TypeRegistry {
                 name: f.name.0.clone(),
                 offset,
                 size,
+                ast_type: f.ty.0.clone(),
             });
             offset += size;
         }

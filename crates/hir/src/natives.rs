@@ -103,23 +103,15 @@ impl Default for BuiltinNatives {
 
 impl NativeProvider for BuiltinNatives {
     fn has_method(&self, type_name: &str, method: &str) -> bool {
-        // The only "true" natives are the VM-level primitives: the
-        // System register ops (there is literally no way to implement them
-        // in user code) and Array, whose layout/addressing is under the
-        // compiler's direct control. Operators (`+`, `-`, `==`, ...) live
-        // in the stdlib — see `examples/new_syntax/std/Ops.ct` and their
-        // impls in `std/U4.ct`.
+        // The only true natives are the System register ops — nothing else
+        // can read / write VM registers. Array methods are synthesized by
+        // the monomorphizer (`array_synth`); operators live in the stdlib.
         matches!(
             (type_name, method),
             ("System", "setRegister")
             | ("System", "getRegister")
             | ("System", "debug")
             | ("System", "debugType")
-            | ("Array", "len")
-            | ("Array", "set")
-            | ("Array", "get")
-            | ("Array", "setDyn")
-            | ("Array", "getDyn")
         )
     }
 
@@ -128,12 +120,6 @@ impl NativeProvider for BuiltinNatives {
             ("System", "setRegister") => emit_system_set_register(&call, emitter),
             ("System", "getRegister") => emit_system_get_register(&call, emitter),
             ("System", "debug") | ("System", "debugType") => Ok(()),
-
-            ("Array", "len") => emit_array_len(&call, emitter),
-            ("Array", "set") => emit_array_set_static(&call, emitter),
-            ("Array", "get") => emit_array_get_static(&call, emitter),
-            ("Array", "setDyn") => emit_array_set_dyn(&call, emitter),
-            ("Array", "getDyn") => emit_array_get_dyn(&call, emitter),
             _ => Err(format!("native {}::{} not implemented", call.type_name, call.method)),
         }
     }
@@ -185,227 +171,3 @@ fn emit_system_get_register(
     Ok(())
 }
 
-// ---- Array ---------------------------------------------------------------
-
-/// Extract `(element_size, array_size)` from the receiver's template args
-/// `[T, Size, F]` using the registry for sizing of T.
-fn array_geometry(call: &NativeCall<'_>) -> Result<(u32, u32), String> {
-    if call.receiver_type_args.len() < 2 {
-        return Err(format!(
-            "Array::{}: need concrete Array<T, Size, F> on receiver",
-            call.method
-        ));
-    }
-    let t_name = match &call.receiver_type_args[0] {
-        ConcreteTemplateArg::Type(t) => t.name.clone(),
-        _ => return Err(format!("Array::{}: element type is not a type", call.method)),
-    };
-    let size = match &call.receiver_type_args[1] {
-        ConcreteTemplateArg::Value(n) => *n as u32,
-        _ => return Err(format!("Array::{}: array size is not a constant", call.method)),
-    };
-    let elem_size = size_of_type_name(&t_name, /* array_override */ None, call)?;
-    Ok((elem_size, size))
-}
-
-fn size_of_type_name(
-    name: &str,
-    array_override: Option<u32>,
-    call: &NativeCall<'_>,
-) -> Result<u32, String> {
-    if let Some(v) = array_override {
-        return Ok(v);
-    }
-    let info = call
-        .registry
-        .types
-        .get(name)
-        .ok_or_else(|| format!("unknown type `{}`", name))?;
-    match &info.kind {
-        typer::TypeKind::Primitive { size } => Ok(*size),
-        typer::TypeKind::Struct(typer::StructKind::Concrete(l)) => Ok(l.size),
-        typer::TypeKind::Enum(typer::EnumKind::Concrete(l)) => Ok(l.total_size()),
-        _ => Err(format!("type `{}` has no concrete size yet", name)),
-    }
-}
-
-#[allow(dead_code)]
-fn _ensure_emitter_used(_e: &NativeEmitter<'_>) {}
-
-fn emit_array_len(call: &NativeCall<'_>, emitter: &mut NativeEmitter<'_>) -> Result<(), String> {
-    // Array::len(): writes the array size into `_ret`, split nibble-style
-    // across as many cells as F (the index type) uses.
-    if call.receiver_type_args.len() < 3 {
-        return Err("Array::len: receiver must be Array<T, Size, F>".to_string());
-    }
-    let size = match &call.receiver_type_args[1] {
-        ConcreteTemplateArg::Value(n) => *n as u32,
-        _ => return Err("Array::len: size is not a constant".to_string()),
-    };
-    // Write `size` in base-16 into the ret cells (low nibble first).
-    let mut n = size;
-    for slot in call.ret_slots {
-        emitter.emit(HirOp::Set(*slot, (n % 16) as u8));
-        n /= 16;
-    }
-    if n != 0 {
-        return Err(format!(
-            "Array::len: size {} doesn't fit in {} cells",
-            size,
-            call.ret_slots.len()
-        ));
-    }
-    Ok(())
-}
-
-fn array_static_index(call: &NativeCall<'_>) -> Result<u32, String> {
-    match call.template_args.first() {
-        Some(ConcreteTemplateArg::Value(n)) => Ok(*n as u32),
-        _ => Err(format!(
-            "Array::{}: expected a single integer template argument",
-            call.method
-        )),
-    }
-}
-
-fn emit_array_set_static(
-    call: &NativeCall<'_>,
-    emitter: &mut NativeEmitter<'_>,
-) -> Result<(), String> {
-    let (elem_size, max) = array_geometry(call)?;
-    let index = array_static_index(call)?;
-    if index >= max {
-        return Err(format!(
-            "Array::set<{}>: index out of bounds (size = {})",
-            index, max
-        ));
-    }
-    // Receiver slots: start at `arg_slots[0]`, extending `max * elem_size`.
-    let self_start = call.arg_slots.first().copied().ok_or_else(|| {
-        "Array::set: missing receiver".to_string()
-    })?;
-    let value_start = call
-        .arg_slots
-        .get(call.receiver_cell_count as usize)
-        .copied()
-        .ok_or_else(|| "Array::set: missing value arg".to_string())?;
-    for i in 0..elem_size {
-        emitter.emit(HirOp::Copy(
-            SlotId(self_start.0 + index * elem_size + i),
-            SlotId(value_start.0 + i),
-        ));
-    }
-    Ok(())
-}
-
-fn emit_array_get_static(
-    call: &NativeCall<'_>,
-    emitter: &mut NativeEmitter<'_>,
-) -> Result<(), String> {
-    let (elem_size, max) = array_geometry(call)?;
-    let index = array_static_index(call)?;
-    if index >= max {
-        return Err(format!(
-            "Array::get<{}>: index out of bounds (size = {})",
-            index, max
-        ));
-    }
-    let self_start = call.arg_slots.first().copied().ok_or_else(|| {
-        "Array::get: missing receiver".to_string()
-    })?;
-    let dst_start = call
-        .ret_slots
-        .first()
-        .copied()
-        .ok_or_else(|| "Array::get: missing return slot".to_string())?;
-    for i in 0..elem_size {
-        emitter.emit(HirOp::Copy(
-            SlotId(dst_start.0 + i),
-            SlotId(self_start.0 + index * elem_size + i),
-        ));
-    }
-    Ok(())
-}
-
-fn emit_array_set_dyn(
-    call: &NativeCall<'_>,
-    emitter: &mut NativeEmitter<'_>,
-) -> Result<(), String> {
-    // setDyn(index, value): pattern-match on index_cell[0] for each position.
-    //   For 1-cell index: single Match with `max` arms.
-    //   For multi-cell index (rare in practice): fall back to nested If0 per cell.
-    let (elem_size, max) = array_geometry(call)?;
-    let idx_cells = index_type_size(call)?;
-    let self_start = call.arg_slots.first().copied().ok_or_else(|| {
-        "Array::setDyn: missing receiver".to_string()
-    })?;
-    let index_start = SlotId(call.arg_slots[call.receiver_cell_count as usize].0);
-    let value_start = SlotId(
-        call.arg_slots[call.receiver_cell_count as usize + idx_cells as usize].0,
-    );
-
-    if idx_cells == 1 {
-        let mut arms: Vec<(HirBlock, Vec<u8>)> = Vec::with_capacity(max as usize);
-        for i in 0..max {
-            let mut block = HirBlock::new();
-            for k in 0..elem_size {
-                block.ops.push(HirOp::Copy(
-                    SlotId(self_start.0 + i * elem_size + k),
-                    SlotId(value_start.0 + k),
-                ));
-            }
-            arms.push((block, vec![i as u8]));
-        }
-        emitter.emit(HirOp::Match(index_start, arms));
-        return Ok(());
-    }
-    Err(format!(
-        "Array::setDyn: multi-cell index types (got {} cells) not yet supported",
-        idx_cells
-    ))
-}
-
-fn emit_array_get_dyn(
-    call: &NativeCall<'_>,
-    emitter: &mut NativeEmitter<'_>,
-) -> Result<(), String> {
-    let (elem_size, max) = array_geometry(call)?;
-    let idx_cells = index_type_size(call)?;
-    let self_start = call.arg_slots.first().copied().ok_or_else(|| {
-        "Array::getDyn: missing receiver".to_string()
-    })?;
-    let index_start = SlotId(call.arg_slots[call.receiver_cell_count as usize].0);
-    let dst_start = call
-        .ret_slots
-        .first()
-        .copied()
-        .ok_or_else(|| "Array::getDyn: missing return slot".to_string())?;
-
-    if idx_cells == 1 {
-        let mut arms: Vec<(HirBlock, Vec<u8>)> = Vec::with_capacity(max as usize);
-        for i in 0..max {
-            let mut block = HirBlock::new();
-            for k in 0..elem_size {
-                block.ops.push(HirOp::Copy(
-                    SlotId(dst_start.0 + k),
-                    SlotId(self_start.0 + i * elem_size + k),
-                ));
-            }
-            arms.push((block, vec![i as u8]));
-        }
-        emitter.emit(HirOp::Match(index_start, arms));
-        return Ok(());
-    }
-    Err(format!(
-        "Array::getDyn: multi-cell index types (got {} cells) not yet supported",
-        idx_cells
-    ))
-}
-
-fn index_type_size(call: &NativeCall<'_>) -> Result<u32, String> {
-    let f = &call.receiver_type_args[2];
-    match f {
-        ConcreteTemplateArg::Type(t) => size_of_type_name(&t.name, None, call),
-        ConcreteTemplateArg::Value(_) => Err("Array index-type slot must be a type".to_string()),
-    }
-}

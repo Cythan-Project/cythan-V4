@@ -165,9 +165,14 @@ fn test_parse_array() {
     // Extension target has templates
     assert_eq!(ext.target.0.templates.len(), 3);
     let names = method_names(ext);
-    for expected in ["set", "setDyn", "get", "getDyn", "len", "print", "println", "contains"] {
+    // After the Array rework, `setDyn`/`getDyn` and the `get<N>`/`set<N>`
+    // static-index variants were dropped — a single runtime `get(i)` /
+    // `set(i, v)` pair is the whole API.
+    for expected in ["set", "get", "len", "new", "print", "println", "contains"] {
         assert!(names.iter().any(|n| n == expected), "missing {}", expected);
     }
+    assert!(!names.iter().any(|n| n == "setDyn"), "stale setDyn");
+    assert!(!names.iter().any(|n| n == "getDyn"), "stale getDyn");
 }
 
 #[test]
@@ -245,9 +250,11 @@ fn test_parse_morpion() {
 
     let ext = find_extension(&items, "Morpion");
     let names = method_names(ext);
-    for expected in ["new", "set", "getDyn", "get", "display", "play", "winner", "main"] {
+    for expected in ["new", "set", "get", "display", "play", "winner", "main"] {
         assert!(names.iter().any(|n| n == expected), "missing {}", expected);
     }
+    // `getDyn` has been merged into `get` (runtime index only).
+    assert!(!names.iter().any(|n| n == "getDyn"), "stale getDyn");
 
     let main = ext.methods.iter().find(|m| m.0.sig.name.0 == "main").unwrap();
     assert_eq!(main.0.sig.return_type.as_ref().unwrap().0.name.0, "U4");

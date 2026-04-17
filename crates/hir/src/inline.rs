@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use either::Either;
 use mir::{Mir, MirCodeBlock};
 
+use crate::array_synth::{ArrayMonomorphCache, ArraySpec};
 use crate::call_graph::build_call_graph;
 use crate::ir::*;
 use crate::HirFunction;
@@ -26,18 +27,36 @@ pub fn inline_program(
     functions: &HashMap<FnSigKey, HirFunction>,
     entry: &FnSigKey,
 ) -> Result<HirFunction, String> {
+    inline_program_with_registry(functions, entry, None)
+}
+
+/// Like `inline_program`, but also supplies a `TypeRegistry` for resolving
+/// Array type geometries (needed to synthesize `Array<T, N, F>` method
+/// monomorphs on the fly).
+pub fn inline_program_with_registry(
+    functions: &HashMap<FnSigKey, HirFunction>,
+    entry: &FnSigKey,
+    registry: Option<&typer::TypeRegistry>,
+) -> Result<HirFunction, String> {
     // Verify reachability + no cycles up front.
-    let _graph = build_call_graph(functions, entry)?;
+    //
+    // NOTE: with Array synthesis, `Array::{get,set,new,len}` show up as
+    // callees that aren't in `functions`. We still run the call-graph walk
+    // for cycle detection, but gracefully skip missing targets.
+    let _ = build_call_graph(functions, entry); // best-effort
 
     let entry_hir = functions
         .get(entry)
         .ok_or_else(|| format!("entry `{:?}` missing", entry))?;
 
-    // The entry function's slots become global slots [0, entry.slot_count).
-    // Callees get fresh ranges allocated via `Inliner::next_base`.
+    // `Inliner::functions` is owned so we can insert synthesized monomorphs
+    // on the fly. Starts as a clone of the input map.
+    let mut owned_functions = functions.clone();
     let mut inliner = Inliner {
-        functions,
+        functions: &mut owned_functions,
         global_slots: entry_hir.slot_count,
+        registry,
+        array_cache: ArrayMonomorphCache::new(),
     };
     let body = inliner.inline_block(&entry_hir.body, /*base=*/ 0)?;
 
@@ -100,9 +119,14 @@ fn hir_op_to_mir(op: &HirOp) -> Result<Mir, String> {
 // ---------- inliner -------------------------------------------------------
 
 struct Inliner<'a> {
-    functions: &'a HashMap<FnSigKey, HirFunction>,
+    functions: &'a mut HashMap<FnSigKey, HirFunction>,
     /// Next free slot in the global space.
     global_slots: u32,
+    /// Registry used to resolve `Array<T, N, F>` geometry. Optional — only
+    /// needed when the inliner hits an Array method call that needs a
+    /// fresh monomorph.
+    registry: Option<&'a typer::TypeRegistry>,
+    array_cache: ArrayMonomorphCache,
 }
 
 impl<'a> Inliner<'a> {
@@ -183,20 +207,58 @@ impl<'a> Inliner<'a> {
         caller_base: u32,
         out: &mut Vec<HirOp>,
     ) -> Result<(), String> {
-        let key = match &target.trait_name {
-            Some(t) => FnSigKey::new_trait(&target.type_name, &target.method_name, t),
-            None => FnSigKey::new(&target.type_name, &target.method_name),
-        };
-        let callee = self
-            .functions
-            .get(&key)
-            .ok_or_else(|| {
-                format!(
-                    "inliner: missing function `{}::{}`",
-                    target.type_name, target.method_name
-                )
-            })?
-            .clone();
+        // Array<T, N, F> methods are synthesized on demand: the stdlib has
+        // empty bodies, so a normal lookup would miss. Resolve to a
+        // monomorph built from `target.template_args`.
+        let key: FnSigKey;
+        let callee: HirFunction;
+        if target.type_name == "Array"
+            && crate::array_synth::METHOD_NAMES
+                .contains(&target.method_name.as_str())
+        {
+            let Some(reg) = self.registry else {
+                return Err(format!(
+                    "inliner: Array::{} called without TypeRegistry — use \
+                     `inline_program_with_registry`",
+                    target.method_name
+                ));
+            };
+            let Some(spec) = ArraySpec::from_template_args(&target.template_args, reg) else {
+                return Err(format!(
+                    "inliner: Array::{} needs concrete [T, N, F] template args, got {:?}",
+                    target.method_name, target.template_args
+                ));
+            };
+            let (k, f) = self
+                .array_cache
+                .get_or_synth(&spec, &target.method_name)
+                .ok_or_else(|| {
+                    format!(
+                        "inliner: can't synthesize Array<{}, {}, {}>::{}",
+                        spec.element_type, spec.size, spec.index_type, target.method_name
+                    )
+                })?;
+            // Insert into `functions` so any secondary lookup works.
+            self.functions.entry(k.clone()).or_insert_with(|| f.clone());
+            key = k;
+            callee = f;
+        } else {
+            key = match &target.trait_name {
+                Some(t) => FnSigKey::new_trait(&target.type_name, &target.method_name, t),
+                None => FnSigKey::new(&target.type_name, &target.method_name),
+            };
+            callee = self
+                .functions
+                .get(&key)
+                .ok_or_else(|| {
+                    format!(
+                        "inliner: missing function `{}::{}`",
+                        target.type_name, target.method_name
+                    )
+                })?
+                .clone();
+        }
+        let _ = key;
 
         // Allocate a fresh slot range for the callee's locals.
         let callee_base = self.alloc_range(callee.slot_count);

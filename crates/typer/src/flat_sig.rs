@@ -43,6 +43,10 @@ pub struct SlotInfo {
     pub mutable: bool,
     /// Concrete type name this slot holds. Empty for synthesized slots.
     pub type_name: String,
+    /// Template args of the slot's type as AST `TypeOrValue`s. Downstream
+    /// consumers (HIR gen) convert these to `ConcreteTemplateArg` as
+    /// needed. Empty for non-generic types.
+    pub type_args: Vec<ast::TypeOrValue>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -72,6 +76,11 @@ impl FlatSig {
 
         for param in &sig.params {
             let (type_name, size) = resolve_param_type(param, self_type_name, reg)?;
+            let type_args = param
+                .ty
+                .as_ref()
+                .map(|(t, _)| t.templates.iter().map(|(tv, _)| tv.clone()).collect())
+                .unwrap_or_default();
 
             // Record struct field offsets if applicable.
             if let Some(fields) = struct_field_offsets(reg, &type_name) {
@@ -84,6 +93,7 @@ impl FlatSig {
                 size,
                 mutable: param.mutable,
                 type_name,
+                type_args,
             });
             cursor += size;
         }
@@ -94,12 +104,18 @@ impl FlatSig {
         if let Some((ret_ty, sp)) = &sig.return_type {
             let resolved_name = resolve_self(&ret_ty.name.0, self_type_name);
             let size = size_of_named(reg, &resolved_name, ret_ty, sp)?;
+            let type_args = ret_ty
+                .templates
+                .iter()
+                .map(|(tv, _)| tv.clone())
+                .collect();
             slots.push(SlotInfo {
                 name: "_ret".into(),
                 offset: cursor,
                 size,
                 mutable: true,
                 type_name: resolved_name.clone(),
+                type_args,
             });
             if let Some(fields) = struct_field_offsets(reg, &resolved_name) {
                 field_offsets.insert("_ret".into(), fields);

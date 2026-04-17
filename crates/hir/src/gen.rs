@@ -94,6 +94,11 @@ struct Generator<'a> {
 struct LocalBinding {
     slot: SlotId,
     type_name: String,
+    /// Cell count of the binding's type. Captured at declaration time so
+    /// later reads (`gen_variable`) don't have to re-size the type —
+    /// important for Array<T, N, F>-style generics that aren't looked-up-
+    /// able by plain name.
+    size: u32,
     /// Read but not currently used downstream; `slot_mut`/`check_mutable_slot`
     /// is the authoritative mutability source. Kept for future lookups.
     #[allow(dead_code)]
@@ -102,6 +107,10 @@ struct LocalBinding {
     /// generator re-derives field offsets from the registry.
     #[allow(dead_code)]
     field_offsets: Option<Vec<(String, u32, u32)>>,
+    /// Concrete template args of the binding's type. Populated when the
+    /// declaration (or param) uses a generic instantiation like
+    /// `Array<Cell, 9, U4>`. Empty for non-generic types.
+    template_args: Vec<ConcreteTemplateArg>,
 }
 
 impl<'a> Generator<'a> {
@@ -144,13 +153,16 @@ impl<'a> Generator<'a> {
             // Only record the param/ret binding in the local scope if it
             // has a source-visible name. Return slots ("_ret") stay out.
             if fs.name != "_ret" {
+                let template_args = lower_ast_tv_list(&fs.type_args);
                 g.scopes.last_mut().unwrap().insert(
                     fs.name.clone(),
                     LocalBinding {
                         slot: SlotId(first),
                         type_name: fs.type_name.clone(),
+                        size: fs.size,
                         mutable: fs.mutable,
                         field_offsets,
+                        template_args,
                     },
                 );
             }
@@ -416,7 +428,15 @@ impl<'a> Generator<'a> {
             .lookup(name)
             .ok_or_else(|| HirError::at(format!("undefined variable `{}`", name), sp.clone()))?;
         if let Some(dst) = dst {
-            let size = self.type_size(&b.type_name)?;
+            // Prefer the binding's captured size (covers generic-typed
+            // locals like `Array<U4, 4, U4>` whose bare name isn't
+            // sizeable). Fall back to type-name lookup when size is 0
+            // (synthetic bindings like match pattern captures).
+            let size = if b.size > 0 {
+                b.size
+            } else {
+                self.type_size(&b.type_name)?
+            };
             self.copy_multi(dst, b.slot, size, block)?;
         }
         Ok(())
@@ -432,10 +452,22 @@ impl<'a> Generator<'a> {
         let Some(dst) = dst else {
             return Ok(());
         };
-        let (recv_slot, recv_ty) = self.resolve_lvalue_base(&recv.0, &recv.1)?;
-        let (offset, size) =
-            self.field_offset(&recv_ty, &field.0, &field.1)?;
-        let src = SlotId(recv_slot.0 + offset);
+        // L-value receivers (variables / field chains) address the
+        // existing storage directly.
+        if let Ok((recv_slot, recv_ty)) = self.resolve_lvalue_base(&recv.0, &recv.1) {
+            let (offset, size) = self.field_offset(&recv_ty, &field.0, &field.1)?;
+            let src = SlotId(recv_slot.0 + offset);
+            return self.copy_multi(dst, src, size, block);
+        }
+        // Non-l-value (method call, struct literal, etc.): evaluate the
+        // receiver into a temp, then extract the field.
+        let recv_ty = self.infer_expr_type(&recv.0, &recv.1)?;
+        let resolved = self.resolve_ty_name(&recv_ty);
+        let recv_size = self.type_size_permissive(&resolved);
+        let tmp = self.alloc_temp(&resolved, recv_size);
+        self.gen_expr_into(&recv.0, &recv.1, Some(tmp), block)?;
+        let (offset, size) = self.field_offset(&resolved, &field.0, &field.1)?;
+        let src = SlotId(tmp.0 + offset);
         self.copy_multi(dst, src, size, block)
     }
 
@@ -580,7 +612,16 @@ impl<'a> Generator<'a> {
         block: &mut HirBlock,
     ) -> Result<(), HirError> {
         let resolved = self.resolve_ty_name(&ty.0.name.0);
-        let size = self.type_size(&resolved)?;
+        // Use the typer's Array-aware sizing when we have an AST type with
+        // template args (falls back to the plain lookup otherwise). This
+        // is what lets `mut Array<U4, 4, U4> arr = ...` compute size = 4.
+        let size = if !ty.0.templates.is_empty() {
+            self.reg
+                .resolve_type_size(&ty.0, &ty.1)
+                .map_err(|e| HirError::at(e.message, ty.1.clone()))?
+        } else {
+            self.type_size(&resolved)?
+        };
         let slot = self.alloc_temp(&resolved, size);
         // Mark slot mutability for each cell.
         for i in 0..size {
@@ -601,16 +642,57 @@ impl<'a> Generator<'a> {
                 ),
                 _ => None,
             });
+        let template_args: Vec<ConcreteTemplateArg> = ty
+            .0
+            .templates
+            .iter()
+            .map(|(tv, _)| lower_tv(tv))
+            .collect();
         self.scopes.last_mut().unwrap().insert(
             name.0.clone(),
             LocalBinding {
                 slot,
                 type_name: resolved,
+                size,
                 mutable,
                 field_offsets,
+                template_args,
             },
         );
-        self.gen_expr_into(&value.0, &value.1, Some(slot), block)
+
+        // Type inference shortcut: `mut Array<U4, 4, U4> arr = Array::new();`
+        // — the call's target type is bare `Array` with no template args,
+        // but the declaration makes the concrete shape obvious. Copy the
+        // declared template args into the call so the monomorphizer sees
+        // them. Narrow (only static calls matching the declared type
+        // name), but it covers the only idiom Cythan programs need.
+        let patched_value;
+        let value_ref = match &value.0 {
+            ast::Expr::StaticCall {
+                ty: call_ty,
+                name: call_name,
+                templates: call_tpl,
+                args: call_args,
+            } if call_tpl.is_empty()
+                && call_ty.0.name.0 == ty.0.name.0
+                && !ty.0.templates.is_empty() =>
+            {
+                let mut new_ty = call_ty.clone();
+                new_ty.0.templates = ty.0.templates.clone();
+                patched_value = (
+                    ast::Expr::StaticCall {
+                        ty: new_ty,
+                        name: call_name.clone(),
+                        templates: call_tpl.clone(),
+                        args: call_args.clone(),
+                    },
+                    value.1.clone(),
+                );
+                &patched_value
+            }
+            _ => value,
+        };
+        self.gen_expr_into(&value_ref.0, &value_ref.1, Some(slot), block)
     }
 
     fn gen_assign(
@@ -821,8 +903,10 @@ impl<'a> Generator<'a> {
                                 LocalBinding {
                                     slot: bind_slot,
                                     type_name: ty.to_string(),
+                                    size: 1,
                                     mutable: false,
                                     field_offsets: None,
+                                    template_args: Vec::new(),
                                 },
                             );
                         }
@@ -1007,9 +1091,25 @@ impl<'a> Generator<'a> {
         // Infer receiver type.
         let recv_ty = self.infer_expr_type(&receiver.0, &receiver.1)?;
         let resolved_recv = self.resolve_ty_name(&recv_ty);
-        let recv_size = self.type_size_permissive(&resolved_recv);
-        let recv_slot = self.alloc_temp(&resolved_recv, recv_size);
-        self.gen_expr_into(&receiver.0, &receiver.1, Some(recv_slot), block)?;
+        let recv_size = self
+            .receiver_cell_size(&receiver.0)
+            .unwrap_or_else(|| self.type_size_permissive(&resolved_recv));
+
+        // If the receiver is a direct l-value (variable / self / field
+        // chain), use its storage slot AS the receiver slot — don't alloc a
+        // temp. That way the callee's `mut self` writes land back in the
+        // caller's variable, restoring the "params are by reference" rule
+        // the language spec calls for. (When the receiver is a literal or
+        // computed expression, falling through to alloc_temp preserves the
+        // old behavior.)
+        let recv_slot = match self.lvalue_slot(&receiver.0) {
+            Some(s) => s,
+            None => {
+                let s = self.alloc_temp(&resolved_recv, recv_size);
+                self.gen_expr_into(&receiver.0, &receiver.1, Some(s), block)?;
+                s
+            }
+        };
 
         // Evaluate args into slots.
         let mut arg_slots: Vec<(SlotId, u32)> = Vec::new();
@@ -1030,17 +1130,20 @@ impl<'a> Generator<'a> {
             }
         }
 
+        let tpl = lower_templates(templates);
+        let recv_ty_args = self.infer_receiver_type_args(&receiver.0);
         let ret_slots: Vec<SlotId> = match dst {
             Some(d) => {
-                // Determine return size by looking up the function in the DB.
-                let ret_size =
-                    self.lookup_return_size(&resolved_recv, &name.0).unwrap_or(0);
+                // Determine return size: for Array<T, N, F> methods, the
+                // size depends on the receiver's concrete template args
+                // (which `lookup_return_size` has no visibility into).
+                let ret_size = array_method_return_size(&resolved_recv, &name.0, &recv_ty_args)
+                    .or_else(|| self.lookup_return_size(&resolved_recv, &name.0))
+                    .unwrap_or(0);
                 (0..ret_size).map(|i| SlotId(d.0 + i)).collect()
             }
             None => Vec::new(),
         };
-
-        let tpl = lower_templates(templates);
         if self.try_emit_native(
             &resolved_recv,
             &name.0,
@@ -1048,17 +1151,24 @@ impl<'a> Generator<'a> {
             &flat_args,
             &ret_slots,
             recv_size,
-            &[],
+            &recv_ty_args,
             block,
         )? {
             return Ok(());
         }
         let trait_name = self.resolve_trait_for(&resolved_recv, &name.0);
+        // For calls on generic-receiver types (like Array<Cell, 9, U4>),
+        // embed the concrete receiver type args into the FnRef's
+        // template_args so the inliner / monomorphizer can dispatch. If
+        // the method itself also has template args (from `self.m<N>()`),
+        // we append them after the receiver args.
+        let mut combined = recv_ty_args;
+        combined.extend(tpl);
         block.push(HirOp::Call {
             target: FnRef {
                 type_name: resolved_recv,
                 method_name: name.0.clone(),
-                template_args: tpl,
+                template_args: combined,
                 trait_name,
             },
             args: flat_args,
@@ -1096,14 +1206,6 @@ impl<'a> Generator<'a> {
             }
         }
 
-        let ret_slots: Vec<SlotId> = match dst {
-            Some(d) => {
-                let ret_size = self.lookup_return_size(&resolved, &name.0).unwrap_or(0);
-                (0..ret_size).map(|i| SlotId(d.0 + i)).collect()
-            }
-            None => Vec::new(),
-        };
-
         let tpl = lower_templates(templates);
         let recv_ty_args: Vec<ConcreteTemplateArg> = ty
             .0
@@ -1111,6 +1213,15 @@ impl<'a> Generator<'a> {
             .iter()
             .map(|(tv, _)| lower_tv(tv))
             .collect();
+        let ret_slots: Vec<SlotId> = match dst {
+            Some(d) => {
+                let ret_size = array_method_return_size(&resolved, &name.0, &recv_ty_args)
+                    .or_else(|| self.lookup_return_size(&resolved, &name.0))
+                    .unwrap_or(0);
+                (0..ret_size).map(|i| SlotId(d.0 + i)).collect()
+            }
+            None => Vec::new(),
+        };
         if self.try_emit_native(
             &resolved,
             &name.0,
@@ -1124,11 +1235,16 @@ impl<'a> Generator<'a> {
             return Ok(());
         }
         let trait_name = self.resolve_trait_for(&resolved, &name.0);
+        // As in gen_method_call: fold receiver-type template args (the
+        // `<Cell, 9, U4>` on `Array<Cell, 9, U4>::new()`) into the FnRef
+        // so the inliner / monomorphizer sees them.
+        let mut combined = recv_ty_args;
+        combined.extend(tpl);
         block.push(HirOp::Call {
             target: FnRef {
                 type_name: resolved,
                 method_name: name.0.clone(),
-                template_args: tpl,
+                template_args: combined,
                 trait_name,
             },
             args: flat_args,
@@ -1246,6 +1362,105 @@ impl<'a> Generator<'a> {
         None
     }
 
+    /// If `expr` is a direct l-value (variable, self, or a field chain),
+    /// return the slot id that stores it. Used by `gen_method_call` to
+    /// route the receiver at the caller's existing storage rather than
+    /// allocating a fresh temp — preserving "params are by reference"
+    /// semantics for mutable receivers.
+    fn lvalue_slot(&self, expr: &ast::Expr) -> Option<SlotId> {
+        match expr {
+            ast::Expr::Variable(name) => self.lookup(name).map(|b| b.slot),
+            ast::Expr::SelfValue => self.lookup("self").map(|b| b.slot),
+            ast::Expr::Field(recv, field) => {
+                let base = self.lvalue_slot(&recv.0)?;
+                let recv_ty = self.infer_expr_type(&recv.0, &recv.1).ok()?;
+                let resolved = self.resolve_ty_name(&recv_ty);
+                let info = self.reg.types.get(&resolved)?;
+                let typer::TypeKind::Struct(typer::StructKind::Concrete(layout)) = &info.kind
+                else {
+                    return None;
+                };
+                let fl = layout.fields.iter().find(|f| f.name == field.0)?;
+                Some(SlotId(base.0 + fl.offset))
+            }
+            _ => None,
+        }
+    }
+
+    /// Get an expression's receiver cell size when it's a variable/field
+    /// we can size directly from a binding or layout. Returns `None` when
+    /// we can't — caller falls back to a type-name lookup.
+    fn receiver_cell_size(&self, expr: &ast::Expr) -> Option<u32> {
+        match expr {
+            ast::Expr::Variable(name) => self.lookup(name).map(|b| b.size).filter(|s| *s > 0),
+            ast::Expr::SelfValue => self.lookup("self").map(|b| b.size).filter(|s| *s > 0),
+            ast::Expr::Field(recv, field) => {
+                let recv_ty = self.infer_expr_type(&recv.0, &recv.1).ok()?;
+                let resolved = self.resolve_ty_name(&recv_ty);
+                let info = self.reg.types.get(&resolved)?;
+                let typer::TypeKind::Struct(typer::StructKind::Concrete(layout)) = &info.kind
+                else {
+                    return None;
+                };
+                layout
+                    .fields
+                    .iter()
+                    .find(|f| f.name == field.0)
+                    .map(|f| f.size)
+                    .filter(|s| *s > 0)
+            }
+            _ => None,
+        }
+    }
+
+    /// Infer the concrete template args of an expression's type. Needed so
+    /// calls like `arr.get(i)` where `arr: Array<Cell, 9, U4>` can carry
+    /// `[Cell, 9, U4]` through to the monomorphizer / native provider.
+    ///
+    /// Returns empty when we can't figure it out — downstream passes treat
+    /// empty as "not a generic receiver".
+    fn infer_receiver_type_args(&self, expr: &ast::Expr) -> Vec<ConcreteTemplateArg> {
+        match expr {
+            ast::Expr::Variable(name) => self
+                .lookup(name)
+                .map(|b| b.template_args.clone())
+                .unwrap_or_default(),
+            ast::Expr::SelfValue => self
+                .lookup("self")
+                .map(|b| b.template_args.clone())
+                .unwrap_or_default(),
+            ast::Expr::Field(recv, field) => {
+                // Find the receiver's concrete type name, then look up the
+                // field's AST type on its StructLayout, and lift its
+                // template args.
+                let Ok(recv_name) = self.infer_expr_type(&recv.0, &recv.1) else {
+                    return Vec::new();
+                };
+                let resolved = self.resolve_ty_name(&recv_name);
+                let Some(info) = self.reg.types.get(&resolved) else {
+                    return Vec::new();
+                };
+                let typer::TypeKind::Struct(typer::StructKind::Concrete(layout)) = &info.kind
+                else {
+                    return Vec::new();
+                };
+                layout
+                    .fields
+                    .iter()
+                    .find(|f| f.name == field.0)
+                    .map(|f| {
+                        f.ast_type
+                            .templates
+                            .iter()
+                            .map(|(tv, _)| lower_tv(tv))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            }
+            _ => Vec::new(),
+        }
+    }
+
     /// Consult the typer's scoped method-resolution to discover whether
     /// this (type, method) dispatches via a trait. Returns `Some(trait)` if
     /// it does, `None` for inherent dispatch, ambiguous, or not-found cases
@@ -1308,7 +1523,40 @@ impl<'a> Generator<'a> {
                     )
                 })?;
             let dst_slot = SlotId(dst.0 + field.offset);
-            self.gen_expr_into(&fval.0, &fval.1, Some(dst_slot), block)?;
+            // Same type-inference shortcut as gen_declaration: if the
+            // field's declared type is a generic like `Array<U4, 4, U4>`
+            // and the value is a bare `Array::new()` call, substitute the
+            // field's template args into the call's type.
+            let patched: Option<ast::Spanned<ast::Expr>>;
+            let value_ref = match &fval.0 {
+                ast::Expr::StaticCall {
+                    ty: call_ty,
+                    name: call_name,
+                    templates: call_tpl,
+                    args: call_args,
+                } if call_tpl.is_empty()
+                    && call_ty.0.name.0 == field.ast_type.name.0
+                    && !field.ast_type.templates.is_empty() =>
+                {
+                    let mut new_ty = call_ty.clone();
+                    new_ty.0.templates = field.ast_type.templates.clone();
+                    patched = Some((
+                        ast::Expr::StaticCall {
+                            ty: new_ty,
+                            name: call_name.clone(),
+                            templates: call_tpl.clone(),
+                            args: call_args.clone(),
+                        },
+                        fval.1.clone(),
+                    ));
+                    patched.as_ref().unwrap()
+                }
+                _ => {
+                    patched = None;
+                    fval
+                }
+            };
+            self.gen_expr_into(&value_ref.0, &value_ref.1, Some(dst_slot), block)?;
         }
         Ok(())
     }
@@ -1414,6 +1662,19 @@ impl<'a> Generator<'a> {
             ast::Expr::Field(recv, field) => {
                 let recv_ty = self.infer_expr_type(&recv.0, &recv.1)?;
                 let resolved = self.resolve_ty_name(&recv_ty);
+                // Prefer the stored AST type (which has the concrete type
+                // name) over the size-heuristic fallback.
+                if let Some(info) = self.reg.types.get(&resolved) {
+                    if let typer::TypeKind::Struct(typer::StructKind::Concrete(layout)) =
+                        &info.kind
+                    {
+                        if let Some(f) =
+                            layout.fields.iter().find(|f| f.name == field.0)
+                        {
+                            return Ok(f.ast_type.name.0.clone());
+                        }
+                    }
+                }
                 if let Ok(s) = self.reg_field_type(&resolved, &field.0, &field.1) {
                     s
                 } else {
@@ -1447,8 +1708,36 @@ impl<'a> Generator<'a> {
             ast::Expr::MethodCall { receiver, name, .. } => {
                 let recv_ty = self.infer_expr_type(&receiver.0, &receiver.1)?;
                 let resolved = self.resolve_ty_name(&recv_ty);
-                // Look up the method's return type in the FunctionDB. Try
-                // inherent, then any trait-keyed entry.
+
+                // Special-case: Array<T, N, F> synthesized methods. Their
+                // return types reference the (yet-unsubstituted) `T`/`F`
+                // template params — which the general lookup below can't
+                // handle because `T`/`F` aren't registered types.
+                if resolved == "Array" {
+                    let recv_args = self.infer_receiver_type_args(&receiver.0);
+                    if recv_args.len() == 3 {
+                        let arg_name = |i: usize| match &recv_args[i] {
+                            ConcreteTemplateArg::Type(t) => Some(t.name.clone()),
+                            _ => None,
+                        };
+                        match name.0.as_str() {
+                            "get" => {
+                                if let Some(n) = arg_name(0) {
+                                    return Ok(n);
+                                }
+                            }
+                            "len" => {
+                                if let Some(n) = arg_name(2) {
+                                    return Ok(n);
+                                }
+                            }
+                            "new" => return Ok("Array".to_string()),
+                            _ => {}
+                        }
+                    }
+                }
+
+                // General path: look up the method's return type in the DB.
                 let return_type_of = |f: &typer::Fn| -> Option<String> {
                     let ret = match f {
                         typer::Fn::Simple(s) => s.body.sig.return_type.as_ref()?,
@@ -1506,6 +1795,54 @@ fn lower_templates(templates: &[ast::Spanned<ast::TypeOrValue>]) -> Vec<Concrete
         .iter()
         .map(|(t, _)| lower_tv(t))
         .collect()
+}
+
+/// Return size of synthesized `Array<T, N, F>::method(...)` calls. Uses the
+/// receiver's concrete template args — which is how we know `T`'s size
+/// without monomorphizing first. Returns `None` for non-Array calls or
+/// when args aren't complete enough to decide.
+fn array_method_return_size(
+    type_name: &str,
+    method: &str,
+    recv_args: &[ConcreteTemplateArg],
+) -> Option<u32> {
+    if type_name != "Array" || recv_args.len() < 3 {
+        return None;
+    }
+    let t_size: u32 = match &recv_args[0] {
+        ConcreteTemplateArg::Type(t) => match t.name.as_str() {
+            "U4" | "Bool" => 1,
+            "U8" => 2,
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let n: u32 = match &recv_args[1] {
+        ConcreteTemplateArg::Value(v) => (*v).max(0) as u32,
+        _ => return None,
+    };
+    let f_size: u32 = match &recv_args[2] {
+        ConcreteTemplateArg::Type(t) => match t.name.as_str() {
+            "U4" | "Bool" => 1,
+            "U8" => 2,
+            _ => return None,
+        },
+        _ => return None,
+    };
+    match method {
+        "new" => Some(t_size * n),
+        "get" => Some(t_size),
+        "len" => Some(f_size),
+        "set" => Some(0),
+        _ => None,
+    }
+}
+
+/// Lower a raw (unspanned) list of AST `TypeOrValue`s to concrete template
+/// args. Used to lift cached `SlotInfo.type_args` / `FieldLayout.ast_type`
+/// template lists.
+pub(crate) fn lower_ast_tv_list(tvs: &[ast::TypeOrValue]) -> Vec<ConcreteTemplateArg> {
+    tvs.iter().map(lower_tv).collect()
 }
 
 fn lower_tv(t: &ast::TypeOrValue) -> ConcreteTemplateArg {

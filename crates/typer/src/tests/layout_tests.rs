@@ -15,10 +15,16 @@ fn discriminant_size_for_small_variant_counts() {
 
 #[test]
 fn struct_layout_sums_field_sizes() {
+    fn dummy_ty(name: &str) -> new_parser::ast::Type {
+        new_parser::ast::Type {
+            name: (name.to_string(), 0..0),
+            templates: vec![],
+        }
+    }
     let layout = StructLayout {
         fields: vec![
-            FieldLayout { name: "a".into(), offset: 0, size: 1 },
-            FieldLayout { name: "b".into(), offset: 1, size: 2 },
+            FieldLayout { name: "a".into(), offset: 0, size: 1, ast_type: dummy_ty("U4") },
+            FieldLayout { name: "b".into(), offset: 1, size: 2, ast_type: dummy_ty("U8") },
         ],
         size: 3,
     };

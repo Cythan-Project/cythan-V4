@@ -119,26 +119,18 @@ fn compile_morpion_hir() -> std::collections::HashMap<typer::FnSig, crate::HirFu
 }
 
 #[test]
-#[ignore = "pending: monomorphization of Array<Cell, 9, U4> and receiver-type-args through HIR gen (tasks #45, #46)"]
 fn morpion_inline_end_to_end() {
-    // Last stage: inline from `Morpion::main` and produce a flat HIR. This
-    // currently fails because `Array::new()`, `self.grid.getDyn(pos)`, etc.
-    // resolve to `Fn::Templated` entries (Array<T, E, F>) that the inliner
-    // can't dispatch without monomorphization. The Phase-7 `BuiltinNatives`
-    // *do* know how to emit HIR for Array methods, but the HIR generator
-    // doesn't yet thread the concrete receiver type args ([Cell, 9, U4])
-    // into `NativeCall.receiver_type_args` for method calls, so the
-    // natives can't fire either.
-    //
-    // Unignore this test after:
-    //   1. LocalBinding / infer_expr_type carry Vec<ConcreteTemplateArg>
-    //      for generic-typed values.
-    //   2. gen_method_call populates receiver_type_args from them.
-    //   3. The inliner either resolves templated calls via natives or
-    //      falls back to the monomorphize() path in Phase 6.2.
+    // Final stage: inline Morpion starting from main. Needs the Array
+    // monomorphizer to synthesize get/set/new/len for Array<Cell, 9, U4>.
     let fns = compile_morpion_hir();
     let entry = typer::FnSig::new("Morpion", "main");
-    let _ = crate::inline_program(&fns, &entry).expect("inline");
+    // compile_morpion_hir doesn't currently expose the registry, so
+    // reconstruct it for the inliner.
+    let reg = try_build_morpion_registry()
+        .unwrap_or_else(|e| panic!("typer: {:?}", e));
+    let inlined = crate::inline::inline_program_with_registry(&fns, &entry, Some(&reg))
+        .expect("inline");
+    let _mir = crate::hir_to_mir(&inlined.body).expect("mir conv");
 }
 
 #[test]
