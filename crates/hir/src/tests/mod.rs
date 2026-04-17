@@ -18,6 +18,8 @@ mod trait_dispatch_tests;
 mod template_stress_tests;
 mod operator_output_tests;
 mod edge_cases_tests;
+mod if_let_tests;
+mod misc_edge_tests;
 
 use new_parser::ast;
 

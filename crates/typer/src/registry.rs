@@ -564,24 +564,29 @@ impl TypeRegistry {
         let discriminant_size = discriminant_size_for(count);
 
         // Resolve each variant's payload size.
-        let mut resolved: Vec<(String, Option<i64>, CellCount)> =
+        let mut resolved: Vec<(String, Option<i64>, CellCount, Option<ast::Type>)> =
             Vec::with_capacity(count);
         let mut data_size: CellCount = 0;
         for v in &def.variants {
-            let size = match &v.data {
-                Some((ty, sp)) => self.resolve_type_size(ty, sp)?,
-                None => 0,
+            let (size, data_type) = match &v.data {
+                Some((ty, sp)) => (self.resolve_type_size(ty, sp)?, Some(ty.clone())),
+                None => (0, None),
             };
             if size > data_size {
                 data_size = size;
             }
-            resolved.push((v.name.0.clone(), v.discriminant.as_ref().map(|(n, _)| *n), size));
+            resolved.push((
+                v.name.0.clone(),
+                v.discriminant.as_ref().map(|(n, _)| *n),
+                size,
+                data_type,
+            ));
         }
 
         // Assign discriminant values: explicit values taken first; gaps filled
         // with the smallest unused non-negative integer.
         let mut used: std::collections::BTreeSet<u32> = Default::default();
-        for (_, discr, _) in &resolved {
+        for (_, discr, _, _) in &resolved {
             if let Some(d) = discr {
                 if *d < 0 {
                     return Err(TyperError::new("negative enum discriminant"));
@@ -591,7 +596,7 @@ impl TypeRegistry {
         }
         let mut next_auto: u32 = 0;
         let mut variants = Vec::with_capacity(count);
-        for (name, discr, size) in resolved {
+        for (name, discr, size, data_type) in resolved {
             let d = match discr {
                 Some(d) => d as u32,
                 None => {
@@ -608,6 +613,7 @@ impl TypeRegistry {
                 name,
                 discriminant: d,
                 data_size: size,
+                data_type,
             });
         }
 
@@ -1039,25 +1045,26 @@ impl TypeRegistry {
         let discriminant_size = discriminant_size_for(count);
 
         // Resolve each variant's payload size after substitution.
-        let mut resolved: Vec<(String, Option<i64>, CellCount)> = Vec::with_capacity(count);
+        let mut resolved: Vec<(String, Option<i64>, CellCount, Option<ast::Type>)> =
+            Vec::with_capacity(count);
         let mut data_size: CellCount = 0;
         for v in variants {
-            let size = match &v.data {
+            let (size, data_type) = match &v.data {
                 Some(data_ty) => {
                     let substituted = subst_ast_type(data_ty, &bindings);
-                    self.resolve_type_size(&substituted, sp)?
+                    (self.resolve_type_size(&substituted, sp)?, Some(substituted))
                 }
-                None => 0,
+                None => (0, None),
             };
             if size > data_size {
                 data_size = size;
             }
-            resolved.push((v.name.clone(), v.discriminant, size));
+            resolved.push((v.name.clone(), v.discriminant, size, data_type));
         }
 
         // Assign discriminant values exactly like compute_enum_layout.
         let mut used: std::collections::BTreeSet<u32> = Default::default();
-        for (_, discr, _) in &resolved {
+        for (_, discr, _, _) in &resolved {
             if let Some(d) = discr {
                 if *d < 0 {
                     return Err(TyperError::new("negative enum discriminant"));
@@ -1067,7 +1074,7 @@ impl TypeRegistry {
         }
         let mut next_auto: u32 = 0;
         let mut out_variants = Vec::with_capacity(count);
-        for (name, discr, size) in resolved {
+        for (name, discr, size, data_type) in resolved {
             let d = match discr {
                 Some(d) => d as u32,
                 None => {
@@ -1084,6 +1091,7 @@ impl TypeRegistry {
                 name,
                 discriminant: d,
                 data_size: size,
+                data_type,
             });
         }
 
@@ -1096,10 +1104,32 @@ impl TypeRegistry {
 
     /// Rough check: does this type reference a template parameter name, or
     /// does it instantiate a templated type? Used as a quick "can I compute
-    /// this now?" gate.
+    /// this now?" gate. Concrete generic instantiations (e.g. `Option<U4>`
+    /// where U4 is a known primitive) are *not* considered templated —
+    /// `resolve_type_size` will succeed on them.
     fn type_is_templated(&self, ty: &ast::Type) -> bool {
+        // If we can size it now, it's effectively concrete.
+        if self.resolve_type_size(ty, &ty.name.1).is_ok() {
+            return false;
+        }
+        // Otherwise: any remaining template params or unknown heads count
+        // as unresolved.
         if !ty.templates.is_empty() {
-            return true;
+            // Recurse: a concrete generic instantiation whose args are
+            // all concrete types is NOT templated.
+            return ty.templates.iter().any(|(tv, _)| match tv {
+                ast::TypeOrValue::Value(_) => false,
+                ast::TypeOrValue::Type(inner) => self.type_is_templated(inner),
+            }) || matches!(
+                self.types.get(&ty.name.0),
+                Some(TypeInfo {
+                    kind: TypeKind::Struct(StructKind::Templated { .. }),
+                    ..
+                }) | Some(TypeInfo {
+                    kind: TypeKind::Enum(EnumKind::Templated { .. }),
+                    ..
+                })
+            );
         }
         match self.types.get(&ty.name.0) {
             Some(TypeInfo { kind: TypeKind::Struct(StructKind::Templated { .. }), .. }) => true,

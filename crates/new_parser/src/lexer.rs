@@ -53,6 +53,7 @@ pub fn lexer() -> impl Parser<char, Vec<(Token, Span)>, Error = Simple<char>> {
         "while" => Token::While,
         "as" => Token::As,
         "use" => Token::Use,
+        "let" => Token::Let,
         "self" => Token::SelfValue,
         "_" => Token::Underscore,
         _ => {

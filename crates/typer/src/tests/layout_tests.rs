@@ -39,8 +39,8 @@ fn enum_layout_total_size_is_discr_plus_data() {
     // enum Option<u8>: 2 variants (discr=1), data size 2 (u8).
     let layout = EnumLayout {
         variants: vec![
-            EnumVariantLayout { name: "None".into(), discriminant: 0, data_size: 0 },
-            EnumVariantLayout { name: "Some".into(), discriminant: 1, data_size: 2 },
+            EnumVariantLayout { name: "None".into(), discriminant: 0, data_size: 0, data_type: None },
+            EnumVariantLayout { name: "Some".into(), discriminant: 1, data_size: 2, data_type: None },
         ],
         discriminant_size: 1,
         data_size: 2,
@@ -53,9 +53,9 @@ fn enum_layout_all_unit_has_no_data() {
     // enum Cell { Empty, O, X } → 3 variants, all unit.
     let layout = EnumLayout {
         variants: vec![
-            EnumVariantLayout { name: "Empty".into(), discriminant: 0, data_size: 0 },
-            EnumVariantLayout { name: "O".into(),     discriminant: 1, data_size: 0 },
-            EnumVariantLayout { name: "X".into(),     discriminant: 2, data_size: 0 },
+            EnumVariantLayout { name: "Empty".into(), discriminant: 0, data_size: 0, data_type: None },
+            EnumVariantLayout { name: "O".into(),     discriminant: 1, data_size: 0, data_type: None },
+            EnumVariantLayout { name: "X".into(),     discriminant: 2, data_size: 0, data_type: None },
         ],
         discriminant_size: 1,
         data_size: 0,

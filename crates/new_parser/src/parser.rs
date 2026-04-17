@@ -290,42 +290,6 @@ pub fn expr_parser() -> impl Parser<Token, Spanned<Expr>, Error = PErr> + Clone 
             (e, sp)
         });
 
-        // Control flow expressions — parsed as atoms.
-        let if_expr = recursive(|if_rec: Recursive<Token, Spanned<Expr>, PErr>| {
-            just(Token::If)
-                .ignore_then(expr.clone())
-                .then(block.clone())
-                .then(
-                    just(Token::Else)
-                        .ignore_then(choice((
-                            if_rec.clone(),
-                            block.clone().map(|b| {
-                                let sp = b.1.clone();
-                                (Expr::Block(Box::new(b)), sp)
-                            }),
-                        )))
-                        .or_not(),
-                )
-                .map_with_span(|((cond, then), else_), sp| {
-                    (
-                        Expr::If {
-                            cond: Box::new(cond),
-                            then: Box::new(then),
-                            else_: else_.map(Box::new),
-                        },
-                        sp,
-                    )
-                })
-        });
-
-        let loop_expr = just(Token::Loop)
-            .ignore_then(block.clone())
-            .map_with_span(|b, sp| (Expr::Loop(Box::new(b)), sp));
-
-        let return_expr = just(Token::Return)
-            .ignore_then(expr.clone().or_not())
-            .map_with_span(|e, sp| (Expr::Return(e.map(Box::new)), sp));
-
         // match ::= `match` expr `{` arm,* `}`
         // arm   ::= pattern `=>` expr
         // pattern ::= `_`  |  Type `::` Ident ( `(` binding `)` )?
@@ -363,6 +327,86 @@ pub fn expr_parser() -> impl Parser<Token, Spanned<Expr>, Error = PErr> + Clone 
                     )
                 }),
         ));
+
+        // Control flow expressions — parsed as atoms.
+        //
+        // Two shapes:
+        //   `if COND { THEN } ( `else` ELSE )?`
+        //   `if let PAT = SCRUT { THEN } ( `else` ELSE )?`
+        //
+        // The `if let` form desugars to a `match SCRUT { PAT => THEN, _ =>
+        // ELSE }` at parse time — no separate AST node — so downstream
+        // passes only ever deal with plain Match/If.
+        let if_expr = recursive(|if_rec: Recursive<Token, Spanned<Expr>, PErr>| {
+            let else_branch = just(Token::Else)
+                .ignore_then(choice((
+                    if_rec.clone(),
+                    block.clone().map(|b| {
+                        let sp = b.1.clone();
+                        (Expr::Block(Box::new(b)), sp)
+                    }),
+                )))
+                .or_not();
+
+            // `if let PAT = EXPR { BLOCK } ( else BRANCH )?` → desugar to
+            // `match EXPR { PAT => { BLOCK }, _ => BRANCH }`. The wildcard
+            // arm is omitted (`None`) if there's no else — callers that
+            // need a fallthrough should supply one explicitly.
+            let if_let = just(Token::If)
+                .ignore_then(just(Token::Let))
+                .ignore_then(pattern.clone())
+                .then_ignore(just(Token::Assign))
+                .then(expr.clone())
+                .then(block.clone())
+                .then(else_branch.clone())
+                .map_with_span(|(((pat, scrut), then_block), else_), sp| {
+                    let then_sp = then_block.1.clone();
+                    let then_expr = (Expr::Block(Box::new(then_block)), then_sp.clone());
+                    let mut arms = vec![MatchArm {
+                        pattern: pat,
+                        body: then_expr,
+                    }];
+                    if let Some(else_expr) = else_ {
+                        let else_sp = else_expr.1.clone();
+                        arms.push(MatchArm {
+                            pattern: (Pattern::Wildcard, else_sp.clone()),
+                            body: else_expr,
+                        });
+                    }
+                    (
+                        Expr::Match {
+                            scrutinee: Box::new(scrut),
+                            arms,
+                        },
+                        sp,
+                    )
+                });
+
+            let plain_if = just(Token::If)
+                .ignore_then(expr.clone())
+                .then(block.clone())
+                .then(else_branch)
+                .map_with_span(|((cond, then), else_), sp| {
+                    (
+                        Expr::If {
+                            cond: Box::new(cond),
+                            then: Box::new(then),
+                            else_: else_.map(Box::new),
+                        },
+                        sp,
+                    )
+                });
+
+            choice((if_let, plain_if))
+        });
+
+        let loop_expr = just(Token::Loop)
+            .ignore_then(block.clone())
+            .map_with_span(|b, sp| (Expr::Loop(Box::new(b)), sp));
+
+        let return_expr = just(Token::Return)
+            .ignore_then(expr.clone().or_not())
+            .map_with_span(|e, sp| (Expr::Return(e.map(Box::new)), sp));
 
         let match_arm = pattern
             .then_ignore(just(Token::FatArrow))

@@ -109,6 +109,11 @@ pub struct EnumVariantLayout {
     pub discriminant: u32,
     /// Size in cells of this variant's payload (0 for unit variants).
     pub data_size: CellCount,
+    /// Original AST type of the payload, if any. Kept so downstream
+    /// passes (HIR match lowering) can recover a concrete type name for
+    /// pattern bindings — `data_size` alone can't distinguish `U8` (2)
+    /// from a `Pair<U4>` (also 2).
+    pub data_type: Option<ast::Type>,
 }
 
 /// Smallest discriminant size in cells that can fit `variant_count` distinct

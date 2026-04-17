@@ -902,13 +902,15 @@ impl<'a> Generator<'a> {
         let (layout, payload_ast): (typer::EnumLayout, Vec<Option<ast::Type>>) =
             match &info.kind {
                 typer::TypeKind::Enum(typer::EnumKind::Concrete(l)) => {
-                    // Re-scan the original enum def to pair variants with
-                    // their ast::Type payload (kept via `methods`/extension
-                    // blocks in TypeInfo — but not directly here). Concrete
-                    // enums don't retain the AST data types, so we treat
-                    // them as unknown. The code below falls back to a size-
-                    // driven inference.
-                    let payload = vec![None; l.variants.len()];
+                    // Concrete enums now keep each variant's payload AST
+                    // type on the layout — pull it out so pattern bindings
+                    // get the right type (e.g. `U8` rather than a defaulted
+                    // `U4`).
+                    let payload: Vec<Option<ast::Type>> = l
+                        .variants
+                        .iter()
+                        .map(|v| v.data_type.clone())
+                        .collect();
                     (l.clone(), payload)
                 }
                 typer::TypeKind::Enum(typer::EnumKind::Templated { variants }) => {

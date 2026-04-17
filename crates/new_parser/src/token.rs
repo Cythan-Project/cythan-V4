@@ -32,6 +32,7 @@ pub enum Token {
     While,
     As,
     Use,
+    Let,
     SelfValue,
 
     // Symbols
@@ -95,6 +96,7 @@ impl fmt::Display for Token {
             Token::While => write!(f, "while"),
             Token::As => write!(f, "as"),
             Token::Use => write!(f, "use"),
+            Token::Let => write!(f, "let"),
             Token::SelfValue => write!(f, "self"),
             Token::Dot => write!(f, "."),
             Token::Comma => write!(f, ","),
