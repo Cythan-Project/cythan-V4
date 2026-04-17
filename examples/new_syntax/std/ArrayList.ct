@@ -1,0 +1,69 @@
+// ArrayList<Index, N, T> — a fixed-capacity (N) growable list of T, indexed
+// by Index. Backed by `Array<T, N, Index>`; a single `Index` cell tracks
+// the current element count.
+//
+// REQUIREMENT: `Index` must implement `Ord` (`>`, `<`, etc.) so the list
+// can compare its size against its capacity. The compiler doesn't yet
+// enforce trait bounds, so this is a convention the caller must honor —
+// `impl Ord for U4` ships with the stdlib.
+struct ArrayList<Index, N, T> {
+    Array<T, N, Index> backing,
+    Index size,
+}
+
+extension ArrayList<Index, N, T> {
+    // Construct an empty list. Backing cells are zero-initialized by
+    // `Array::new()`; size starts at the Index type's zero value.
+    fn new(): Self {
+        Self {
+            backing: Array::new(),
+            size: 0,
+        }
+    }
+
+    fn len(self): Index {
+        self.size
+    }
+
+    fn capacity(self): Index {
+        self.backing.len()
+    }
+
+    fn is_empty(self): Bool {
+        self.size == 0
+    }
+
+    // size >= capacity iff NOT (capacity > size).
+    fn is_full(self): Bool {
+        if self.capacity() > self.size {
+            false
+        } else {
+            true
+        }
+    }
+
+    // Append an element. Silent no-op if the list is already full.
+    fn push(mut self, T value) {
+        if self.is_full() {
+            // full — drop on the floor
+        } else {
+            self.backing.set(self.size, value);
+            self.size += 1;
+        }
+    }
+
+    // Remove and return the last element. Undefined behavior on an empty
+    // list (self.size - 1 underflows to Index's max).
+    fn pop(mut self): T {
+        self.size -= 1;
+        self.backing.get(self.size)
+    }
+
+    fn get(self, Index i): T {
+        self.backing.get(i)
+    }
+
+    fn set(mut self, Index i, T value) {
+        self.backing.set(i, value);
+    }
+}

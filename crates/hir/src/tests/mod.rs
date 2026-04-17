@@ -9,6 +9,7 @@ mod mutability_tests;
 mod opt_tests;
 pub mod interp_tests;
 mod array_tests;
+mod arraylist_tests;
 mod game_tests;
 mod lower_tests;
 mod natives_tests;
