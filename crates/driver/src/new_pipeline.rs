@@ -1,24 +1,30 @@
 //! End-to-end compile + run harness for the new pipeline
-//! (`new_parser` → `typer` → `hir` → `mir`). Built for automated
-//! interaction tests: caller supplies the source files and canned
-//! keyboard input, harness returns the captured output.
+//! (`new_parser` → `typer` → `hir` → `mir`).
 //!
-//! The pipeline itself is driven by the hir crate; this module just
-//! stitches the passes together behind one ergonomic entry point.
+//! Two audiences:
+//!   1. Automated interaction tests — `compile_and_run(...)` takes
+//!      sources + scripted input, returns captured output.
+//!   2. The CLI toolchain (`cythan new check | build | run`) — uses
+//!      `check(...)`, `build_hir(...)`, and `compile(...)` to stage
+//!      the pipeline and inspect intermediate products.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
-use hir::{gen_function_with_natives, hir_to_mir, inline_program_full, BuiltinNatives};
+use hir::{
+    gen_function_with_natives, hir_to_mir, inline_program_full, text_dump, BuiltinNatives,
+    HirFunction,
+};
 use mir::{MemoryState, MirCodeBlock};
 
 use crate::test_context::TestContext;
 
-/// Compile a program through the new pipeline, producing the fully
-/// inlined MIR block ready to execute.
-pub fn compile(
+/// Parse every source file and build the typer registry + function
+/// DB. Stops before HIR generation — this is what `check` relies on
+/// for "does it compile?" without paying the HIR/inline cost.
+pub fn check_registry(
     files: &[(&str, String)],
-    entry: &typer::FnSig,
-) -> Result<MirCodeBlock, String> {
+) -> Result<(typer::TypeRegistry, typer::FunctionDB), String> {
     let parsed: Vec<(String, Vec<new_parser::ast::Spanned<new_parser::ast::Item>>)> = files
         .iter()
         .map(|(name, src)| {
@@ -33,12 +39,21 @@ pub fn compile(
         .map(|(n, v)| (n.as_str(), v.as_slice()))
         .collect();
     let reg = typer::TypeRegistry::from_files(&as_refs)
-        .map_err(|errs| format!("typer: {:?}", errs))?;
+        .map_err(|errs| format_typer_errors(&errs))?;
     let db = typer::FunctionDB::from_registry(&reg)
-        .map_err(|errs| format!("fn_db: {:?}", errs))?;
+        .map_err(|errs| format_typer_errors(&errs))?;
+    Ok((reg, db))
+}
 
+/// Build every `Simple` function's HIR. Templated functions stay in
+/// the DB for inlining later. Returns the HIR map plus the registry
+/// so downstream stages (inliner, HIR text dump) can use both.
+pub fn build_hir(
+    files: &[(&str, String)],
+) -> Result<BuiltHir, String> {
+    let (reg, db) = check_registry(files)?;
     let natives = BuiltinNatives::new();
-    let mut hir_fns = HashMap::new();
+    let mut hir_fns: HashMap<typer::FnSig, HirFunction> = HashMap::new();
     for (k, f) in &db.functions {
         if let typer::Fn::Simple(s) = f {
             let hir = gen_function_with_natives(k, s, &reg, &db, Some(&natives))
@@ -46,8 +61,71 @@ pub fn compile(
             hir_fns.insert(k.clone(), hir);
         }
     }
+    Ok(BuiltHir { reg, db, hir: hir_fns })
+}
 
-    let inlined = inline_program_full(&hir_fns, entry, Some(&reg), Some(&db))
+/// All artefacts from the HIR-build stage. Keeping them together
+/// makes the `check` → `build-hir` → `run` progression explicit.
+pub struct BuiltHir {
+    pub reg: typer::TypeRegistry,
+    pub db: typer::FunctionDB,
+    pub hir: HashMap<typer::FnSig, HirFunction>,
+}
+
+/// `check` toolchain entry point: run the new pipeline as far as HIR
+/// gen and report the first error, or an `Ok` summary with counts.
+pub fn check(files: &[(&str, String)]) -> Result<CheckSummary, String> {
+    let built = build_hir(files)?;
+    Ok(CheckSummary {
+        types: built.reg.type_infos.len(),
+        traits: built.reg.trait_infos.len(),
+        functions: built.db.functions.len(),
+        simple_fns: built.hir.len(),
+    })
+}
+
+/// High-level report for a successful `check` — useful for CLI output.
+#[derive(Debug, Clone)]
+pub struct CheckSummary {
+    pub types: usize,
+    pub traits: usize,
+    pub functions: usize,
+    pub simple_fns: usize,
+}
+
+impl std::fmt::Display for CheckSummary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "ok: {} type{}, {} trait{}, {} function{} ({} simple)",
+            self.types,
+            plural(self.types),
+            self.traits,
+            plural(self.traits),
+            self.functions,
+            plural(self.functions),
+            self.simple_fns,
+        )
+    }
+}
+
+fn plural(n: usize) -> &'static str {
+    if n == 1 { "" } else { "s" }
+}
+
+/// Render the HIR produced by `build_hir` as text.
+pub fn hir_to_text(hir: &HashMap<typer::FnSig, HirFunction>) -> String {
+    text_dump::dump_program(hir)
+}
+
+/// Compile a program through the new pipeline, producing the fully
+/// inlined MIR block ready to execute.
+pub fn compile(
+    files: &[(&str, String)],
+    entry: &typer::FnSig,
+) -> Result<MirCodeBlock, String> {
+    let built = build_hir(files)?;
+    let inlined = inline_program_full(&built.hir, entry, Some(&built.reg), Some(&built.db))
         .map_err(|e| format!("inline: {}", e))?;
     hir_to_mir(&inlined.body).map_err(|e| format!("mir: {}", e))
 }
@@ -107,5 +185,59 @@ pub fn load_std(base: &std::path::Path) -> Vec<(&'static str, String)> {
         ("std/U4.ct", read("std/U4.ct")),
         ("std/U8.ct", read("std/U8.ct")),
         ("std/Array.ct", read("std/Array.ct")),
+        ("std/DynArray.ct", read("std/DynArray.ct")),
     ]
+}
+
+/// Convenience: gather the standard file-set for the CLI toolchain.
+/// Loads every `.ct` file directly under `std_dir`, then appends the
+/// user's main file. File names are kept relative so module paths
+/// derive correctly (`std/Foo.ct` → `std::Foo`).
+pub fn gather_files(
+    std_dir: &Path,
+    main_file: &Path,
+) -> Result<Vec<(String, String)>, String> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    if std_dir.is_dir() {
+        let mut entries: Vec<PathBuf> = std::fs::read_dir(std_dir)
+            .map_err(|e| format!("read {}: {}", std_dir.display(), e))?
+            .filter_map(|r| r.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|e| e == "ct"))
+            .collect();
+        entries.sort();
+        for path in entries {
+            let name = format!(
+                "std/{}",
+                path.file_name().unwrap().to_string_lossy()
+            );
+            let src = std::fs::read_to_string(&path)
+                .map_err(|e| format!("read {}: {}", path.display(), e))?
+                .replace('\r', "");
+            out.push((name, src));
+        }
+    }
+    let main_name = main_file
+        .file_name()
+        .ok_or_else(|| format!("main path has no file name: {}", main_file.display()))?
+        .to_string_lossy()
+        .into_owned();
+    let main_src = std::fs::read_to_string(main_file)
+        .map_err(|e| format!("read {}: {}", main_file.display(), e))?
+        .replace('\r', "");
+    out.push((main_name, main_src));
+    Ok(out)
+}
+
+fn format_typer_errors(errs: &[typer::TyperError]) -> String {
+    let mut s = String::new();
+    for (i, e) in errs.iter().enumerate() {
+        if i > 0 {
+            s.push('\n');
+        }
+        match &e.span {
+            Some(sp) => s.push_str(&format!("error at {}..{}: {}", sp.start, sp.end, e.message)),
+            None => s.push_str(&format!("error: {}", e.message)),
+        }
+    }
+    s
 }

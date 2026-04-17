@@ -148,6 +148,69 @@ fn harness_feeds_scripted_input() {
     assert_eq!(result.output, "AB\n");
 }
 
+// -----------------------------------------------------------------------
+// Toolchain tests — exercise the `check` / `build-hir` staging used by
+// the `cythan new` subcommands without going through the CLI binary.
+// -----------------------------------------------------------------------
+
+#[test]
+fn toolchain_check_reports_ok_summary() {
+    let mut files = new_syntax_stdlib();
+    files.push((
+        "Trivial.ct",
+        "struct Trivial {} extension Trivial { fn main(): U4 { 0 } }".to_string(),
+    ));
+    let summary = cythan_driver::new_pipeline::check(&files).expect("check");
+    assert!(summary.types >= 1, "U4 at least should be present");
+    assert!(summary.simple_fns >= 1, "Trivial::main is simple");
+    let text = format!("{}", summary);
+    assert!(text.starts_with("ok:"), "summary should start with 'ok:', got: {}", text);
+}
+
+#[test]
+fn toolchain_check_surfaces_typer_errors() {
+    let mut files = new_syntax_stdlib();
+    files.push((
+        "Bad.ct",
+        // `Nope` is not a declared type — resolution fails.
+        "struct Bad { Nope field, }".to_string(),
+    ));
+    let err = cythan_driver::new_pipeline::check(&files).unwrap_err();
+    assert!(
+        err.contains("error") || err.to_lowercase().contains("unknown"),
+        "expected a typer error message, got: {}",
+        err
+    );
+}
+
+#[test]
+fn toolchain_build_hir_produces_dump() {
+    let mut files = new_syntax_stdlib();
+    files.push((
+        "Dump.ct",
+        r#"
+            struct Dump {}
+            extension Dump {
+                fn main(): U4 {
+                    'x'.print();
+                    0
+                }
+            }
+        "#
+        .to_string(),
+    ));
+    let built = cythan_driver::new_pipeline::build_hir(&files).expect("build_hir");
+    let text = cythan_driver::new_pipeline::hir_to_text(&built.hir);
+    // The dump must cover Dump::main and its name should appear.
+    assert!(text.contains("fn Dump::main"), "missing Dump::main entry; got:\n{}", text);
+    // And reference some U8 print call.
+    assert!(
+        text.contains("U8::print") || text.contains("U4::print"),
+        "expected a print call site; got:\n{}",
+        text
+    );
+}
+
 #[test]
 fn harness_compile_and_run_are_composable() {
     // The compile / run split lets callers reuse the compiled MIR

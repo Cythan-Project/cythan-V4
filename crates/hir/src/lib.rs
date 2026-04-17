@@ -8,6 +8,7 @@ pub mod ir;
 pub mod monomorph;
 pub mod natives;
 pub mod opt;
+pub mod text_dump;
 
 #[cfg(test)]
 mod tests;

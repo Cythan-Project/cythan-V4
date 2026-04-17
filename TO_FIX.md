@@ -74,6 +74,30 @@ codepoints that then re-encode to two UTF-8 bytes in the captured
 would capture output as `Vec<u8>` instead of `String`, or push bytes
 directly via `push(c)` that takes a raw byte.
 
+## CLI toolchain for the new pipeline — DONE
+
+`cythan new <command>` drives the new pipeline from the command line:
+
+- `cythan new check <file>` — run the full new pipeline up through
+  HIR gen; exits non-zero on any error, or prints a one-line summary
+  `ok: <N> types, <N> traits, <N> functions (<N> simple)`.
+- `cythan new build <file> -o <file.hir>` — compile to HIR and write
+  a human-readable text dump (sorted by `FnSig` for stable diffs).
+- `cythan new run <file>` — full compile + MIR interpret, wired to
+  stdin/stdout. Accepts `--entry-type` / `--entry-method` (defaults:
+  file stem / `main`) and `--mem-cells` (default 4096).
+
+A `--new-std-dir` global flag selects the stdlib (defaults to
+`examples/new_syntax/std`). Internal API lives in
+`cythan_driver::new_pipeline::{check, build_hir, hir_to_text,
+compile, compile_and_run, gather_files}`; the HIR text format is
+implemented in `crates/hir/src/text_dump.rs`.
+
+Three toolchain unit tests (`toolchain_*` in
+`src/new_pipeline_tests.rs`) cover the OK/error paths of `check` and
+the output shape of `build-hir`. All four migrated games pass
+`cythan new check` cleanly.
+
 ## 2. Two parsers in-tree
 
 `crates/frontend` has the old hand-written tokenizer+parser driving the

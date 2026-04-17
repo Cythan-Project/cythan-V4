@@ -18,9 +18,13 @@ mod new_pipeline_tests;
 struct Cli {
     #[command(subcommand)]
     command: Command,
-    /// Standard library directory
+    /// Standard library directory (legacy pipeline).
     #[arg(long, global = true, default_value = "cythan/std")]
     std_dir: PathBuf,
+    /// Standard library directory for the new pipeline
+    /// (`new_parser` → `typer` → `hir` → `mir`).
+    #[arg(long, global = true, default_value = "examples/new_syntax/std")]
+    new_std_dir: PathBuf,
 }
 
 #[derive(Subcommand)]
@@ -83,6 +87,44 @@ enum Command {
     Exe {
         /// Input binary file
         input: PathBuf,
+    },
+    /// New-pipeline toolchain (`new_parser` → `typer` → `hir` → `mir`)
+    New {
+        #[command(subcommand)]
+        command: NewCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum NewCommand {
+    /// Type-check + HIR-gen a program; report errors or a success summary.
+    /// Exits non-zero if any stage of the new pipeline fails.
+    Check {
+        /// Main source file (e.g. `examples/new_syntax/Morpion.ct`).
+        file: PathBuf,
+    },
+    /// Compile to HIR and write a human-readable `.hir` dump.
+    Build {
+        /// Main source file.
+        file: PathBuf,
+        /// Output HIR text file.
+        #[arg(short, long)]
+        output: PathBuf,
+    },
+    /// Full compile + MIR-interpret against stdin/stdout.
+    Run {
+        /// Main source file.
+        file: PathBuf,
+        /// Entry-point type name. Defaults to the file's stem
+        /// (e.g. `Morpion.ct` → `Morpion`).
+        #[arg(long)]
+        entry_type: Option<String>,
+        /// Entry-point method. Defaults to `main`.
+        #[arg(long, default_value = "main")]
+        entry_method: String,
+        /// Memory budget in cells (one cell = 4 bits).
+        #[arg(long, default_value_t = 4096)]
+        mem_cells: usize,
     },
 }
 
@@ -249,5 +291,92 @@ fn main() {
             );
             eprintln!("Took {} steps", k);
         }
+        Command::New { command } => run_new_command(command, &cli.new_std_dir),
     }
+}
+
+fn run_new_command(command: NewCommand, new_std_dir: &Path) {
+    use cythan_driver::new_pipeline;
+
+    match command {
+        NewCommand::Check { file } => {
+            let files = gather_or_die(new_std_dir, &file);
+            let refs: Vec<(&str, String)> = files
+                .iter()
+                .map(|(n, s)| (n.as_str(), s.clone()))
+                .collect();
+            match new_pipeline::check(&refs) {
+                Ok(summary) => {
+                    eprintln!("{}", summary);
+                }
+                Err(msg) => {
+                    eprintln!("{}", msg);
+                    std::process::exit(1);
+                }
+            }
+        }
+        NewCommand::Build { file, output } => {
+            let files = gather_or_die(new_std_dir, &file);
+            let refs: Vec<(&str, String)> = files
+                .iter()
+                .map(|(n, s)| (n.as_str(), s.clone()))
+                .collect();
+            match new_pipeline::build_hir(&refs) {
+                Ok(built) => {
+                    let text = new_pipeline::hir_to_text(&built.hir);
+                    std::fs::write(&output, text)
+                        .unwrap_or_else(|e| die(&format!("write {}: {}", output.display(), e)));
+                    eprintln!(
+                        "wrote HIR for {} function(s) to {}",
+                        built.hir.len(),
+                        output.display()
+                    );
+                }
+                Err(msg) => die(&msg),
+            }
+        }
+        NewCommand::Run {
+            file,
+            entry_type,
+            entry_method,
+            mem_cells,
+        } => {
+            let entry_type = entry_type.unwrap_or_else(|| {
+                file.file_stem()
+                    .expect("main file has no stem")
+                    .to_string_lossy()
+                    .into_owned()
+            });
+            let files = gather_or_die(new_std_dir, &file);
+            let refs: Vec<(&str, String)> = files
+                .iter()
+                .map(|(n, s)| (n.as_str(), s.clone()))
+                .collect();
+            let entry = typer::FnSig::new(&entry_type, &entry_method);
+            let mir = match new_pipeline::compile(&refs, &entry) {
+                Ok(mir) => mir,
+                Err(msg) => die(&msg),
+            };
+            eprintln!(
+                "running {}::{} ({} cells)",
+                entry_type, entry_method, mem_cells
+            );
+            let mut state = mir::MemoryState::new(mem_cells, 8);
+            let mut ctx = mir::StdIoContext;
+            state.execute_block(&mir, &mut ctx);
+            eprintln!("done ({} MIR steps)", state.instr_count);
+        }
+    }
+}
+
+fn gather_or_die(std_dir: &Path, main: &Path) -> Vec<(String, String)> {
+    match cythan_driver::new_pipeline::gather_files(std_dir, main) {
+        Ok(v) => v,
+        Err(msg) => die(&msg),
+    }
+}
+
+fn die(msg: &str) -> ! {
+    eprintln!("{}", msg);
+    std::process::exit(1)
 }
