@@ -146,17 +146,34 @@ fn subst_sig(
     sig: &ast::FunctionSig,
     bindings: &HashMap<String, ConcreteTemplateArg>,
 ) -> ast::FunctionSig {
+    // If we have a `Self` binding (monomorphizing a method on a generic
+    // type), materialize it as an AST type so we can fill in any bare
+    // `self` params — they start with ty=None which would leave the
+    // flattener guessing at the concrete enclosing type. After this pass
+    // every `self` has an explicit concrete type.
+    let self_ty_ast = bindings
+        .get("Self")
+        .and_then(|b| match b {
+            ConcreteTemplateArg::Type(ct) => Some(ct.clone()),
+            _ => None,
+        })
+        .map(|ct| concrete_type_to_ast(&ct, &(0..0)).0);
+
     let params = sig
         .params
         .iter()
-        .map(|p| ast::Param {
-            name: p.name.clone(),
-            ty: p
-                .ty
-                .as_ref()
-                .map(|(t, sp)| (subst_type(t, bindings), sp.clone())),
-            mutable: p.mutable,
-            is_self: p.is_self,
+        .map(|p| {
+            let ty = match (&p.ty, p.is_self, &self_ty_ast) {
+                (Some((t, sp)), _, _) => Some((subst_type(t, bindings), sp.clone())),
+                (None, true, Some(self_ast)) => Some((self_ast.clone(), p.name.1.clone())),
+                (None, _, _) => None,
+            };
+            ast::Param {
+                name: p.name.clone(),
+                ty,
+                mutable: p.mutable,
+                is_self: p.is_self,
+            }
         })
         .collect();
     let return_type = sig
@@ -329,7 +346,9 @@ pub fn monomorphize(
 ) -> Result<HirFunction, String> {
     if templated.templates.len() != key.template_args.len() {
         return Err(format!(
-            "template arg mismatch: {} expected, {} given",
+            "template arg mismatch for {}::{}: {} expected, {} given",
+            key.sig.type_name,
+            key.sig.method_name,
             templated.templates.len(),
             key.template_args.len(),
         ));
@@ -337,6 +356,32 @@ pub fn monomorphize(
     let mut bindings: HashMap<String, ConcreteTemplateArg> = HashMap::new();
     for (name, arg) in templated.templates.iter().zip(key.template_args.iter()) {
         bindings.insert(name.clone(), arg.clone());
+    }
+    // `Self` inside a generic method must mean "the concrete instantiation"
+    // — e.g. `ArrayList<U4, 4, U4>`, not the bare `ArrayList`. Inject a
+    // synthetic binding so `subst_type` replaces `Self` wherever it
+    // appears in the body's type references.
+    //
+    // The number of enclosing-type template params is inferred by looking
+    // at the owning type in the registry. If present, we take the first
+    // N args as its template args.
+    if let Some(info) = reg.types.get(&templated.type_name) {
+        let n_type_templates = info.templates.len();
+        if n_type_templates <= key.template_args.len() {
+            let self_args: Vec<ConcreteTemplateArg> = key
+                .template_args
+                .iter()
+                .take(n_type_templates)
+                .cloned()
+                .collect();
+            bindings.insert(
+                "Self".to_string(),
+                ConcreteTemplateArg::Type(ConcreteType {
+                    name: templated.type_name.clone(),
+                    args: self_args,
+                }),
+            );
+        }
     }
 
     // Substitute into the function body.

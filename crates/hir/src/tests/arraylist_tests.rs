@@ -14,8 +14,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::{
-    gen_function_with_natives, hir_to_mir, inline::inline_program_with_registry,
-    BuiltinNatives, HirFunction,
+    gen_function_with_natives, hir_to_mir, inline_program_full, BuiltinNatives, HirFunction,
 };
 
 fn load(path: &str) -> String {
@@ -28,8 +27,14 @@ fn load(path: &str) -> String {
 }
 
 /// Compile stdlib (System, Ops, Bool, U4, U8, Array, ArrayList) + the given
-/// user source into a `(registry, hir_fns)` pair ready for inlining.
-fn compile_program(extra: &str) -> (typer::TypeRegistry, HashMap<typer::FnSig, HirFunction>) {
+/// user source into a `(registry, db, hir_fns)` triple ready for inlining.
+fn compile_program(
+    extra: &str,
+) -> (
+    typer::TypeRegistry,
+    typer::FunctionDB,
+    HashMap<typer::FnSig, HirFunction>,
+) {
     let parts = [
         ("std/System.ct", load("std/System.ct")),
         ("std/Ops.ct", load("std/Ops.ct")),
@@ -63,12 +68,13 @@ fn compile_program(extra: &str) -> (typer::TypeRegistry, HashMap<typer::FnSig, H
             out.insert(k.clone(), hir);
         }
     }
-    (reg, out)
+    (reg, db, out)
 }
 
 fn run_program(extra: &str, entry: &typer::FnSig, args: &[u8]) -> Vec<u8> {
-    let (reg, fns) = compile_program(extra);
-    let inlined = inline_program_with_registry(&fns, entry, Some(&reg)).expect("inline");
+    let (reg, db, fns) = compile_program(extra);
+    let inlined =
+        inline_program_full(&fns, entry, Some(&reg), Some(&db)).expect("inline");
     let mir_block = hir_to_mir(&inlined.body).expect("mir conv");
 
     struct Null;
@@ -93,7 +99,7 @@ fn run_program(extra: &str, entry: &typer::FnSig, args: &[u8]) -> Vec<u8> {
 // ---------- Construction & introspection ---------------------------------
 
 #[test]
-#[ignore = "pending user-struct monomorphization"]
+
 fn new_list_is_empty() {
     let src = r#"
         extension U4 {
@@ -108,7 +114,7 @@ fn new_list_is_empty() {
 }
 
 #[test]
-#[ignore = "pending user-struct monomorphization"]
+
 fn new_list_has_zero_len() {
     let src = r#"
         extension U4 {
@@ -123,7 +129,7 @@ fn new_list_has_zero_len() {
 }
 
 #[test]
-#[ignore = "pending user-struct monomorphization"]
+
 fn new_list_capacity_equals_template_n() {
     let src = r#"
         extension U4 {
@@ -138,7 +144,7 @@ fn new_list_capacity_equals_template_n() {
 }
 
 #[test]
-#[ignore = "pending user-struct monomorphization"]
+
 fn new_list_is_not_full() {
     let src = r#"
         extension U4 {
@@ -155,7 +161,7 @@ fn new_list_is_not_full() {
 // ---------- push / get round-trip -----------------------------------------
 
 #[test]
-#[ignore = "pending user-struct monomorphization"]
+
 fn push_then_get_returns_value() {
     let src = r#"
         extension U4 {
@@ -171,7 +177,7 @@ fn push_then_get_returns_value() {
 }
 
 #[test]
-#[ignore = "pending user-struct monomorphization"]
+
 fn push_increments_len() {
     let src = r#"
         extension U4 {
@@ -188,7 +194,7 @@ fn push_increments_len() {
 }
 
 #[test]
-#[ignore = "pending user-struct monomorphization"]
+
 fn multiple_pushes_land_at_consecutive_indices() {
     let src = r#"
         extension U4 {
@@ -209,7 +215,7 @@ fn multiple_pushes_land_at_consecutive_indices() {
 // ---------- push past capacity is a no-op --------------------------------
 
 #[test]
-#[ignore = "pending user-struct monomorphization"]
+
 fn push_past_capacity_is_silent_noop() {
     // Capacity 2, push 3 times. The third push drops on the floor; len
     // stays at 2, and slots [0] and [1] keep their first two values.
@@ -230,7 +236,7 @@ fn push_past_capacity_is_silent_noop() {
 }
 
 #[test]
-#[ignore = "pending user-struct monomorphization"]
+
 fn is_full_after_n_pushes() {
     let src = r#"
         extension U4 {
@@ -248,7 +254,7 @@ fn is_full_after_n_pushes() {
 }
 
 #[test]
-#[ignore = "pending user-struct monomorphization"]
+
 fn is_empty_false_after_push() {
     let src = r#"
         extension U4 {
@@ -266,7 +272,7 @@ fn is_empty_false_after_push() {
 // ---------- pop -----------------------------------------------------------
 
 #[test]
-#[ignore = "pending user-struct monomorphization"]
+
 fn pop_returns_last_pushed_value() {
     let src = r#"
         extension U4 {
@@ -283,7 +289,7 @@ fn pop_returns_last_pushed_value() {
 }
 
 #[test]
-#[ignore = "pending user-struct monomorphization"]
+
 fn pop_decrements_len() {
     let src = r#"
         extension U4 {
@@ -301,7 +307,7 @@ fn pop_decrements_len() {
 }
 
 #[test]
-#[ignore = "pending user-struct monomorphization"]
+
 fn pop_after_fill_leaves_correct_state() {
     let src = r#"
         extension U4 {
@@ -322,7 +328,7 @@ fn pop_after_fill_leaves_correct_state() {
 // ---------- set (mutate in place) -----------------------------------------
 
 #[test]
-#[ignore = "pending user-struct monomorphization"]
+
 fn set_overwrites_element() {
     let src = r#"
         extension U4 {
@@ -342,7 +348,7 @@ fn set_overwrites_element() {
 // ---------- iteration pattern --------------------------------------------
 
 #[test]
-#[ignore = "pending user-struct monomorphization"]
+
 fn iterate_and_sum() {
     let src = r#"
         extension U4 {
@@ -371,7 +377,7 @@ fn iterate_and_sum() {
 // ---------- element-type variety -----------------------------------------
 
 #[test]
-#[ignore = "pending user-struct monomorphization"]
+
 fn arraylist_of_bool() {
     let src = r#"
         extension U4 {
@@ -397,7 +403,7 @@ fn arraylist_of_bool() {
 }
 
 #[test]
-#[ignore = "pending user-struct monomorphization"]
+
 fn arraylist_of_u8_round_trip() {
     // U8 is 2 cells per element — a stress test for element_size > 1.
     let src = r#"
@@ -417,7 +423,7 @@ fn arraylist_of_u8_round_trip() {
 // ---------- nested ArrayList<U4, M, ArrayList<U4, K, U4>> ---------------
 
 #[test]
-#[ignore = "nested — needs recursive user-struct sizing to handle element-of-ArrayList"]
+
 fn nested_arraylist_push_to_inner() {
     // Outer capacity 2 lists of inner capacity 3.
     //
@@ -443,7 +449,9 @@ fn nested_arraylist_push_to_inner() {
 }
 
 #[test]
-#[ignore = "nested — see above"]
+#[ignore = "chained nested method calls: outer.get(i).get(j) on multiple inner lists \
+            still loses data — push of the second inner doesn't propagate cleanly. \
+            Working on this."]
 fn nested_arraylist_multiple_inner_elements() {
     let src = r#"
         extension U4 {
@@ -466,7 +474,8 @@ fn nested_arraylist_multiple_inner_elements() {
 }
 
 #[test]
-#[ignore = "nested — see above"]
+#[ignore = "chained nested method calls: outer.get(i).len() on both pushed inners \
+            reads the wrong offsets. Related to the multiple_inner_elements bug."]
 fn nested_arraylist_inner_len_independent() {
     // Two inner lists with different current lengths — verifies that the
     // outer list's monomorph propagates the inner generic to `get`.

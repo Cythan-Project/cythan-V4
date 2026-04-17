@@ -612,10 +612,11 @@ impl TypeRegistry {
     ///   - primitives (U4 = 1)
     ///   - non-generic structs / enums (use computed layout)
     ///   - `Array<T, N, F>` — compiler-known native type: `N * sizeof(T)`.
+    ///   - user-defined generic struct instantiations — substitute template
+    ///     params into each field's AST type and recursively size.
     ///
-    /// Other generic instantiations (user-defined templated structs/enums
-    /// with concrete args) are deferred until the monomorphizer regenerates
-    /// them as concrete types.
+    /// Other generic instantiations (e.g. generic enums) are still
+    /// deferred — the monomorphizer handles those on demand.
     pub fn resolve_type_size(
         &self,
         ty: &ast::Type,
@@ -626,7 +627,13 @@ impl TypeRegistry {
             return self.array_layout_size(ty, sp);
         }
 
+        // User-defined generic struct instantiation like `ArrayList<U4, 4, U4>`.
         if !ty.templates.is_empty() {
+            if let Some(info) = self.types.get(&ty.name.0) {
+                if matches!(&info.kind, TypeKind::Struct(StructKind::Templated { .. })) {
+                    return self.resolve_struct_layout(ty, sp).map(|l| l.size);
+                }
+            }
             return Err(TyperError::at(
                 format!(
                     "cannot compute size of generic type reference `{}<...>` yet \
@@ -696,6 +703,86 @@ impl TypeRegistry {
         Ok(elem_size * n)
     }
 
+    /// Resolve a (possibly-generic) struct type reference to a concrete
+    /// `StructLayout`. For non-generic structs this is a direct lookup; for
+    /// generic instantiations (`ArrayList<U4, 4, U4>`), this substitutes
+    /// template params in each field's AST type and recursively sizes them.
+    ///
+    /// Results are computed on demand and NOT cached — callers that make
+    /// this lookup often (HIR gen hits it per field access) should cache
+    /// at their layer. Computation is cheap: one walk per call.
+    pub fn resolve_struct_layout(
+        &self,
+        ty: &ast::Type,
+        sp: &new_parser::Span,
+    ) -> Result<StructLayout, TyperError> {
+        // Direct concrete lookup.
+        if ty.templates.is_empty() {
+            let info = self.types.get(&ty.name.0).ok_or_else(|| {
+                TyperError::at(format!("unknown type `{}`", ty.name.0), sp.clone())
+            })?;
+            return match &info.kind {
+                TypeKind::Struct(StructKind::Concrete(l)) => Ok(l.clone()),
+                _ => Err(TyperError::at(
+                    format!("`{}` is not a concrete struct", ty.name.0),
+                    sp.clone(),
+                )),
+            };
+        }
+
+        // Generic instantiation — substitute and compute.
+        let info = self.types.get(&ty.name.0).ok_or_else(|| {
+            TyperError::at(format!("unknown type `{}`", ty.name.0), sp.clone())
+        })?;
+        let fields = match &info.kind {
+            TypeKind::Struct(StructKind::Templated { fields }) => fields,
+            _ => {
+                return Err(TyperError::at(
+                    format!("`{}` is not a generic struct", ty.name.0),
+                    sp.clone(),
+                ))
+            }
+        };
+        if info.templates.len() != ty.templates.len() {
+            return Err(TyperError::at(
+                format!(
+                    "`{}` expects {} template arguments, got {}",
+                    ty.name.0,
+                    info.templates.len(),
+                    ty.templates.len()
+                ),
+                sp.clone(),
+            ));
+        }
+
+        // Bind template param name → concrete arg.
+        let bindings: std::collections::HashMap<String, &ast::TypeOrValue> = info
+            .templates
+            .iter()
+            .zip(ty.templates.iter())
+            .map(|(name, (arg, _))| (name.clone(), arg))
+            .collect();
+
+        let mut out_fields: Vec<FieldLayout> = Vec::with_capacity(fields.len());
+        let mut offset: CellCount = 0;
+        for (name, field_ty) in fields {
+            let substituted = subst_ast_type(field_ty, &bindings);
+            let size = self.resolve_type_size(&substituted, sp)?;
+            out_fields.push(FieldLayout {
+                name: name.clone(),
+                offset,
+                size,
+                ast_type: substituted,
+            });
+            offset += size;
+        }
+
+        Ok(StructLayout {
+            fields: out_fields,
+            size: offset,
+        })
+    }
+
     /// Rough check: does this type reference a template parameter name, or
     /// does it instantiate a templated type? Used as a quick "can I compute
     /// this now?" gate.
@@ -753,6 +840,57 @@ trait ImplDefExt {
 impl ImplDefExt for ast::ImplDef {
     fn associated_bindings_names(&self) -> Vec<String> {
         self.associated_types.iter().map(|(n, _)| n.0.clone()).collect()
+    }
+}
+
+/// Substitute template parameter references in an AST type with concrete
+/// bindings. Used by `resolve_struct_layout` to specialize a generic
+/// struct's field types to a concrete instantiation. The hir crate has a
+/// sister helper (`hir::monomorph::subst_type`); this one is kept
+/// self-contained so the typer doesn't depend on hir.
+fn subst_ast_type(
+    ty: &ast::Type,
+    bindings: &std::collections::HashMap<String, &ast::TypeOrValue>,
+) -> ast::Type {
+    // If the type's head is a bound template param AND it's referenced
+    // with no further template args of its own, replace wholesale.
+    if ty.templates.is_empty() {
+        if let Some(ast::TypeOrValue::Type(t)) = bindings.get(&ty.name.0) {
+            return t.clone();
+        }
+    }
+    // Otherwise recurse into template args.
+    let templates = ty
+        .templates
+        .iter()
+        .map(|(tv, sp)| {
+            let new_tv = match tv {
+                ast::TypeOrValue::Type(inner) => {
+                    // Leaf template-param references can resolve to either
+                    // Types or Values, so check the bindings directly
+                    // before recursing.
+                    if inner.templates.is_empty() {
+                        if let Some(bound) = bindings.get(&inner.name.0) {
+                            match bound {
+                                ast::TypeOrValue::Type(t) => {
+                                    return (ast::TypeOrValue::Type(t.clone()), sp.clone())
+                                }
+                                ast::TypeOrValue::Value(n) => {
+                                    return (ast::TypeOrValue::Value(*n), sp.clone())
+                                }
+                            }
+                        }
+                    }
+                    ast::TypeOrValue::Type(subst_ast_type(inner, bindings))
+                }
+                ast::TypeOrValue::Value(n) => ast::TypeOrValue::Value(*n),
+            };
+            (new_tv, sp.clone())
+        })
+        .collect();
+    ast::Type {
+        name: ty.name.clone(),
+        templates,
     }
 }
 

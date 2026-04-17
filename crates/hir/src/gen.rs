@@ -453,8 +453,15 @@ impl<'a> Generator<'a> {
             return Ok(());
         };
         // L-value receivers (variables / field chains) address the
-        // existing storage directly.
+        // existing storage directly. Generic-instance layouts go through
+        // `struct_layout_for_expr`, falling back to the bare-name path.
         if let Ok((recv_slot, recv_ty)) = self.resolve_lvalue_base(&recv.0, &recv.1) {
+            if let Some(layout) = self.struct_layout_for_expr(&recv.0) {
+                if let Some(f) = layout.fields.iter().find(|f| f.name == field.0) {
+                    let src = SlotId(recv_slot.0 + f.offset);
+                    return self.copy_multi(dst, src, f.size, block);
+                }
+            }
             let (offset, size) = self.field_offset(&recv_ty, &field.0, &field.1)?;
             let src = SlotId(recv_slot.0 + offset);
             return self.copy_multi(dst, src, size, block);
@@ -493,6 +500,12 @@ impl<'a> Generator<'a> {
             }
             ast::Expr::Field(inner, field) => {
                 let (base_slot, base_ty) = self.resolve_lvalue_base(&inner.0, &inner.1)?;
+                // Try generic-aware layout first.
+                if let Some(layout) = self.struct_layout_for_expr(&inner.0) {
+                    if let Some(f) = layout.fields.iter().find(|f| f.name == field.0) {
+                        return Ok((SlotId(base_slot.0 + f.offset), f.ast_type.name.0.clone()));
+                    }
+                }
                 let (offset, _size) = self.field_offset(&base_ty, &field.0, &field.1)?;
                 let field_ty = self.field_type(&base_ty, &field.0, &field.1)?;
                 Ok((SlotId(base_slot.0 + offset), field_ty))
@@ -1134,11 +1147,14 @@ impl<'a> Generator<'a> {
         let recv_ty_args = self.infer_receiver_type_args(&receiver.0);
         let ret_slots: Vec<SlotId> = match dst {
             Some(d) => {
-                // Determine return size: for Array<T, N, F> methods, the
-                // size depends on the receiver's concrete template args
-                // (which `lookup_return_size` has no visibility into).
                 let ret_size = array_method_return_size(&resolved_recv, &name.0, &recv_ty_args)
-                    .or_else(|| self.lookup_return_size(&resolved_recv, &name.0))
+                    .or_else(|| {
+                        self.lookup_return_size_with_args(
+                            &resolved_recv,
+                            &name.0,
+                            &recv_ty_args,
+                        )
+                    })
                     .unwrap_or(0);
                 (0..ret_size).map(|i| SlotId(d.0 + i)).collect()
             }
@@ -1216,7 +1232,9 @@ impl<'a> Generator<'a> {
         let ret_slots: Vec<SlotId> = match dst {
             Some(d) => {
                 let ret_size = array_method_return_size(&resolved, &name.0, &recv_ty_args)
-                    .or_else(|| self.lookup_return_size(&resolved, &name.0))
+                    .or_else(|| {
+                        self.lookup_return_size_with_args(&resolved, &name.0, &recv_ty_args)
+                    })
                     .unwrap_or(0);
                 (0..ret_size).map(|i| SlotId(d.0 + i)).collect()
             }
@@ -1330,36 +1348,230 @@ impl<'a> Generator<'a> {
     }
 
     fn lookup_return_size(&self, type_name: &str, method: &str) -> Option<u32> {
-        // Try both inherent and trait-keyed entries — if the method exists
-        // in either form we can take its return size.
+        self.lookup_return_size_with_args(type_name, method, &[])
+    }
+
+    /// Determine the cell count of a method call's return value, given the
+    /// receiver's concrete template args. Substitutes template params in
+    /// the declared return type and then asks the typer for its size —
+    /// handles both plain template-param returns (`fn capacity(self):
+    /// Index`) and generic-instantiation returns (`fn get(self): T`
+    /// where T is itself a `ArrayList<…>`).
+    fn lookup_return_size_with_args(
+        &self,
+        type_name: &str,
+        method: &str,
+        recv_args: &[ConcreteTemplateArg],
+    ) -> Option<u32> {
+        let size_of_return = |f: &typer::Fn| -> Option<u32> {
+            let ret_ty = match f {
+                typer::Fn::Simple(s) => return Some(s.sig.output_count),
+                typer::Fn::Templated(t) => t.body.sig.return_type.as_ref()?,
+            };
+            // Build param-name → concrete-arg bindings for the enclosing
+            // type.
+            let info = self.reg.types.get(type_name)?;
+            if info.templates.len() != recv_args.len() {
+                return None;
+            }
+            let bindings: std::collections::HashMap<String, ConcreteTemplateArg> = info
+                .templates
+                .iter()
+                .zip(recv_args.iter())
+                .map(|(n, a)| (n.clone(), a.clone()))
+                .collect();
+            // Substitute into the return type and rebuild as ast::Type.
+            let arg = subst_concrete_arg(
+                &ast::TypeOrValue::Type(ret_ty.0.clone()),
+                &bindings,
+            );
+            let ast_ty = match arg {
+                ConcreteTemplateArg::Type(ct) => ast::Type {
+                    name: (ct.name.clone(), 0..0),
+                    templates: ct
+                        .args
+                        .iter()
+                        .map(|a| (lower_concrete_to_ast_tv(a), 0..0))
+                        .collect(),
+                },
+                ConcreteTemplateArg::Value(_) => return None,
+            };
+            self.reg.resolve_type_size(&ast_ty, &(0..0)).ok()
+        };
         let inherent_key = typer::FnSig::new(type_name, method);
         if let Some(f) = self.db.get(&inherent_key) {
-            return Some(match f {
-                typer::Fn::Simple(s) => s.sig.output_count,
-                typer::Fn::Templated(t) => {
-                    let ret_ty = t.body.sig.return_type.as_ref()?;
-                    let resolved = self.resolve_ty_name(&ret_ty.0.name.0);
-                    self.type_size(&resolved).ok()?
-                }
-            });
+            if let Some(s) = size_of_return(f) {
+                return Some(s);
+            }
         }
-        // Scan trait-keyed entries for the same (type, method).
         for (k, f) in &self.db.functions {
             if k.type_name == type_name
                 && k.method_name == method
                 && k.trait_name.is_some()
             {
-                return Some(match f {
-                    typer::Fn::Simple(s) => s.sig.output_count,
-                    typer::Fn::Templated(t) => {
-                        let ret_ty = t.body.sig.return_type.as_ref()?;
-                        let resolved = self.resolve_ty_name(&ret_ty.0.name.0);
-                        self.type_size(&resolved).ok()?
-                    }
-                });
+                if let Some(s) = size_of_return(f) {
+                    return Some(s);
+                }
             }
         }
         None
+    }
+
+    /// If `raw_name` is a template param of `enclosing_type` and the
+    /// caller provided `recv_args`, substitute the corresponding concrete
+    /// type's bare name. Otherwise return `raw_name` unchanged.
+    fn subst_template_ref(
+        &self,
+        raw_name: &str,
+        enclosing_type: &str,
+        recv_args: &[ConcreteTemplateArg],
+    ) -> String {
+        let Some(info) = self.reg.types.get(enclosing_type) else {
+            return raw_name.to_string();
+        };
+        if info.templates.len() != recv_args.len() {
+            return raw_name.to_string();
+        }
+        for (i, t_name) in info.templates.iter().enumerate() {
+            if t_name == raw_name {
+                return match &recv_args[i] {
+                    ConcreteTemplateArg::Type(ct) => ct.name.clone(),
+                    _ => raw_name.to_string(),
+                };
+            }
+        }
+        raw_name.to_string()
+    }
+
+    /// Get a concrete `StructLayout` for the binding/expression's type.
+    /// Combines the bare type name with any known template args — either
+    /// from a `LocalBinding`, a struct field, or an explicit AST type
+    /// reference — and asks the typer to substitute and size. Returns
+    /// `None` when we can't figure it out.
+    fn struct_layout_for_expr(&self, expr: &ast::Expr) -> Option<typer::StructLayout> {
+        let (name, args) = self.concrete_type_of(expr)?;
+        let ty = ast::Type {
+            name: (name, 0..0),
+            templates: args
+                .into_iter()
+                .map(|arg| (lower_concrete_to_ast_tv(&arg), 0..0))
+                .collect(),
+        };
+        self.reg.resolve_struct_layout(&ty, &(0..0)).ok()
+    }
+
+    /// (type_name, template_args) for an expression, when we can figure
+    /// them out. Mirrors `infer_receiver_type_args` but returns the name
+    /// too so callers can rebuild a full AST type reference.
+    fn concrete_type_of(
+        &self,
+        expr: &ast::Expr,
+    ) -> Option<(String, Vec<ConcreteTemplateArg>)> {
+        match expr {
+            ast::Expr::Variable(name) => {
+                let b = self.lookup(name)?;
+                Some((b.type_name, b.template_args))
+            }
+            ast::Expr::SelfValue => {
+                let b = self.lookup("self")?;
+                Some((b.type_name, b.template_args))
+            }
+            ast::Expr::Field(recv, field) => {
+                let (recv_name, _) = self.concrete_type_of(&recv.0)?;
+                let resolved = self.resolve_ty_name(&recv_name);
+                let info = self.reg.types.get(&resolved)?;
+                let typer::TypeKind::Struct(typer::StructKind::Concrete(layout)) = &info.kind
+                else {
+                    // Try via the receiver's template args
+                    let (_, recv_args) = self.concrete_type_of(&recv.0)?;
+                    let ty = ast::Type {
+                        name: (resolved, 0..0),
+                        templates: recv_args
+                            .into_iter()
+                            .map(|a| (lower_concrete_to_ast_tv(&a), 0..0))
+                            .collect(),
+                    };
+                    let l = self.reg.resolve_struct_layout(&ty, &(0..0)).ok()?;
+                    let f = l.fields.iter().find(|f| f.name == field.0)?;
+                    let args = f
+                        .ast_type
+                        .templates
+                        .iter()
+                        .map(|(tv, _)| lower_tv(tv))
+                        .collect();
+                    return Some((f.ast_type.name.0.clone(), args));
+                };
+                let f = layout.fields.iter().find(|f| f.name == field.0)?;
+                let args = f
+                    .ast_type
+                    .templates
+                    .iter()
+                    .map(|(tv, _)| lower_tv(tv))
+                    .collect();
+                Some((f.ast_type.name.0.clone(), args))
+            }
+            ast::Expr::MethodCall { receiver, name, .. } => {
+                // Method call that returns a generic instantiation — e.g.
+                // `outer.get(0)` where outer is `ArrayList<U4, 2,
+                // ArrayList<U4, 3, U4>>` returns the inner ArrayList. We
+                // look up the method's declared return type, then
+                // substitute the receiver's template args (so return `T`
+                // becomes the concrete `ArrayList<U4, 3, U4>`).
+                let (recv_name, recv_args) = self.concrete_type_of(&receiver.0)?;
+                let resolved = self.resolve_ty_name(&recv_name);
+                let info = self.reg.types.get(&resolved)?;
+                // Find the Templated function's declared return type.
+                let mut ret_ty: Option<ast::Type> = None;
+                if let Some(f) = self.db.get(&typer::FnSig::new(&resolved, &name.0)) {
+                    let rt = match f {
+                        typer::Fn::Simple(s) => s.body.sig.return_type.as_ref(),
+                        typer::Fn::Templated(t) => t.body.sig.return_type.as_ref(),
+                    };
+                    if let Some((rt, _)) = rt {
+                        ret_ty = Some(rt.clone());
+                    }
+                }
+                let ret_ty = ret_ty?;
+
+                // Substitute the type params of the enclosing type in the
+                // return type. If ret_ty's head is a bare template param
+                // (like `T`), return the corresponding concrete arg
+                // outright (name + its own args).
+                if ret_ty.templates.is_empty() {
+                    if info.templates.len() == recv_args.len() {
+                        for (i, tp_name) in info.templates.iter().enumerate() {
+                            if tp_name == &ret_ty.name.0 {
+                                if let ConcreteTemplateArg::Type(ct) = &recv_args[i] {
+                                    let nested_args = ct
+                                        .args
+                                        .iter()
+                                        .cloned()
+                                        .collect::<Vec<_>>();
+                                    return Some((ct.name.clone(), nested_args));
+                                }
+                            }
+                        }
+                    }
+                    // Plain concrete return type (e.g. Bool).
+                    return Some((ret_ty.name.0.clone(), Vec::new()));
+                }
+                // ret_ty is a generic instance referencing type params —
+                // substitute each arg.
+                let mut bindings = std::collections::HashMap::new();
+                if info.templates.len() == recv_args.len() {
+                    for (name, arg) in info.templates.iter().zip(recv_args.iter()) {
+                        bindings.insert(name.clone(), arg.clone());
+                    }
+                }
+                let args = ret_ty
+                    .templates
+                    .iter()
+                    .map(|(tv, _)| subst_concrete_arg(tv, &bindings))
+                    .collect();
+                Some((ret_ty.name.0.clone(), args))
+            }
+            _ => None,
+        }
     }
 
     /// If `expr` is a direct l-value (variable, self, or a field chain),
@@ -1373,6 +1585,12 @@ impl<'a> Generator<'a> {
             ast::Expr::SelfValue => self.lookup("self").map(|b| b.slot),
             ast::Expr::Field(recv, field) => {
                 let base = self.lvalue_slot(&recv.0)?;
+                // Try the generic-aware path first (handles `list.size`
+                // on an ArrayList<U4, 4, U4>).
+                if let Some(layout) = self.struct_layout_for_expr(&recv.0) {
+                    let fl = layout.fields.iter().find(|f| f.name == field.0)?;
+                    return Some(SlotId(base.0 + fl.offset));
+                }
                 let recv_ty = self.infer_expr_type(&recv.0, &recv.1).ok()?;
                 let resolved = self.resolve_ty_name(&recv_ty);
                 let info = self.reg.types.get(&resolved)?;
@@ -1387,78 +1605,48 @@ impl<'a> Generator<'a> {
         }
     }
 
-    /// Get an expression's receiver cell size when it's a variable/field
-    /// we can size directly from a binding or layout. Returns `None` when
-    /// we can't — caller falls back to a type-name lookup.
+    /// Size an expression's value in cells. Handles variables (binding's
+    /// size), self, field chains (via struct layout), and method calls
+    /// (compute from the receiver's concrete type args + return type).
     fn receiver_cell_size(&self, expr: &ast::Expr) -> Option<u32> {
         match expr {
             ast::Expr::Variable(name) => self.lookup(name).map(|b| b.size).filter(|s| *s > 0),
             ast::Expr::SelfValue => self.lookup("self").map(|b| b.size).filter(|s| *s > 0),
-            ast::Expr::Field(recv, field) => {
-                let recv_ty = self.infer_expr_type(&recv.0, &recv.1).ok()?;
-                let resolved = self.resolve_ty_name(&recv_ty);
-                let info = self.reg.types.get(&resolved)?;
-                let typer::TypeKind::Struct(typer::StructKind::Concrete(layout)) = &info.kind
-                else {
-                    return None;
-                };
-                layout
+            ast::Expr::Field(_, field) => {
+                let parent_layout = self.struct_layout_for_expr(
+                    match expr {
+                        ast::Expr::Field(inner, _) => &inner.0,
+                        _ => unreachable!(),
+                    },
+                )?;
+                parent_layout
                     .fields
                     .iter()
                     .find(|f| f.name == field.0)
                     .map(|f| f.size)
                     .filter(|s| *s > 0)
             }
-            _ => None,
+            _ => {
+                // General path: infer the concrete type (including template
+                // args) and ask the typer for its cell count.
+                let (name, args) = self.concrete_type_of(expr)?;
+                let ast_ty = ast::Type {
+                    name: (name, 0..0),
+                    templates: args
+                        .into_iter()
+                        .map(|a| (lower_concrete_to_ast_tv(&a), 0..0))
+                        .collect(),
+                };
+                self.reg.resolve_type_size(&ast_ty, &(0..0)).ok().filter(|s| *s > 0)
+            }
         }
     }
 
-    /// Infer the concrete template args of an expression's type. Needed so
-    /// calls like `arr.get(i)` where `arr: Array<Cell, 9, U4>` can carry
-    /// `[Cell, 9, U4]` through to the monomorphizer / native provider.
-    ///
-    /// Returns empty when we can't figure it out — downstream passes treat
-    /// empty as "not a generic receiver".
+    /// Infer the concrete template args of an expression's type. Delegates
+    /// to `concrete_type_of` which handles generic struct instances (e.g.
+    /// a field of `Array<U4, 4, U4>` on an `ArrayList<U4, 4, U4>`).
     fn infer_receiver_type_args(&self, expr: &ast::Expr) -> Vec<ConcreteTemplateArg> {
-        match expr {
-            ast::Expr::Variable(name) => self
-                .lookup(name)
-                .map(|b| b.template_args.clone())
-                .unwrap_or_default(),
-            ast::Expr::SelfValue => self
-                .lookup("self")
-                .map(|b| b.template_args.clone())
-                .unwrap_or_default(),
-            ast::Expr::Field(recv, field) => {
-                // Find the receiver's concrete type name, then look up the
-                // field's AST type on its StructLayout, and lift its
-                // template args.
-                let Ok(recv_name) = self.infer_expr_type(&recv.0, &recv.1) else {
-                    return Vec::new();
-                };
-                let resolved = self.resolve_ty_name(&recv_name);
-                let Some(info) = self.reg.types.get(&resolved) else {
-                    return Vec::new();
-                };
-                let typer::TypeKind::Struct(typer::StructKind::Concrete(layout)) = &info.kind
-                else {
-                    return Vec::new();
-                };
-                layout
-                    .fields
-                    .iter()
-                    .find(|f| f.name == field.0)
-                    .map(|f| {
-                        f.ast_type
-                            .templates
-                            .iter()
-                            .map(|(tv, _)| lower_tv(tv))
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            }
-            _ => Vec::new(),
-        }
+        self.concrete_type_of(expr).map(|(_, args)| args).unwrap_or_default()
     }
 
     /// Consult the typer's scoped method-resolution to discover whether
@@ -1499,16 +1687,26 @@ impl<'a> Generator<'a> {
             return Ok(());
         };
         let resolved = self.resolve_ty_name(&ty.0.name.0);
-        let info = self.reg.types.get(&resolved).ok_or_else(|| {
-            HirError::at(format!("unknown type `{}`", resolved), sp.clone())
-        })?;
-        let layout = match &info.kind {
-            typer::TypeKind::Struct(typer::StructKind::Concrete(l)) => l.clone(),
-            _ => {
-                return Err(HirError::at(
-                    format!("cannot build struct literal for non-concrete `{}`", resolved),
-                    sp.clone(),
-                ))
+        // For generic instantiations (e.g. `Self { … }` in a monomorphized
+        // ArrayList method, where Self is `ArrayList<U4, 4, U4>`), the
+        // bare registry lookup finds only the Templated shell. Ask the
+        // typer for a substituted concrete layout instead.
+        let layout = if !ty.0.templates.is_empty() {
+            self.reg
+                .resolve_struct_layout(&ty.0, &ty.1)
+                .map_err(|e| HirError::at(e.message, ty.1.clone()))?
+        } else {
+            let info = self.reg.types.get(&resolved).ok_or_else(|| {
+                HirError::at(format!("unknown type `{}`", resolved), sp.clone())
+            })?;
+            match &info.kind {
+                typer::TypeKind::Struct(typer::StructKind::Concrete(l)) => l.clone(),
+                _ => {
+                    return Err(HirError::at(
+                        format!("cannot build struct literal for non-concrete `{}`", resolved),
+                        sp.clone(),
+                    ))
+                }
             }
         };
         for (fname, fval) in fields {
@@ -1660,10 +1858,16 @@ impl<'a> Generator<'a> {
                 .map(|b| b.type_name)
                 .unwrap_or_else(|| "<?>".into()),
             ast::Expr::Field(recv, field) => {
+                // Prefer the expr-based resolution (handles generic
+                // instances via resolve_struct_layout). Fall back to bare
+                // registry lookup for simple concrete structs.
+                if let Some(layout) = self.struct_layout_for_expr(&recv.0) {
+                    if let Some(f) = layout.fields.iter().find(|f| f.name == field.0) {
+                        return Ok(f.ast_type.name.0.clone());
+                    }
+                }
                 let recv_ty = self.infer_expr_type(&recv.0, &recv.1)?;
                 let resolved = self.resolve_ty_name(&recv_ty);
-                // Prefer the stored AST type (which has the concrete type
-                // name) over the size-heuristic fallback.
                 if let Some(info) = self.reg.types.get(&resolved) {
                     if let typer::TypeKind::Struct(typer::StructKind::Concrete(layout)) =
                         &info.kind
@@ -1737,13 +1941,38 @@ impl<'a> Generator<'a> {
                     }
                 }
 
-                // General path: look up the method's return type in the DB.
+                // General path: look up the method's return type in the DB
+                // and substitute type-level template params with the
+                // receiver's concrete args. Without this, `list.size` on an
+                // `ArrayList<U4, 4, U4>` returns the bare "Index" which no
+                // downstream pass can size.
+                let recv_args = self.infer_receiver_type_args(&receiver.0);
+                let substitute_template_ref = |raw_name: &str| -> String {
+                    // Find the enclosing type's template params; if
+                    // `raw_name` is one of them, map it to the concrete arg.
+                    let Some(info) = self.reg.types.get(&resolved) else {
+                        return raw_name.to_string();
+                    };
+                    if info.templates.len() != recv_args.len() {
+                        return raw_name.to_string();
+                    }
+                    for (i, t_name) in info.templates.iter().enumerate() {
+                        if t_name == raw_name {
+                            return match &recv_args[i] {
+                                ConcreteTemplateArg::Type(ct) => ct.name.clone(),
+                                _ => raw_name.to_string(),
+                            };
+                        }
+                    }
+                    raw_name.to_string()
+                };
                 let return_type_of = |f: &typer::Fn| -> Option<String> {
                     let ret = match f {
                         typer::Fn::Simple(s) => s.body.sig.return_type.as_ref()?,
                         typer::Fn::Templated(t) => t.body.sig.return_type.as_ref()?,
                     };
-                    Some(self.resolve_ty_name(&ret.0.name.0))
+                    let raw = self.resolve_ty_name(&ret.0.name.0);
+                    Some(substitute_template_ref(&raw))
                 };
                 if let Some(f) = self.db.get(&typer::FnSig::new(&resolved, &name.0)) {
                     if let Some(t) = return_type_of(f) {
@@ -1843,6 +2072,52 @@ fn array_method_return_size(
 /// template lists.
 pub(crate) fn lower_ast_tv_list(tvs: &[ast::TypeOrValue]) -> Vec<ConcreteTemplateArg> {
     tvs.iter().map(lower_tv).collect()
+}
+
+/// Substitute a template-param reference in an AST `TypeOrValue` using a
+/// binding table (param name → concrete arg). Used when inferring the
+/// concrete type of a method call's return — e.g. `self.backing: Array<T,
+/// N, Index>` becomes `Array<Cell, 9, U4>` once T/N/Index are bound.
+pub(crate) fn subst_concrete_arg(
+    tv: &ast::TypeOrValue,
+    bindings: &std::collections::HashMap<String, ConcreteTemplateArg>,
+) -> ConcreteTemplateArg {
+    match tv {
+        ast::TypeOrValue::Value(n) => ConcreteTemplateArg::Value(*n),
+        ast::TypeOrValue::Type(t) => {
+            // Leaf template-param reference → direct substitution.
+            if t.templates.is_empty() {
+                if let Some(bound) = bindings.get(&t.name.0) {
+                    return bound.clone();
+                }
+            }
+            ConcreteTemplateArg::Type(ConcreteType {
+                name: t.name.0.clone(),
+                args: t
+                    .templates
+                    .iter()
+                    .map(|(inner, _)| subst_concrete_arg(inner, bindings))
+                    .collect(),
+            })
+        }
+    }
+}
+
+/// Inverse of `lower_tv` — convert a `ConcreteTemplateArg` back to an AST
+/// `TypeOrValue` so we can rebuild a full `ast::Type` to feed through
+/// `resolve_struct_layout`.
+pub(crate) fn lower_concrete_to_ast_tv(arg: &ConcreteTemplateArg) -> ast::TypeOrValue {
+    match arg {
+        ConcreteTemplateArg::Value(n) => ast::TypeOrValue::Value(*n),
+        ConcreteTemplateArg::Type(ct) => ast::TypeOrValue::Type(ast::Type {
+            name: (ct.name.clone(), 0..0),
+            templates: ct
+                .args
+                .iter()
+                .map(|a| (lower_concrete_to_ast_tv(a), 0..0))
+                .collect(),
+        }),
+    }
 }
 
 fn lower_tv(t: &ast::TypeOrValue) -> ConcreteTemplateArg {

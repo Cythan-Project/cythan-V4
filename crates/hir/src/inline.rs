@@ -38,25 +38,32 @@ pub fn inline_program_with_registry(
     entry: &FnSigKey,
     registry: Option<&typer::TypeRegistry>,
 ) -> Result<HirFunction, String> {
-    // Verify reachability + no cycles up front.
-    //
-    // NOTE: with Array synthesis, `Array::{get,set,new,len}` show up as
-    // callees that aren't in `functions`. We still run the call-graph walk
-    // for cycle detection, but gracefully skip missing targets.
-    let _ = build_call_graph(functions, entry); // best-effort
+    inline_program_full(functions, entry, registry, None)
+}
+
+/// Full-featured inliner entry point. Adds a `FunctionDB` reference so
+/// user-defined generic method calls (e.g. `ArrayList::len` on
+/// `ArrayList<U4, 4, U4>`) can be monomorphized on demand.
+pub fn inline_program_full(
+    functions: &HashMap<FnSigKey, HirFunction>,
+    entry: &FnSigKey,
+    registry: Option<&typer::TypeRegistry>,
+    db: Option<&typer::FunctionDB>,
+) -> Result<HirFunction, String> {
+    let _ = build_call_graph(functions, entry); // best-effort cycle check
 
     let entry_hir = functions
         .get(entry)
         .ok_or_else(|| format!("entry `{:?}` missing", entry))?;
 
-    // `Inliner::functions` is owned so we can insert synthesized monomorphs
-    // on the fly. Starts as a clone of the input map.
     let mut owned_functions = functions.clone();
     let mut inliner = Inliner {
         functions: &mut owned_functions,
         global_slots: entry_hir.slot_count,
         registry,
+        db,
         array_cache: ArrayMonomorphCache::new(),
+        mono_cache: std::collections::HashSet::new(),
     };
     let body = inliner.inline_block(&entry_hir.body, /*base=*/ 0)?;
 
@@ -122,11 +129,17 @@ struct Inliner<'a> {
     functions: &'a mut HashMap<FnSigKey, HirFunction>,
     /// Next free slot in the global space.
     global_slots: u32,
-    /// Registry used to resolve `Array<T, N, F>` geometry. Optional — only
-    /// needed when the inliner hits an Array method call that needs a
-    /// fresh monomorph.
+    /// Registry used to resolve `Array<T, N, F>` geometry AND to look up
+    /// generic struct layouts when monomorphizing user-defined methods.
     registry: Option<&'a typer::TypeRegistry>,
+    /// FunctionDB — used to find `Fn::Templated` entries when a Call
+    /// target isn't in `functions`. The inliner then monomorphizes them
+    /// on demand via `hir::monomorph::monomorphize`.
+    db: Option<&'a typer::FunctionDB>,
     array_cache: ArrayMonomorphCache,
+    /// Mangled keys we've already monomorphized. Prevents re-synthesizing
+    /// the same `ArrayList<U4, 4, U4>::len` every call site.
+    mono_cache: std::collections::HashSet<FnSigKey>,
 }
 
 impl<'a> Inliner<'a> {
@@ -243,20 +256,28 @@ impl<'a> Inliner<'a> {
             key = k;
             callee = f;
         } else {
-            key = match &target.trait_name {
+            let base_key = match &target.trait_name {
                 Some(t) => FnSigKey::new_trait(&target.type_name, &target.method_name, t),
                 None => FnSigKey::new(&target.type_name, &target.method_name),
             };
-            callee = self
-                .functions
-                .get(&key)
-                .ok_or_else(|| {
-                    format!(
-                        "inliner: missing function `{}::{}`",
-                        target.type_name, target.method_name
-                    )
-                })?
-                .clone();
+
+            // Direct hit in the Simple-functions map — standard path.
+            if let Some(f) = self.functions.get(&base_key).cloned() {
+                key = base_key;
+                callee = f;
+            } else {
+                // Miss. Maybe the callee is generic and needs
+                // monomorphization with the Call's concrete template args.
+                callee = self
+                    .monomorphize_on_demand(&base_key, target)
+                    .ok_or_else(|| {
+                        format!(
+                            "inliner: missing function `{}::{}`",
+                            target.type_name, target.method_name
+                        )
+                    })??;
+                key = mangle_monomorph_key(&base_key, &target.template_args);
+            }
         }
         let _ = key;
 
@@ -317,6 +338,59 @@ impl<'a> Inliner<'a> {
         }
         Ok(())
     }
+}
+
+impl<'a> Inliner<'a> {
+    /// Try to resolve a Call target by monomorphizing a generic callee
+    /// from the `FunctionDB`. Returns `None` when there's no Templated
+    /// entry for this (type, method) pair; returns `Some(Ok(fn))` when we
+    /// successfully synthesized a monomorph (cached for later calls);
+    /// returns `Some(Err(_))` when monomorphization itself failed.
+    fn monomorphize_on_demand(
+        &mut self,
+        base_key: &FnSigKey,
+        target: &FnRef,
+    ) -> Option<Result<HirFunction, String>> {
+        let db = self.db?;
+        let reg = self.registry?;
+        let f = db.get(base_key)?;
+        let typer::Fn::Templated(templated) = f else {
+            return None;
+        };
+
+        // Mangle the concrete instantiation's key. Cache by it so we
+        // only build each monomorph once.
+        let mangled = mangle_monomorph_key(base_key, &target.template_args);
+        if let Some(existing) = self.functions.get(&mangled) {
+            return Some(Ok(existing.clone()));
+        }
+        self.mono_cache.insert(mangled.clone());
+
+        // Run the substitution + regen pipeline.
+        let key_struct = crate::monomorph::MonomorphKey {
+            sig: base_key.clone(),
+            template_args: target.template_args.clone(),
+        };
+        let result = crate::monomorph::monomorphize(&key_struct, templated, reg, db);
+        match result {
+            Ok(hir) => {
+                self.functions.insert(mangled, hir.clone());
+                Some(Ok(hir))
+            }
+            Err(e) => Some(Err(e)),
+        }
+    }
+}
+
+/// Derive a FnSig that uniquely names the monomorph of `base` for the given
+/// template args. Matches `MonomorphKey::mangled`'s shape so the two can't
+/// drift.
+fn mangle_monomorph_key(base: &FnSigKey, args: &[ConcreteTemplateArg]) -> FnSigKey {
+    let key = crate::monomorph::MonomorphKey {
+        sig: base.clone(),
+        template_args: args.to_vec(),
+    };
+    key.mangled()
 }
 
 /// Walk `block` and replace every `Stop` with `Skip`. Respects nested

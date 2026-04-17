@@ -16,7 +16,7 @@ pub use array_synth::{ArrayMonomorphCache, ArraySpec};
 pub use call_graph::{build_call_graph, CallGraph};
 pub use error::HirError;
 pub use gen::{gen_function, gen_function_with_natives};
-pub use inline::{hir_to_mir, inline_program};
+pub use inline::{hir_to_mir, inline_program, inline_program_full};
 pub use interp::{CapturedIo, InterpError, Interpreter, IoContext};
 pub use ir::{ConcreteTemplateArg, ConcreteType, FnRef, HirBlock, HirFunction, HirOp, SlotId};
 pub use monomorph::{monomorphize, MonomorphKey};

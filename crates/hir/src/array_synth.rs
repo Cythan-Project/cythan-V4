@@ -48,20 +48,28 @@ impl ArraySpec {
         if args.len() != 3 {
             return None;
         }
-        let element_type = match &args[0] {
-            ConcreteTemplateArg::Type(t) => t.name.clone(),
+        let (element_type, element_size) = match &args[0] {
+            ConcreteTemplateArg::Type(t) => {
+                // Route through the typer so generic element types
+                // (e.g. `ArrayList<U4, 3, U4>`) size correctly.
+                let ast_ty = concrete_to_ast(t);
+                let sz = reg.resolve_type_size(&ast_ty, &(0..0)).ok()?;
+                (t.name.clone(), sz)
+            }
             _ => return None,
         };
         let size = match &args[1] {
             ConcreteTemplateArg::Value(n) => (*n).max(0) as u32,
             _ => return None,
         };
-        let index_type = match &args[2] {
-            ConcreteTemplateArg::Type(t) => t.name.clone(),
+        let (index_type, index_size) = match &args[2] {
+            ConcreteTemplateArg::Type(t) => {
+                let ast_ty = concrete_to_ast(t);
+                let sz = reg.resolve_type_size(&ast_ty, &(0..0)).ok()?;
+                (t.name.clone(), sz)
+            }
             _ => return None,
         };
-        let element_size = size_of(reg, &element_type)?;
-        let index_size = size_of(reg, &index_type)?;
         Some(ArraySpec {
             element_type,
             element_size,
@@ -72,6 +80,25 @@ impl ArraySpec {
     }
 }
 
+fn concrete_to_ast(t: &ConcreteType) -> new_parser::ast::Type {
+    new_parser::ast::Type {
+        name: (t.name.clone(), 0..0),
+        templates: t
+            .args
+            .iter()
+            .map(|a| (concrete_arg_to_ast(a), 0..0))
+            .collect(),
+    }
+}
+
+fn concrete_arg_to_ast(a: &ConcreteTemplateArg) -> new_parser::ast::TypeOrValue {
+    match a {
+        ConcreteTemplateArg::Type(t) => new_parser::ast::TypeOrValue::Type(concrete_to_ast(t)),
+        ConcreteTemplateArg::Value(n) => new_parser::ast::TypeOrValue::Value(*n),
+    }
+}
+
+#[allow(dead_code)]
 fn size_of(reg: &typer::TypeRegistry, name: &str) -> Option<u32> {
     let info = reg.types.get(name)?;
     match &info.kind {
