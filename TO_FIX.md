@@ -74,6 +74,65 @@ codepoints that then re-encode to two UTF-8 bytes in the captured
 would capture output as `Vec<u8>` instead of `String`, or push bytes
 directly via `push(c)` that takes a raw byte.
 
+## Rust-style diagnostics (LSP-ready) — DONE
+
+`errors::Diagnostic` is the structured data model for every compiler
+message: `severity`, optional stable `DiagCode` (`E0001` …, `W0001`
+…), a `message`, `labels: Vec<Label>` (each `Primary` / `Secondary`,
+each with a `FileSpan` + inline message), plus `notes` and `helps`.
+All plain data, no terminal formatting — converting to
+`lsp_types::Diagnostic` later is mechanical (primary label → range;
+secondaries → `relatedInformation`; notes/helps concatenate into the
+message; code maps through directly).
+
+**Rendering is a separate concern.** `errors::render_diag` uses
+ariadne for colored CLI output (Rust-style with underlines and
+carets); `errors::render_plain` produces stable no-color text for
+tests and LSP payloads; `errors::render_all` strings multiple
+diagnostics together.
+
+**Codes currently issued** (see `errors::codes`):
+- `E0001` unknown type (with "did you mean?" via
+  Damerau-Levenshtein suggestion)
+- `E0003` duplicate type definition (secondary label points at the
+  first definition)
+- `E0004` duplicate trait definition (same shape)
+- `E0011` mutability violation (`cannot assign to X — the binding
+  is immutable`, with `consider mut X` help)
+- `E0015` unknown field (with "did you mean?" pulled from the
+  struct's actual field names)
+- `W0001` unused variable (suppressed by the `_name` convention,
+  with `prefix with an underscore` help)
+
+**Infrastructure for scale:**
+- `TypeInfo` / `TraitInfo` now carry `decl_span: Option<Span>` and
+  `decl_file: Option<String>` so diagnostics can point at the
+  original declaration on cross-file collisions.
+- `TypeRegistry.file_names` keeps the raw filename per-`FileId` for
+  diagnostic citation.
+- `TyperError` and `HirError` gained an optional `diagnostic` field
+  plus `from_diagnostic` / `into_diagnostic(file)` helpers. Legacy
+  call sites keep emitting plain `message + span`; new sites upgrade
+  by building a rich `Diagnostic`. `into_diagnostic` converts
+  legacy errors into minimal diagnostics at the API boundary.
+- `HirFunction` gained `warnings: Vec<Diagnostic>`; the HIR
+  generator populates them during lowering.
+
+**CLI surface.** `cargo run -- new check <file>` now drives the new
+pipeline through a `diagnose()` entry point that returns structured
+errors + warnings, and renders them with ariadne. Example:
+```
+Error: [E0001] cannot find type `Fooo` in this scope
+   ╭─[Bad.ct:5:9]
+ 5 │         Fooo x = Foo { v: 1, };
+   ·         ──┬─  
+   ·           ╰─── not found in this scope
+   · Help: a type with a similar name exists: `Foo`
+```
+
+**Tests.** `crates/hir/src/tests/diagnostic_tests.rs` covers every
+error kind listed above plus both rendering modes — 9 tests.
+
 ## HIR `If0` → unified `Match` — DONE
 
 `HirOp::If0` removed from the IR. All zero-versus-nonzero branching

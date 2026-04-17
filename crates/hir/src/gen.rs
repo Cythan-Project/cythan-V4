@@ -46,6 +46,7 @@ pub fn gen_function_with_natives<P: NativeProvider>(
         None
     };
     let body = g.gen_block(&simple.body.body.0.stmts, result_slot)?;
+    g.emit_unused_local_warnings();
 
     Ok(HirFunction {
         sig: simple.sig.clone(),
@@ -53,6 +54,7 @@ pub fn gen_function_with_natives<P: NativeProvider>(
         slot_count: g.next_slot,
         type_name: fnsig.type_name.clone(),
         method_name: fnsig.method_name.clone(),
+        warnings: g.warnings,
     })
 }
 
@@ -88,6 +90,25 @@ struct Generator<'a> {
     slot_type: Vec<String>,
     /// Slot-level "name tags" — for nicer diagnostics; unused otherwise.
     slot_name: Vec<String>,
+    /// Record of every user-declared local binding in this function,
+    /// for the unused-variable lint. Parameters aren't tracked —
+    /// unused parameters are often intentional (trait shape).
+    declared_locals: Vec<DeclaredLocal>,
+    /// Slots that have been read via `lookup()`. Any `declared_locals`
+    /// entry whose slot isn't here at function-end gets a
+    /// `W_UNUSED_VARIABLE` warning (suppressed if the name starts with
+    /// `_`, per Rust convention).
+    read_slots: std::collections::HashSet<SlotId>,
+    /// Warnings accumulated during generation. Surface via the
+    /// `HirFunction::warnings` field when gen succeeds.
+    warnings: Vec<errors::Diagnostic>,
+}
+
+#[derive(Clone, Debug)]
+struct DeclaredLocal {
+    name: String,
+    slot: SlotId,
+    span: new_parser::Span,
 }
 
 #[derive(Clone)]
@@ -130,6 +151,9 @@ impl<'a> Generator<'a> {
             slot_mut: Vec::new(),
             slot_type: Vec::new(),
             slot_name: Vec::new(),
+            declared_locals: Vec::new(),
+            read_slots: std::collections::HashSet::new(),
+            warnings: Vec::new(),
         };
 
         // Populate slots from FlatSig. Each FlatSig slot may span multiple
@@ -445,11 +469,12 @@ impl<'a> Generator<'a> {
         let b = self
             .lookup(name)
             .ok_or_else(|| HirError::at(format!("undefined variable `{}`", name), sp.clone()))?;
+        // Mark as read so the unused-variable lint doesn't fire for it.
+        // `dst == None` still counts as a read — the variable was
+        // evaluated for its side-effect/value even if the result is
+        // discarded.
+        self.read_slots.insert(b.slot);
         if let Some(dst) = dst {
-            // Prefer the binding's captured size (covers generic-typed
-            // locals like `Array<U4, 4, U4>` whose bare name isn't
-            // sizeable). Fall back to type-name lookup when size is 0
-            // (synthetic bindings like match pattern captures).
             let size = if b.size > 0 {
                 b.size
             } else {
@@ -571,9 +596,7 @@ impl<'a> Generator<'a> {
         let info = self
             .reg
             .lookup_type(type_name, Some(self.simple.file_id))
-            .ok_or_else(|| {
-                HirError::at(format!("unknown type `{}`", type_name), sp.clone())
-            })?;
+            .ok_or_else(|| self.unknown_type_diag(type_name, sp))?;
         match &info.kind {
             typer::TypeKind::Struct(typer::StructKind::Concrete(layout)) => {
                 for f in &layout.fields {
@@ -581,10 +604,21 @@ impl<'a> Generator<'a> {
                         return Ok((f.offset, f.size));
                     }
                 }
-                Err(HirError::at(
-                    format!("type `{}` has no field `{}`", type_name, field),
-                    sp.clone(),
+                let file = self.cur_file_name();
+                let field_names: Vec<&str> = layout.fields.iter().map(|f| f.name.as_str()).collect();
+                let mut diag = errors::Diagnostic::error(format!(
+                    "no field `{}` on type `{}`",
+                    field, type_name
                 ))
+                .with_code(errors::codes::E_UNKNOWN_FIELD)
+                .with_primary(
+                    errors::FileSpan::new(&file, sp.clone()),
+                    format!("unknown field `{}`", field),
+                );
+                if let Some(sugg) = errors::suggest_name(field, field_names.iter().copied()) {
+                    diag = diag.with_help(format!("did you mean `{}`?", sugg));
+                }
+                Err(HirError::from_diagnostic(diag))
             }
             _ => Err(HirError::at(
                 format!("type `{}` is not a concrete struct; cannot take `.{}`", type_name, field),
@@ -602,9 +636,7 @@ impl<'a> Generator<'a> {
         let info = self
             .reg
             .lookup_type(type_name, Some(self.simple.file_id))
-            .ok_or_else(|| {
-                HirError::at(format!("unknown type `{}`", type_name), sp.clone())
-            })?;
+            .ok_or_else(|| self.unknown_type_diag(type_name, sp))?;
         let typer::TypeKind::Struct(typer::StructKind::Concrete(_)) = &info.kind else {
             return Err(HirError::at(
                 format!("type `{}` is not a concrete struct", type_name),
@@ -691,7 +723,8 @@ impl<'a> Generator<'a> {
                 .resolve_type_size(&resolved_ast_ty, &ty.1)
                 .map_err(|e| HirError::at(e.message, ty.1.clone()))?
         } else {
-            self.type_size(&resolved)?
+            self.type_size(&resolved)
+                .map_err(|_| self.unknown_type_diag(&resolved, &ty.1))?
         };
         let slot = self.alloc_temp(&resolved, size);
         // Mark slot mutability for each cell.
@@ -728,6 +761,16 @@ impl<'a> Generator<'a> {
                 template_args,
             },
         );
+        // Remember this binding for the unused-variable lint. Names
+        // beginning with `_` are excluded — that's the conventional
+        // "intentionally unused" marker.
+        if !name.0.starts_with('_') {
+            self.declared_locals.push(DeclaredLocal {
+                name: name.0.clone(),
+                slot,
+                span: name.1.clone(),
+            });
+        }
 
         // Type inference shortcut: `mut Array<U4, 4, U4> arr = Array::new();`
         // — the call's target type is bare `Array` with no template args,
@@ -855,13 +898,76 @@ impl<'a> Generator<'a> {
                     .get(slot.0 as usize)
                     .cloned()
                     .unwrap_or_default();
-                return Err(HirError::at(
-                    format!("cannot write to immutable slot `{}`", name),
-                    sp.clone(),
+                let file = self.cur_file_name();
+                let diag = errors::Diagnostic::error(format!(
+                    "cannot assign to `{}` — the binding is immutable",
+                    name
+                ))
+                .with_code(errors::codes::E_MUTABILITY)
+                .with_primary(
+                    errors::FileSpan::new(&file, sp.clone()),
+                    format!("assignment to immutable `{}`", name),
+                )
+                .with_help(format!(
+                    "consider declaring the binding `mut {}` at its introduction",
+                    name
                 ));
+                return Err(HirError::from_diagnostic(diag));
             }
         }
         Ok(())
+    }
+
+    /// Name of the file currently being lowered — used when building
+    /// `errors::FileSpan`s for rich diagnostics.
+    fn cur_file_name(&self) -> String {
+        self.reg
+            .file_names
+            .get(&self.simple.file_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Called once at function-end — emit a `W_UNUSED_VARIABLE` for
+    /// every declared local whose slot never showed up in a read.
+    /// Leading-underscore names (`_x`) are excluded as they're the
+    /// conventional "intentionally unused" marker.
+    fn emit_unused_local_warnings(&mut self) {
+        let file = self.cur_file_name();
+        for decl in &self.declared_locals {
+            if self.read_slots.contains(&decl.slot) {
+                continue;
+            }
+            let diag = errors::Diagnostic::warning(format!(
+                "unused variable `{}`",
+                decl.name
+            ))
+            .with_code(errors::codes::W_UNUSED_VARIABLE)
+            .with_primary(
+                errors::FileSpan::new(&file, decl.span.clone()),
+                format!("`{}` is declared but never read", decl.name),
+            )
+            .with_help(format!(
+                "prefix with an underscore to silence: `_{}`",
+                decl.name
+            ));
+            self.warnings.push(diag);
+        }
+    }
+
+    /// Build a rich "unknown type" diagnostic with a `did you mean?`
+    /// hint, drawn from the registry's canonical type keys via
+    /// Damerau-Levenshtein distance.
+    fn unknown_type_diag(&self, name: &str, sp: &new_parser::Span) -> HirError {
+        let candidates: Vec<&str> = self.reg.type_canonical_keys.iter().map(String::as_str).collect();
+        let file = self.cur_file_name();
+        let mut diag = errors::Diagnostic::error(format!("cannot find type `{}` in this scope", name))
+            .with_code(errors::codes::E_UNKNOWN_TYPE)
+            .with_primary(errors::FileSpan::new(&file, sp.clone()), "not found in this scope");
+        if let Some(sugg) = errors::suggest_name(name, candidates.iter().copied()) {
+            diag = diag.with_help(format!("a type with a similar name exists: `{}`", sugg));
+        }
+        HirError::from_diagnostic(diag)
     }
 
     // ---- if / match ------------------------------------------------------

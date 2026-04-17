@@ -224,6 +224,7 @@ fn synth_new(spec: &ArraySpec, key: &FnSigKey) -> Option<HirFunction> {
         slot_count: total,
         type_name: key.type_name.clone(),
         method_name: key.method_name.clone(),
+        warnings: Vec::new(),
     })
 }
 
@@ -303,6 +304,7 @@ fn synth_get(spec: &ArraySpec, key: &FnSigKey) -> Option<HirFunction> {
         slot_count: input_count + output_count,
         type_name: key.type_name.clone(),
         method_name: key.method_name.clone(),
+        warnings: Vec::new(),
     })
 }
 
@@ -373,6 +375,7 @@ fn synth_set(spec: &ArraySpec, key: &FnSigKey) -> Option<HirFunction> {
         slot_count: input_count,
         type_name: key.type_name.clone(),
         method_name: key.method_name.clone(),
+        warnings: Vec::new(),
     })
 }
 
@@ -422,5 +425,6 @@ fn synth_len(spec: &ArraySpec, key: &FnSigKey) -> Option<HirFunction> {
         slot_count: input_count + output_count,
         type_name: key.type_name.clone(),
         method_name: key.method_name.clone(),
+        warnings: Vec::new(),
     })
 }

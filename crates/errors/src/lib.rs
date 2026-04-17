@@ -4,6 +4,7 @@ use ariadne::{Color, ColorGenerator, Fmt, Label, Report, ReportBuilder, ReportKi
 
 pub type Error = ReportBuilder<(String, Range<usize>)>;
 
+pub mod diagnostic;
 mod mirrors;
 mod reporting;
 mod wrappers;
@@ -11,6 +12,11 @@ mod wrappers;
 pub use wrappers::*;
 
 pub use reporting::report;
+
+pub use diagnostic::{
+    codes, render as render_diag, render_all, render_plain, suggest_name, DiagCode, Diagnostic,
+    FileSpan, Label as DiagLabel, LabelKind, Severity, SourceMap,
+};
 
 #[derive(Debug, Clone, Eq)]
 pub struct Span {

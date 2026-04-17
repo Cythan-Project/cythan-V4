@@ -11,6 +11,7 @@ mir = { path = "crates/mir" }
 cythan = { path = "crates/vm" }
 cythan-driver = { path = "crates/driver" }
 typer = { path = "crates/typer" }
+errors = { path = "crates/errors" }
 clap = { version = "4", features = ["derive"] }
 
 [profile.release]

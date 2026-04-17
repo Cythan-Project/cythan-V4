@@ -7,6 +7,7 @@ edition = "2021"
 new-parser = { path = "../new_parser" }
 typer = { path = "../typer" }
 mir = { path = "../mir" }
+errors = { path = "../errors" }
 either = "1"
 
 [lints]

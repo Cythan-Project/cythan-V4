@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 new-parser = { path = "../new_parser" }
+errors = { path = "../errors" }
 
 [lints]
 workspace = true

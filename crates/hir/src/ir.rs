@@ -114,6 +114,11 @@ pub struct HirFunction {
     /// Name of the owning type (matches the `FunctionDB` key).
     pub type_name: String,
     pub method_name: String,
+    /// Non-fatal diagnostics raised while generating this function
+    /// (unused variable, dead code, etc.). Callers aggregate these
+    /// into the program-level warning list; an empty vec means the
+    /// function compiled without any lints.
+    pub warnings: Vec<errors::Diagnostic>,
 }
 
 /// Reference to a function — target of an unresolved `Call`. Template args

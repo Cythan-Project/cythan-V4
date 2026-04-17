@@ -317,15 +317,24 @@ fn run_new_command(command: NewCommand, new_std_dir: &Path) {
                 .iter()
                 .map(|(n, s)| (n.as_str(), s.clone()))
                 .collect();
-            match new_pipeline::check(&refs) {
-                Ok(summary) => {
-                    eprintln!("{}", summary);
-                }
-                Err(msg) => {
-                    eprintln!("{}", msg);
-                    std::process::exit(1);
-                }
+            let report = new_pipeline::diagnose(&refs);
+            let sources: std::collections::HashMap<String, String> = files
+                .iter()
+                .map(|(n, s)| (n.clone(), s.clone()))
+                .collect();
+            for diag in report.errors.iter().chain(report.warnings.iter()) {
+                eprint!("{}", errors::render_diag(diag, &sources));
             }
+            if report.has_errors() {
+                std::process::exit(1);
+            }
+            // No errors — print the success summary to match the old
+            // behavior; include a warning count when non-empty.
+            eprintln!(
+                "ok ({} warning{})",
+                report.warnings.len(),
+                if report.warnings.len() == 1 { "" } else { "s" }
+            );
         }
         NewCommand::Build {
             file,

@@ -45,6 +45,14 @@ pub struct TypeInfo {
     pub kind: TypeKind,
     /// Methods attached via `extension` blocks. Populated by Step 2.4.
     pub methods: Vec<MethodInfo>,
+    /// Source span of the type's declared name (the `Foo` in
+    /// `struct Foo {}`). Used by diagnostics to point at the original
+    /// declaration when a duplicate is rejected. `None` for the
+    /// pre-seeded `U4` primitive.
+    pub decl_span: Option<new_parser::Span>,
+    /// File in which the type was declared. Paired with `decl_span`
+    /// when emitting cross-file "first defined here" labels.
+    pub decl_file: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -206,6 +214,8 @@ pub struct TraitInfo {
     pub templates: Vec<String>,
     pub associated_types: Vec<String>,
     pub methods: Vec<ast::FunctionSig>,
+    pub decl_span: Option<new_parser::Span>,
+    pub decl_file: Option<String>,
 }
 
 /// A concrete `impl Trait for Type { ... }` block.
@@ -286,10 +296,19 @@ pub enum MethodResolution {
     NotFound { reason: String },
 }
 
+/// Typer-pass error.
+///
+/// `message` and `span` are the quick-and-dirty form kept for
+/// back-compat with the many call sites that emit terse errors.
+/// `diagnostic`, when present, carries the richer form — error code,
+/// multiple labels, notes/helps — that renderers and LSPs use. New
+/// error sites should populate `diagnostic`; `.into_diagnostic()`
+/// upgrades old-form errors into a structured one on demand.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TyperError {
     pub message: String,
     pub span: Option<new_parser::Span>,
+    pub diagnostic: Option<errors::Diagnostic>,
 }
 
 impl TyperError {
@@ -297,6 +316,7 @@ impl TyperError {
         Self {
             message: message.into(),
             span: None,
+            diagnostic: None,
         }
     }
 
@@ -304,7 +324,32 @@ impl TyperError {
         Self {
             message: message.into(),
             span: Some(span),
+            diagnostic: None,
         }
+    }
+
+    /// Build a typer error from a structured `Diagnostic`. The plain
+    /// `message`/`span` fields mirror the diagnostic's header and
+    /// primary label so legacy callers keep working.
+    pub fn from_diagnostic(diag: errors::Diagnostic) -> Self {
+        let span = diag.primary_label().map(|l| l.span.range.clone());
+        let message = diag.message.clone();
+        Self { message, span, diagnostic: Some(diag) }
+    }
+
+    /// Return a structured `Diagnostic` — if the error was built from
+    /// one, return it directly; otherwise synthesize a minimal
+    /// diagnostic from `message` and `span`. `file` is attached to
+    /// the synthesized span so renderers can place it in a source.
+    pub fn into_diagnostic(self, file: &str) -> errors::Diagnostic {
+        if let Some(d) = self.diagnostic {
+            return d;
+        }
+        let mut d = errors::Diagnostic::error(self.message);
+        if let Some(range) = self.span {
+            d = d.with_primary(errors::FileSpan::new(file, range), "");
+        }
+        d
     }
 }
 

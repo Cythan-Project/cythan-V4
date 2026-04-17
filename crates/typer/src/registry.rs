@@ -41,6 +41,11 @@ pub struct TypeRegistry {
     /// Module path per file (e.g., `std::ArrayList` for
     /// `std/ArrayList.ct`). Used to derive fully-qualified names.
     pub file_module_paths: HashMap<FileId, String>,
+    /// Original source filename per file. Kept separately from the
+    /// module path so diagnostics can cite the actual file on disk
+    /// (`examples/new_syntax/Morpion.ct`) rather than the derived
+    /// module form.
+    pub file_names: HashMap<FileId, String>,
     /// Per-file name → `TypeId` scope. Unified store for:
     ///   * the file's own declarations (bare → id, takes precedence
     ///     over the global ambiguous entry on collision)
@@ -82,6 +87,8 @@ impl TypeRegistry {
                 templates: Vec::new(),
                 kind: TypeKind::Primitive { size: U4_SIZE },
                 methods: Vec::new(),
+                decl_span: None,
+                decl_file: None,
             },
         );
         r
@@ -229,12 +236,14 @@ impl TypeRegistry {
         let mut r = Self::new();
         let mut errors: Vec<TyperError> = Vec::new();
 
-        // Record per-file module paths up front so registration passes
-        // can canonicalize names as they go.
+        // Record per-file module paths + raw file names up front so
+        // registration passes can canonicalize names as they go and
+        // diagnostics have a file to cite.
         for (file_ix, (file_name, _)) in files.iter().enumerate() {
             let file_id = file_ix as FileId;
             r.file_module_paths
                 .insert(file_id, Self::derive_module_path(file_name));
+            r.file_names.insert(file_id, file_name.to_string());
         }
 
         // Pass 1: collect structs/enums/traits (populates `type_infos` /
@@ -420,7 +429,7 @@ impl TypeRegistry {
         file_id: FileId,
     ) -> Result<(), TyperError> {
         let key = self.reserve_registration_key(&def.name.0, file_id);
-        self.register_struct_core_at(def, &key)?;
+        self.register_struct_core_at(def, &key, Some(file_id))?;
         self.alias_type_post_register(&def.name.0, &key, file_id);
         Ok(())
     }
@@ -431,7 +440,7 @@ impl TypeRegistry {
         file_id: FileId,
     ) -> Result<(), TyperError> {
         let key = self.reserve_registration_key(&def.name.0, file_id);
-        self.register_enum_core_at(def, &key)?;
+        self.register_enum_core_at(def, &key, Some(file_id))?;
         self.alias_type_post_register(&def.name.0, &key, file_id);
         Ok(())
     }
@@ -442,7 +451,7 @@ impl TypeRegistry {
         file_id: FileId,
     ) -> Result<(), TyperError> {
         let key = self.reserve_registration_key(&def.name.0, file_id);
-        self.register_trait_core_at(def, &key)?;
+        self.register_trait_core_at(def, &key, Some(file_id))?;
         self.alias_trait_post_register(&def.name.0, &key, file_id);
         Ok(())
     }
@@ -551,28 +560,26 @@ impl TypeRegistry {
     }
 
     fn register_struct_core(&mut self, def: &ast::StructDef) -> Result<(), TyperError> {
-        self.register_struct_core_at(def, &def.name.0)
+        self.register_struct_core_at(def, &def.name.0, None)
     }
 
     fn register_enum_core(&mut self, def: &ast::EnumDef) -> Result<(), TyperError> {
-        self.register_enum_core_at(def, &def.name.0)
+        self.register_enum_core_at(def, &def.name.0, None)
     }
 
     fn register_trait_core(&mut self, def: &ast::TraitDef) -> Result<(), TyperError> {
-        self.register_trait_core_at(def, &def.name.0)
+        self.register_trait_core_at(def, &def.name.0, None)
     }
 
     fn register_struct_core_at(
         &mut self,
         def: &ast::StructDef,
         storage_key: &str,
+        file_id: Option<FileId>,
     ) -> Result<(), TyperError> {
         let name = def.name.0.clone();
         if self.has_type(storage_key) && name != U4_NAME {
-            return Err(TyperError::at(
-                format!("duplicate type definition: {}", name),
-                def.name.1.clone(),
-            ));
+            return Err(self.duplicate_type_diag(&name, &def.name.1, storage_key, file_id));
         }
         let templates: Vec<String> = def.templates.iter().map(|t| t.0.clone()).collect();
 
@@ -606,6 +613,8 @@ impl TypeRegistry {
                 templates,
                 kind,
                 methods: Vec::new(),
+                decl_span: Some(def.name.1.clone()),
+                decl_file: file_id.and_then(|f| self.file_names.get(&f).cloned()),
             },
         );
         Ok(())
@@ -615,13 +624,11 @@ impl TypeRegistry {
         &mut self,
         def: &ast::EnumDef,
         storage_key: &str,
+        file_id: Option<FileId>,
     ) -> Result<(), TyperError> {
         let name = def.name.0.clone();
         if self.has_type(storage_key) {
-            return Err(TyperError::at(
-                format!("duplicate type definition: {}", name),
-                def.name.1.clone(),
-            ));
+            return Err(self.duplicate_type_diag(&name, &def.name.1, storage_key, file_id));
         }
         let templates: Vec<String> = def.templates.iter().map(|t| t.0.clone()).collect();
 
@@ -655,6 +662,8 @@ impl TypeRegistry {
                 templates,
                 kind,
                 methods: Vec::new(),
+                decl_span: Some(def.name.1.clone()),
+                decl_file: file_id.and_then(|f| self.file_names.get(&f).cloned()),
             },
         );
         Ok(())
@@ -664,13 +673,11 @@ impl TypeRegistry {
         &mut self,
         def: &ast::TraitDef,
         storage_key: &str,
+        file_id: Option<FileId>,
     ) -> Result<(), TyperError> {
         let name = def.name.0.clone();
         if self.has_trait(storage_key) {
-            return Err(TyperError::at(
-                format!("duplicate trait definition: {}", name),
-                def.name.1.clone(),
-            ));
+            return Err(self.duplicate_trait_diag(&name, &def.name.1, storage_key, file_id));
         }
         self.insert_trait(
             storage_key.to_string(),
@@ -679,9 +686,71 @@ impl TypeRegistry {
                 templates: def.templates.iter().map(|t| t.0.clone()).collect(),
                 associated_types: def.associated_types.iter().map(|a| a.0.clone()).collect(),
                 methods: def.methods.iter().map(|m| m.0.clone()).collect(),
+                decl_span: Some(def.name.1.clone()),
+                decl_file: file_id.and_then(|f| self.file_names.get(&f).cloned()),
             },
         );
         Ok(())
+    }
+
+    /// Build a rich diagnostic for a duplicate type definition. Adds a
+    /// secondary label pointing at the first declaration when we have
+    /// its span on file.
+    fn duplicate_type_diag(
+        &self,
+        name: &str,
+        new_span: &new_parser::Span,
+        existing_key: &str,
+        file_id: Option<FileId>,
+    ) -> TyperError {
+        let file = file_id
+            .and_then(|f| self.file_names.get(&f).cloned())
+            .unwrap_or_default();
+        let mut diag = errors::Diagnostic::error(format!("duplicate definition of type `{}`", name))
+            .with_code(errors::codes::E_DUPLICATE_TYPE)
+            .with_primary(
+                errors::FileSpan::new(&file, new_span.clone()),
+                "duplicate definition here",
+            )
+            .with_note("each type may only be defined once per scope")
+            .with_help("rename one of them, or use a module path to disambiguate");
+        if let Some(existing) = self.get_type(existing_key) {
+            if let (Some(sp), Some(f)) = (&existing.decl_span, &existing.decl_file) {
+                diag = diag.with_secondary(
+                    errors::FileSpan::new(f, sp.clone()),
+                    "first defined here",
+                );
+            }
+        }
+        TyperError::from_diagnostic(diag)
+    }
+
+    fn duplicate_trait_diag(
+        &self,
+        name: &str,
+        new_span: &new_parser::Span,
+        existing_key: &str,
+        file_id: Option<FileId>,
+    ) -> TyperError {
+        let file = file_id
+            .and_then(|f| self.file_names.get(&f).cloned())
+            .unwrap_or_default();
+        let mut diag = errors::Diagnostic::error(format!("duplicate definition of trait `{}`", name))
+            .with_code(errors::codes::E_DUPLICATE_TRAIT)
+            .with_primary(
+                errors::FileSpan::new(&file, new_span.clone()),
+                "duplicate definition here",
+            )
+            .with_note("each trait may only be defined once per scope");
+        if let Some(existing) = self.get_trait(existing_key) {
+            if let (Some(sp), Some(f)) = (&existing.decl_span, &existing.decl_file) {
+                diag = diag.with_secondary(
+                    errors::FileSpan::new(f, sp.clone()),
+                    "first defined here",
+                );
+            }
+        }
+        TyperError::from_diagnostic(diag)
     }
 
     pub fn merge_extension(

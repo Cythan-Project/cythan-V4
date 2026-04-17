@@ -72,15 +72,121 @@ pub struct BuiltHir {
     pub hir: HashMap<typer::FnSig, HirFunction>,
 }
 
+/// Rich diagnostic form of `check`. Runs every pass it can and
+/// collects structured `Diagnostic`s — errors AND warnings — instead
+/// of bailing on the first string. Designed for the CLI and the
+/// future LSP: both consume `Diagnostic` directly.
+///
+/// Returns `errors` and `warnings` separately so tools can surface
+/// them with different severity handling.
+pub fn diagnose(files: &[(&str, String)]) -> DiagnosticReport {
+    let mut errors: Vec<errors::Diagnostic> = Vec::new();
+    let mut warnings: Vec<errors::Diagnostic> = Vec::new();
+
+    // Pass 1: parse every file. Parse errors today only carry a
+    // terse message (no span), so promote them to a generic
+    // diagnostic keyed to the file.
+    let mut parsed: Vec<(String, Vec<new_parser::ast::Spanned<new_parser::ast::Item>>)> = Vec::new();
+    for (name, src) in files {
+        match new_parser::parse(src) {
+            Ok(items) => parsed.push((name.to_string(), items)),
+            Err(e) => {
+                let diag = errors::Diagnostic::error(format!("parse error: {:?}", e))
+                    .with_primary(errors::FileSpan::new(*name, 0..0), "");
+                errors.push(diag);
+            }
+        }
+    }
+    if !errors.is_empty() {
+        return DiagnosticReport { errors, warnings };
+    }
+
+    let as_refs: Vec<(&str, &[_])> = parsed
+        .iter()
+        .map(|(n, v)| (n.as_str(), v.as_slice()))
+        .collect();
+
+    // Pass 2: typer. Figure out the file to attribute errors to by
+    // the error's span offset if possible; otherwise fall back to the
+    // first registered file.
+    let reg = match typer::TypeRegistry::from_files(&as_refs) {
+        Ok(r) => r,
+        Err(errs) => {
+            for e in errs {
+                errors.push(e.into_diagnostic(default_file(files)));
+            }
+            return DiagnosticReport { errors, warnings };
+        }
+    };
+
+    // Pass 3: function DB (flat sigs).
+    let db = match typer::FunctionDB::from_registry(&reg) {
+        Ok(db) => db,
+        Err(errs) => {
+            for e in errs {
+                errors.push(e.into_diagnostic(default_file(files)));
+            }
+            return DiagnosticReport { errors, warnings };
+        }
+    };
+
+    // Pass 4: HIR gen for every Simple function. Collect per-function
+    // warnings. Collect errors per-function too so a single bad
+    // function doesn't mask issues elsewhere.
+    let natives = BuiltinNatives::new();
+    for (k, f) in &db.functions {
+        if let typer::Fn::Simple(s) = f {
+            match gen_function_with_natives(k, s, &reg, &db, Some(&natives)) {
+                Ok(hir) => {
+                    warnings.extend(hir.warnings);
+                }
+                Err(e) => {
+                    errors.push(e.into_diagnostic(default_file(files)));
+                }
+            }
+        }
+    }
+
+    DiagnosticReport { errors, warnings }
+}
+
+fn default_file<'a>(files: &'a [(&'a str, String)]) -> &'a str {
+    files.first().map(|(n, _)| *n).unwrap_or("<no-file>")
+}
+
+/// Bundle of `Diagnostic`s produced by `diagnose`. `errors` empty +
+/// `warnings` empty means the program is clean.
+#[derive(Debug, Clone, Default)]
+pub struct DiagnosticReport {
+    pub errors: Vec<errors::Diagnostic>,
+    pub warnings: Vec<errors::Diagnostic>,
+}
+
+impl DiagnosticReport {
+    pub fn is_clean(&self) -> bool {
+        self.errors.is_empty() && self.warnings.is_empty()
+    }
+    pub fn has_errors(&self) -> bool {
+        !self.errors.is_empty()
+    }
+}
+
 /// `check` toolchain entry point: run the new pipeline as far as HIR
 /// gen and report the first error, or an `Ok` summary with counts.
+/// Accumulates non-fatal warnings (unused variables, etc.) into the
+/// summary so callers can surface them alongside the "ok" line.
 pub fn check(files: &[(&str, String)]) -> Result<CheckSummary, String> {
     let built = build_hir(files)?;
+    let mut warnings: Vec<errors::Diagnostic> = Vec::new();
+    for hir in built.hir.values() {
+        warnings.extend(hir.warnings.iter().cloned());
+    }
     Ok(CheckSummary {
         types: built.reg.type_infos.len(),
         traits: built.reg.trait_infos.len(),
         functions: built.db.functions.len(),
         simple_fns: built.hir.len(),
+        warnings,
     })
 }
 
@@ -91,13 +197,21 @@ pub struct CheckSummary {
     pub traits: usize,
     pub functions: usize,
     pub simple_fns: usize,
+    /// Non-fatal diagnostics raised during HIR gen (unused variables,
+    /// dead code, etc.). `is_empty` on a clean check.
+    pub warnings: Vec<errors::Diagnostic>,
 }
 
 impl std::fmt::Display for CheckSummary {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let warnings = if self.warnings.is_empty() {
+            String::new()
+        } else {
+            format!(", {} warning{}", self.warnings.len(), plural(self.warnings.len()))
+        };
         write!(
             f,
-            "ok: {} type{}, {} trait{}, {} function{} ({} simple)",
+            "ok: {} type{}, {} trait{}, {} function{} ({} simple){}",
             self.types,
             plural(self.types),
             self.traits,
@@ -105,6 +219,7 @@ impl std::fmt::Display for CheckSummary {
             self.functions,
             plural(self.functions),
             self.simple_fns,
+            warnings,
         )
     }
 }

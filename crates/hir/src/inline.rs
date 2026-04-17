@@ -73,6 +73,7 @@ pub fn inline_program_full(
         slot_count: inliner.global_slots,
         type_name: entry_hir.type_name.clone(),
         method_name: entry_hir.method_name.clone(),
+        warnings: Vec::new(),
     })
 }
 

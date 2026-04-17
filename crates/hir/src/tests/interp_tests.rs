@@ -305,6 +305,7 @@ fn direct_write_register_prints_char() {
         slot_count: 0,
         type_name: "Test".into(),
         method_name: "print_a".into(),
+        warnings: Vec::new(),
     };
     let mut fns = std::collections::HashMap::new();
     fns.insert(typer::FnSig::new("Test", "print_a"), f);
@@ -350,6 +351,7 @@ fn direct_read_register_echoes_input() {
         slot_count: 2,
         type_name: "Test".into(),
         method_name: "read".into(),
+        warnings: Vec::new(),
     };
     let mut fns = std::collections::HashMap::new();
     fns.insert(typer::FnSig::new("Test", "read"), f);
