@@ -1306,6 +1306,28 @@ impl<'a> Generator<'a> {
 
         let tpl = lower_templates(templates);
         let recv_ty_args = self.infer_receiver_type_args(&receiver.0);
+        // Detect blanket-impl dispatch up front so both the return-size
+        // lookup and the emitted Call include the blanket `T` binding.
+        let early_trait = self.resolve_trait_for(&resolved_recv, &name.0);
+        let is_blanket = self
+            .reg
+            .method_blanket_generic(&resolved_recv, &name.0, early_trait.as_deref())
+            .is_some();
+        // `method_args_for_size` mirrors `combined` below — but positioned
+        // as method-level templates (which is how lookup_return_size_full
+        // consumes the blanket's `T`, since `Foo` has zero type-level
+        // templates).
+        let method_args_for_size: Vec<ConcreteTemplateArg> = if is_blanket {
+            let mut v = Vec::with_capacity(1 + tpl.len());
+            v.push(ConcreteTemplateArg::Type(ConcreteType {
+                name: resolved_recv.clone(),
+                args: recv_ty_args.clone(),
+            }));
+            v.extend(tpl.clone());
+            v
+        } else {
+            tpl.clone()
+        };
         let ret_slots: Vec<SlotId> = match dst {
             Some(d) => {
                 let ret_size = array_method_return_size(&resolved_recv, &name.0, &recv_ty_args)
@@ -1314,7 +1336,7 @@ impl<'a> Generator<'a> {
                             &resolved_recv,
                             &name.0,
                             &recv_ty_args,
-                            &tpl,
+                            &method_args_for_size,
                         )
                     })
                     .unwrap_or(0);
@@ -1334,13 +1356,25 @@ impl<'a> Generator<'a> {
         )? {
             return Ok(());
         }
-        let trait_name = self.resolve_trait_for(&resolved_recv, &name.0);
+        let trait_name = early_trait;
         // For calls on generic-receiver types (like Array<Cell, 9, U4>),
         // embed the concrete receiver type args into the FnRef's
         // template_args so the inliner / monomorphizer can dispatch. If
         // the method itself also has template args (from `self.m<N>()`),
         // we append them after the receiver args.
-        let mut combined = recv_ty_args;
+        //
+        // Blanket-impl dispatch (`impl<T: ...> Trait for T { ... }`) also
+        // needs to bind the blanket's `T` to the receiver's concrete
+        // type. That binding lives at position 0 of the callee's
+        // Templated template list, so we prepend the receiver type here.
+        let mut combined: Vec<ConcreteTemplateArg> = Vec::new();
+        if is_blanket {
+            combined.push(ConcreteTemplateArg::Type(ConcreteType {
+                name: resolved_recv.clone(),
+                args: recv_ty_args.clone(),
+            }));
+        }
+        combined.extend(recv_ty_args);
         combined.extend(tpl);
         block.push(HirOp::Call {
             target: FnRef {

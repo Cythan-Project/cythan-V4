@@ -64,10 +64,23 @@ pub struct TraitDef {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImplDef {
+    /// Generic parameters on the impl header: `impl<T: A + B, U: C>`.
+    /// Empty for a regular `impl Trait for Type`. When non-empty, this
+    /// impl is a "blanket impl" — the compiler attaches its methods to
+    /// every concrete type satisfying the bounds.
+    pub generics: Vec<GenericParam>,
     pub trait_ty: Spanned<Type>,
     pub target: Spanned<Type>,
     pub associated_types: Vec<(Spanned<String>, Spanned<Type>)>,
     pub methods: Vec<Spanned<Function>>,
+}
+
+/// A generic parameter in an impl header: `T: Bound1 + Bound2`. `bounds`
+/// is empty when no bounds are specified (`impl<T> ...`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct GenericParam {
+    pub name: Spanned<String>,
+    pub bounds: Vec<Spanned<Type>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

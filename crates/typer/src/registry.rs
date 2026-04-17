@@ -11,6 +11,11 @@ pub struct TypeRegistry {
     pub types: HashMap<String, TypeInfo>,
     pub traits: HashMap<String, TraitInfo>,
     pub impls: Vec<ImplInfo>,
+    /// Blanket impls: `impl<T: A + B> Trait for T { ... }`. Stored
+    /// separately so the post-pass can iterate them to decide which
+    /// concrete types satisfy their bounds. Direct (non-generic) impls
+    /// remain in `impls`.
+    pub blanket_impls: Vec<ImplInfo>,
     /// Per-file import scope: for each `FileId`, the set of trait/type names
     /// explicitly brought into scope via `use Name;` in that file. Operator
     /// sugar (`+`, `-`, `==`, ...) bypasses this check — see `OPERATOR_TRAITS`.
@@ -113,6 +118,14 @@ impl TypeRegistry {
                 }
             }
         }
+
+        // Pass 4: apply blanket impls. For every registered blanket
+        // `impl<T: B1 + B2> Trait for T`, walk every concrete non-generic
+        // type and — when all bounds are satisfied — attach the blanket
+        // impl's methods to that type's method list. Errors (e.g. a
+        // blanket method colliding with an inherent one already on the
+        // type) become hard errors here.
+        r.attach_blanket_impls(&mut errors);
 
         if errors.is_empty() {
             Ok(r)
@@ -278,6 +291,7 @@ impl TypeRegistry {
                 file_id,
                 from_trait: None,
                 trait_template_args: Vec::new(),
+                blanket_generic: None,
             });
         }
         Ok(())
@@ -301,12 +315,57 @@ impl TypeRegistry {
             ))?
             .clone();
 
-        // Target type must exist.
-        if !self.types.contains_key(&target_name) {
+        // Blanket-impl detection. For `impl<T: A + B> Trait for T { ... }`
+        // the target is literally a reference to one of the generic
+        // params. Phase 1 requires the target to be a *bare* reference
+        // to a single generic param (no further template args).
+        let generic_names: Vec<String> =
+            def.generics.iter().map(|g| g.name.0.clone()).collect();
+        let is_blanket = !def.generics.is_empty()
+            && generic_names.contains(&target_name)
+            && def.target.0.templates.is_empty();
+        if !def.generics.is_empty() && !is_blanket {
+            return Err(TyperError::at(
+                format!(
+                    "generic impl target must be a bare generic parameter \
+                     — `impl<T> {} for T` is supported, not `{}`",
+                    trait_name, target_name
+                ),
+                def.target.1.clone(),
+            ));
+        }
+        let generics: Vec<GenericParamInfo> = def
+            .generics
+            .iter()
+            .map(|g| GenericParamInfo {
+                name: g.name.0.clone(),
+                bounds: g.bounds.iter().map(|(t, _)| t.name.0.clone()).collect(),
+            })
+            .collect();
+
+        // Blanket impls skip the direct target-exists check — T is a
+        // placeholder, not a registered type.
+        if !is_blanket && !self.types.contains_key(&target_name) {
             return Err(TyperError::at(
                 format!("impl target `{}` is not a known type", target_name),
                 def.target.1.clone(),
             ));
+        }
+
+        // For a blanket impl, also validate that each bound names an
+        // existing trait. (Catch typos early; the post-pass relies on
+        // this later.)
+        if is_blanket {
+            for g in &generics {
+                for b in &g.bounds {
+                    if !self.traits.contains_key(b) {
+                        return Err(TyperError::at(
+                            format!("unknown trait `{}` in bound", b),
+                            def.target.1.clone(),
+                        ));
+                    }
+                }
+            }
         }
 
         // Every associated type of the trait must be bound, and no extras.
@@ -389,6 +448,26 @@ impl TypeRegistry {
             .iter()
             .map(|(tv, _)| tv.clone())
             .collect();
+
+        // Blanket impls are deferred: the post-pass (attach_blanket_impls)
+        // walks them once all regular impls have been processed so we can
+        // check each candidate type's bound satisfaction accurately.
+        if is_blanket {
+            self.blanket_impls.push(ImplInfo {
+                trait_name,
+                target_name,
+                generics,
+                associated_bindings: def
+                    .associated_types
+                    .iter()
+                    .map(|(n, t)| (n.0.clone(), t.0.clone()))
+                    .collect(),
+                methods: def.methods.iter().map(|m| m.0.clone()).collect(),
+                file_id,
+            });
+            return Ok(());
+        }
+
         let ty = self.types.get_mut(&target_name).unwrap();
         for (method, _) in &def.methods {
             let collides_same_trait = ty.methods.iter().any(|m| {
@@ -410,12 +489,14 @@ impl TypeRegistry {
                 file_id,
                 from_trait: Some(trait_name.clone()),
                 trait_template_args: trait_args.clone(),
+                blanket_generic: None,
             });
         }
 
         self.impls.push(ImplInfo {
             trait_name,
             target_name,
+            generics,
             associated_bindings: def
                 .associated_types
                 .iter()
@@ -425,6 +506,106 @@ impl TypeRegistry {
             file_id,
         });
         Ok(())
+    }
+
+    /// For each blanket impl, walk every registered non-generic concrete
+    /// type; if the type satisfies all bounds of the blanket's generic
+    /// param, attach the blanket's methods to the type's `methods` list
+    /// with `blanket_generic` set. Collisions (inherent or another trait
+    /// impl already providing the same method) push errors but keep
+    /// going so the caller sees every problem at once.
+    fn attach_blanket_impls(&mut self, errors: &mut Vec<TyperError>) {
+        // Snapshot the blanket list — we'll mutate `self.types` below.
+        let blankets = self.blanket_impls.clone();
+
+        // Collect each type's current (trait_name, trait_template_args)
+        // pairs so we can test "does X implement trait B?". This uses the
+        // methods list that's already populated by register_impl.
+        let type_has_trait = |types: &HashMap<String, TypeInfo>,
+                              type_name: &str,
+                              trait_name: &str|
+         -> bool {
+            types
+                .get(type_name)
+                .map(|info| info.methods.iter().any(|m| m.from_trait.as_deref() == Some(trait_name)))
+                .unwrap_or(false)
+        };
+
+        for blanket in &blankets {
+            // Phase 1 requires exactly one generic param.
+            let Some(tparam) = blanket.generics.first() else {
+                continue;
+            };
+            let candidates: Vec<String> = self.types.keys().cloned().collect();
+            for type_name in candidates {
+                // Skip the generic param name itself (it's a placeholder
+                // and usually shadowed by a real type only by accident).
+                if type_name == tparam.name {
+                    continue;
+                }
+                // Phase 1: non-generic targets only.
+                let info_ref = self.types.get(&type_name).unwrap();
+                if !info_ref.templates.is_empty() {
+                    continue;
+                }
+                // Bounds check.
+                if !tparam
+                    .bounds
+                    .iter()
+                    .all(|b| type_has_trait(&self.types, &type_name, b))
+                {
+                    continue;
+                }
+                // Attach each blanket method. Skip if the type already
+                // has the method from the same trait (direct impl wins,
+                // or a blanket already applied — don't re-attach).
+                let ty = self.types.get_mut(&type_name).unwrap();
+                for method in &blanket.methods {
+                    let already = ty.methods.iter().any(|m| {
+                        m.function.sig.name.0 == method.sig.name.0
+                            && m.from_trait.as_deref()
+                                == Some(blanket.trait_name.as_str())
+                    });
+                    if already {
+                        continue;
+                    }
+                    ty.methods.push(MethodInfo {
+                        function: method.clone(),
+                        file_id: blanket.file_id,
+                        from_trait: Some(blanket.trait_name.clone()),
+                        trait_template_args: Vec::new(),
+                        blanket_generic: Some(tparam.name.clone()),
+                    });
+                }
+            }
+        }
+        let _ = errors;
+    }
+
+    /// If `(type_name, method_name, trait_name)` matches a method that
+    /// was attached via a blanket impl, return the generic param name
+    /// (e.g. `"T"`). HIR gen uses this to prepend the receiver's
+    /// concrete type to the Call's template args so monomorphization
+    /// binds the generic correctly.
+    pub fn method_blanket_generic(
+        &self,
+        type_name: &str,
+        method_name: &str,
+        trait_name: Option<&str>,
+    ) -> Option<String> {
+        let info = self.types.get(type_name)?;
+        for m in &info.methods {
+            if m.function.sig.name.0 != method_name {
+                continue;
+            }
+            if m.from_trait.as_deref() != trait_name {
+                continue;
+            }
+            if let Some(bg) = &m.blanket_generic {
+                return Some(bg.clone());
+            }
+        }
+        None
     }
 
     // --- method resolution (trait-aware) --------------------------------

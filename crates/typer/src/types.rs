@@ -141,6 +141,11 @@ pub struct MethodInfo {
     /// extensions and for impls of a non-generic trait. Used to
     /// distinguish multiple `impl Convert<T>` for the same target type.
     pub trait_template_args: Vec<ast::TypeOrValue>,
+    /// If this method was attached via a blanket `impl<T: ...> Trait
+    /// for T { ... }`, carries the generic param name (`T`). The HIR
+    /// generator uses it to thread the concrete receiver type into the
+    /// Call's template_args so the monomorphizer can substitute `T`.
+    pub blanket_generic: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -156,9 +161,23 @@ pub struct TraitInfo {
 pub struct ImplInfo {
     pub trait_name: String,
     pub target_name: String,
+    /// Generic parameters declared on the impl header. Non-empty only
+    /// for blanket impls (`impl<T: A + B> Trait for T`), which are also
+    /// stored separately in `TypeRegistry.blanket_impls`.
+    pub generics: Vec<GenericParamInfo>,
     pub associated_bindings: Vec<(String, ast::Type)>,
     pub methods: Vec<ast::Function>,
     pub file_id: FileId,
+}
+
+/// Template parameter on an impl header with its trait bounds.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GenericParamInfo {
+    pub name: String,
+    /// Bound trait names — e.g. for `T: IndexedGet + Length`, this is
+    /// `["IndexedGet", "Length"]`. Phase 1 ignores any template args on
+    /// the bound traits.
+    pub bounds: Vec<String>,
 }
 
 // ---- error type -----------------------------------------------------------

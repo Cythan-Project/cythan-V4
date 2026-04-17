@@ -136,7 +136,15 @@ impl FunctionDB {
                     ),
                 };
 
-                let is_simple = type_templates.is_empty() && method_templates.is_empty();
+                // Blanket-origin methods always need monomorphization —
+                // the body is stored once on the blanket and reused across
+                // every satisfying target type, with `T` substituted at
+                // inline time. Register them as Templated with a synthetic
+                // leading template (the blanket's generic param name).
+                let is_blanket = m.blanket_generic.is_some();
+                let is_simple = !is_blanket
+                    && type_templates.is_empty()
+                    && method_templates.is_empty();
                 let f = if is_simple {
                     match FlatSig::flatten(&m.function.sig, &info.name, reg) {
                         Ok(flat) => Fn::Simple(SimpleFn {
@@ -153,7 +161,11 @@ impl FunctionDB {
                         }
                     }
                 } else {
-                    let mut templates = type_templates.clone();
+                    let mut templates: Vec<String> = Vec::new();
+                    if let Some(bg) = &m.blanket_generic {
+                        templates.push(bg.clone());
+                    }
+                    templates.extend(type_templates.clone());
                     templates.extend(method_templates);
                     Fn::Templated(TemplatedFn {
                         body: m.function.clone(),

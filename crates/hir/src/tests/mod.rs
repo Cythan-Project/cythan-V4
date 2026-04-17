@@ -20,6 +20,7 @@ mod operator_output_tests;
 mod edge_cases_tests;
 mod if_let_tests;
 mod misc_edge_tests;
+mod blanket_impl_tests;
 
 use new_parser::ast;
 

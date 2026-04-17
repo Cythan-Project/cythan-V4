@@ -955,15 +955,35 @@ fn impl_parser() -> impl Parser<Token, Spanned<Item>, Error = PErr> + Clone {
         function_parser().map(IItem::Method),
     ));
 
+    // Optional `<T: A + B, U, ...>` header on an impl. Each param's
+    // bounds are a `+`-separated list of trait references.
+    let bounds = just(Token::Colon)
+        .ignore_then(ty.clone().separated_by(just(Token::Plus)).at_least(1))
+        .or_not()
+        .map(|v| v.unwrap_or_default());
+    let generic_param = type_name_spanned()
+        .then(bounds)
+        .map(|(name, bounds)| GenericParam { name, bounds });
+    let impl_generics = just(Token::Lt)
+        .ignore_then(
+            generic_param
+                .separated_by(just(Token::Comma))
+                .allow_trailing(),
+        )
+        .then_ignore(just(Token::Gt))
+        .or_not()
+        .map(|v| v.unwrap_or_default());
+
     just(Token::Impl)
-        .ignore_then(ty.clone())
+        .ignore_then(impl_generics)
+        .then(ty.clone())
         .then_ignore(just(Token::For))
         .then(ty)
         .then(
             item.repeated()
                 .delimited_by(just(Token::LBrace), just(Token::RBrace)),
         )
-        .map_with_span(|((trait_ty, target), items), sp| {
+        .map_with_span(|(((generics, trait_ty), target), items), sp| {
             let mut associated_types = Vec::new();
             let mut methods = Vec::new();
             for it in items {
@@ -974,6 +994,7 @@ fn impl_parser() -> impl Parser<Token, Spanned<Item>, Error = PErr> + Clone {
             }
             (
                 Item::Impl(ImplDef {
+                    generics,
                     trait_ty,
                     target,
                     associated_types,
