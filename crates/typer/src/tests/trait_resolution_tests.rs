@@ -656,8 +656,8 @@ fn duplicate_trait_name_across_files_coexists_via_path() {
         .map(|(n, items)| (n.as_str(), items.as_slice()))
         .collect();
     let reg = TypeRegistry::from_files(&as_refs).expect("both traits should coexist");
-    assert!(reg.traits.contains_key("a::Foo"));
-    assert!(reg.traits.contains_key("b::Foo"));
+    assert!(reg.has_trait("a::Foo"));
+    assert!(reg.has_trait("b::Foo"));
     // Bare lookups resolve to the file-local decl in each file.
     assert_eq!(
         reg.canonicalize_type_name("Foo", Some(0)).as_deref(),

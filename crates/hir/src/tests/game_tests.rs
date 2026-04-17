@@ -55,7 +55,7 @@ fn morpion_typer_diagnostic() {
         Ok(reg) => {
             // Morpion's struct field `Array<Cell, 9, U4> grid` should now
             // have size 9 (cell-size) and be laid out starting at offset 0.
-            let morpion = reg.types.get("Morpion").expect("Morpion type");
+            let morpion = reg.get_type("Morpion").expect("Morpion type");
             match &morpion.kind {
                 typer::TypeKind::Struct(typer::StructKind::Concrete(layout)) => {
                     assert_eq!(layout.size, 9, "Array<Cell, 9, U4> ≡ 9 cells");

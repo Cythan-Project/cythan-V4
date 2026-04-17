@@ -4,8 +4,7 @@ use crate::tests::parse_src;
 use crate::TypeRegistry;
 
 fn method_names(r: &TypeRegistry, ty: &str) -> Vec<String> {
-    r.types
-        .get(ty)
+    r.get_type(ty)
         .unwrap()
         .methods
         .iter()
@@ -95,5 +94,5 @@ fn extension_methods_carry_file_id() {
         "#,
     );
     let r = TypeRegistry::from_items(&items).unwrap();
-    assert_eq!(r.types["Foo"].methods[0].file_id, 0);
+    assert_eq!(r.get_type("Foo").unwrap().methods[0].file_id, 0);
 }

@@ -14,7 +14,7 @@ fn trait_is_registered() {
         "#,
     );
     let r = TypeRegistry::from_items(&items).unwrap();
-    let eq = r.traits.get("Eq").unwrap();
+    let eq = r.get_trait("Eq").unwrap();
     assert_eq!(eq.name, "Eq");
     assert_eq!(eq.methods.len(), 1);
     assert_eq!(eq.methods[0].name.0, "eq");
@@ -37,7 +37,7 @@ fn valid_impl_accepted_and_method_attached_to_target() {
         "#,
     );
     let r = TypeRegistry::from_items(&items).unwrap();
-    let cell = r.types.get("Cell").unwrap();
+    let cell = r.get_type("Cell").unwrap();
     let names: Vec<_> = cell.methods.iter().map(|m| m.function.sig.name.0.clone()).collect();
     assert!(names.contains(&"eq".to_string()));
     assert_eq!(r.impls.len(), 1);

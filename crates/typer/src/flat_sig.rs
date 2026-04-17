@@ -218,7 +218,7 @@ fn resolve_named_size(
 ) -> Result<CellCount, TyperError> {
     // Path-qualified reference? Canonicalize via the registry so the
     // lookup succeeds against the stored (usually bare) name.
-    let info = match reg.types.get(name) {
+    let info = match reg.get_type(name) {
         Some(i) => i,
         None => {
             let canonical = reg
@@ -226,7 +226,7 @@ fn resolve_named_size(
                 .ok_or_else(|| {
                     TyperError::at(format!("unknown type `{}`", name), sp.clone())
                 })?;
-            reg.types.get(&canonical).ok_or_else(|| {
+            reg.get_type(&canonical).ok_or_else(|| {
                 TyperError::at(format!("unknown type `{}`", name), sp.clone())
             })?
         }
@@ -243,7 +243,7 @@ fn resolve_named_size(
 }
 
 fn struct_field_offsets(reg: &TypeRegistry, type_name: &str) -> Option<Vec<FieldSlot>> {
-    let info = reg.types.get(type_name)?;
+    let info = reg.get_type(type_name)?;
     match &info.kind {
         TypeKind::Struct(StructKind::Concrete(l)) => Some(
             l.fields

@@ -8,12 +8,16 @@ use crate::types::*;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TypeRegistry {
-    /// Keyed by each type's storage name. For a type that's
-    /// unambiguous across files, the storage name equals the bare
-    /// name. When two files declare the same bare name, both get
-    /// migrated to fully-qualified keys like `<module>::<bare>`.
-    pub types: HashMap<String, TypeInfo>,
-    pub traits: HashMap<String, TraitInfo>,
+    /// Dense storage for every registered type. Indexed by `TypeId`.
+    /// Entries never move; the name-lookup map `type_ids` is what
+    /// gets rewritten on cross-file collision migrations.
+    pub type_infos: Vec<TypeInfo>,
+    /// Name → `TypeId`. For unambiguous types this is the bare name;
+    /// on collision, both entries re-key to `<module>::<bare>` form.
+    pub type_ids: HashMap<String, TypeId>,
+    /// Dense storage for every registered trait. Indexed by `TraitId`.
+    pub trait_infos: Vec<TraitInfo>,
+    pub trait_ids: HashMap<String, TraitId>,
     pub impls: Vec<ImplInfo>,
     /// Blanket impls: `impl<T: A + B> Trait for T { ... }`. Stored
     /// separately so the post-pass can iterate them to decide which
@@ -60,7 +64,7 @@ impl TypeRegistry {
     /// `U4` (size = 1 cell, no fields, no methods).
     pub fn new() -> Self {
         let mut r = Self::default();
-        r.types.insert(
+        r.insert_type(
             U4_NAME.to_string(),
             TypeInfo {
                 name: U4_NAME.to_string(),
@@ -72,6 +76,99 @@ impl TypeRegistry {
         // Primitive `U4` is bare-accessible everywhere.
         r.bare_aliases.insert(U4_NAME.to_string(), U4_NAME.to_string());
         r
+    }
+
+    // --- dense-storage accessors -----------------------------------------
+
+    /// Append a new `TypeInfo`, register `name` → fresh `TypeId`.
+    /// Returns the id.
+    pub fn insert_type(&mut self, name: String, info: TypeInfo) -> TypeId {
+        let id = TypeId(self.type_infos.len() as u32);
+        self.type_infos.push(info);
+        self.type_ids.insert(name, id);
+        id
+    }
+
+    pub fn insert_trait(&mut self, name: String, info: TraitInfo) -> TraitId {
+        let id = TraitId(self.trait_infos.len() as u32);
+        self.trait_infos.push(info);
+        self.trait_ids.insert(name, id);
+        id
+    }
+
+    /// Look up `name` → `TypeId`, following only the direct name index
+    /// (no file-aware resolution). Callers that need path/alias
+    /// resolution must go through `canonicalize_type_name` first.
+    pub fn type_id(&self, name: &str) -> Option<TypeId> {
+        self.type_ids.get(name).copied()
+    }
+
+    pub fn trait_id(&self, name: &str) -> Option<TraitId> {
+        self.trait_ids.get(name).copied()
+    }
+
+    pub fn has_type(&self, name: &str) -> bool {
+        self.type_ids.contains_key(name)
+    }
+
+    pub fn has_trait(&self, name: &str) -> bool {
+        self.trait_ids.contains_key(name)
+    }
+
+    /// Look up a `TypeInfo` by its registered name (direct, no alias chain).
+    pub fn get_type(&self, name: &str) -> Option<&TypeInfo> {
+        let id = *self.type_ids.get(name)?;
+        Some(&self.type_infos[id.0 as usize])
+    }
+
+    pub fn get_type_mut(&mut self, name: &str) -> Option<&mut TypeInfo> {
+        let id = *self.type_ids.get(name)?;
+        Some(&mut self.type_infos[id.0 as usize])
+    }
+
+    pub fn get_trait(&self, name: &str) -> Option<&TraitInfo> {
+        let id = *self.trait_ids.get(name)?;
+        Some(&self.trait_infos[id.0 as usize])
+    }
+
+    pub fn type_by_id(&self, id: TypeId) -> &TypeInfo {
+        &self.type_infos[id.0 as usize]
+    }
+
+    pub fn type_by_id_mut(&mut self, id: TypeId) -> &mut TypeInfo {
+        &mut self.type_infos[id.0 as usize]
+    }
+
+    pub fn trait_by_id(&self, id: TraitId) -> &TraitInfo {
+        &self.trait_infos[id.0 as usize]
+    }
+
+    /// Iterate `(name, &TypeInfo)` pairs. Like the old `types.iter()`.
+    /// Order is iteration order of the `type_ids` map (unspecified).
+    pub fn iter_types(&self) -> impl Iterator<Item = (&str, &TypeInfo)> {
+        self.type_ids
+            .iter()
+            .map(move |(n, id)| (n.as_str(), &self.type_infos[id.0 as usize]))
+    }
+
+    /// Iterate `&TypeInfo` only. Like the old `types.values()`.
+    pub fn all_types(&self) -> impl Iterator<Item = &TypeInfo> {
+        self.type_infos.iter()
+    }
+
+    /// Rebind `name` to point at an existing `TypeId`. Used by the
+    /// collision-migration path (bare→FQ key rename without touching
+    /// the stored `TypeInfo`).
+    pub fn rename_type_key(&mut self, old_name: &str, new_name: String) {
+        if let Some(id) = self.type_ids.remove(old_name) {
+            self.type_ids.insert(new_name, id);
+        }
+    }
+
+    pub fn rename_trait_key(&mut self, old_name: &str, new_name: String) {
+        if let Some(id) = self.trait_ids.remove(old_name) {
+            self.trait_ids.insert(new_name, id);
+        }
     }
 
     /// Derive a module path for a file — strip `.ct`, replace path
@@ -217,7 +314,7 @@ impl TypeRegistry {
         if let Some(idx) = name.rfind("::") {
             // Path-qualified. After a cross-file collision the storage
             // key IS the FQ form, so check directly first.
-            if self.types.contains_key(name) || self.traits.contains_key(name) {
+            if self.has_type(name) || self.has_trait(name) {
                 return Some(name.to_string());
             }
             if let Some(storage) = self.bare_aliases.get(name) {
@@ -227,7 +324,7 @@ impl TypeRegistry {
             // unambiguous) type, accept it.
             let leaf = &name[idx + 2..];
             if !self.ambiguous_bare.contains(leaf)
-                && (self.types.contains_key(leaf) || self.traits.contains_key(leaf))
+                && (self.has_type(leaf) || self.has_trait(leaf))
             {
                 return Some(leaf.to_string());
             }
@@ -247,14 +344,14 @@ impl TypeRegistry {
             if let Some(alias) = self.type_aliases.get(&fid).and_then(|m| m.get(name)) {
                 // The alias is the full path the user wrote in `use`.
                 // Recurse through the path-qualified branch.
-                if self.types.contains_key(alias) || self.traits.contains_key(alias) {
+                if self.has_type(alias) || self.has_trait(alias) {
                     return Some(alias.clone());
                 }
                 if let Some(storage) = self.bare_aliases.get(alias) {
                     return Some(storage.clone());
                 }
                 let leaf = alias.rsplit("::").next().unwrap_or(alias);
-                if self.types.contains_key(leaf) || self.traits.contains_key(leaf) {
+                if self.has_type(leaf) || self.has_trait(leaf) {
                     return Some(leaf.to_string());
                 }
             }
@@ -266,7 +363,7 @@ impl TypeRegistry {
         if let Some(storage) = self.bare_aliases.get(name) {
             return Some(storage.clone());
         }
-        if self.types.contains_key(name) || self.traits.contains_key(name) {
+        if self.has_type(name) || self.has_trait(name) {
             return Some(name.to_string());
         }
         None
@@ -275,7 +372,7 @@ impl TypeRegistry {
     /// Convenience: resolve a bare/FQ name to a `TypeInfo` reference.
     pub fn lookup_type(&self, name: &str, file_id: Option<FileId>) -> Option<&TypeInfo> {
         self.canonicalize_type_name(name, file_id)
-            .and_then(|cn| self.types.get(&cn))
+            .and_then(|cn| self.get_type(&cn))
     }
 
     // --- individual registration passes (exposed for testing) -------------
@@ -387,12 +484,12 @@ impl TypeRegistry {
                         .unwrap_or_default();
                     let prev_fq = Self::join_path(&prev_module, bare);
                     if prev_fq != bare {
-                        if let Some(info) = self.types.remove(bare) {
-                            self.types.insert(prev_fq.clone(), info);
-                        }
-                        if let Some(info) = self.traits.remove(bare) {
-                            self.traits.insert(prev_fq.clone(), info);
-                        }
+                        // Migration is purely a name-key rename — the
+                        // underlying `TypeInfo`/`TraitInfo` stays at
+                        // the same `TypeId`/`TraitId`, so any handle
+                        // already held elsewhere remains valid.
+                        self.rename_type_key(bare, prev_fq.clone());
+                        self.rename_trait_key(bare, prev_fq.clone());
                         self.bare_aliases.insert(prev_fq.clone(), prev_fq.clone());
                     }
                     self.bare_aliases.remove(bare);
@@ -432,7 +529,7 @@ impl TypeRegistry {
         storage_key: &str,
     ) -> Result<(), TyperError> {
         let name = def.name.0.clone();
-        if self.types.contains_key(storage_key) && name != U4_NAME {
+        if self.has_type(storage_key) && name != U4_NAME {
             return Err(TyperError::at(
                 format!("duplicate type definition: {}", name),
                 def.name.1.clone(),
@@ -463,7 +560,7 @@ impl TypeRegistry {
             })
         };
 
-        self.types.insert(
+        self.insert_type(
             storage_key.to_string(),
             TypeInfo {
                 name,
@@ -481,7 +578,7 @@ impl TypeRegistry {
         storage_key: &str,
     ) -> Result<(), TyperError> {
         let name = def.name.0.clone();
-        if self.types.contains_key(storage_key) {
+        if self.has_type(storage_key) {
             return Err(TyperError::at(
                 format!("duplicate type definition: {}", name),
                 def.name.1.clone(),
@@ -512,7 +609,7 @@ impl TypeRegistry {
             })
         };
 
-        self.types.insert(
+        self.insert_type(
             storage_key.to_string(),
             TypeInfo {
                 name,
@@ -530,13 +627,13 @@ impl TypeRegistry {
         storage_key: &str,
     ) -> Result<(), TyperError> {
         let name = def.name.0.clone();
-        if self.traits.contains_key(storage_key) {
+        if self.has_trait(storage_key) {
             return Err(TyperError::at(
                 format!("duplicate trait definition: {}", name),
                 def.name.1.clone(),
             ));
         }
-        self.traits.insert(
+        self.insert_trait(
             storage_key.to_string(),
             TraitInfo {
                 name,
@@ -558,8 +655,7 @@ impl TypeRegistry {
             .canonicalize_type_name(&raw, Some(file_id))
             .unwrap_or(raw);
         let ty = self
-            .types
-            .get_mut(&target_name)
+            .get_type_mut(&target_name)
             .ok_or_else(|| TyperError::at(
                 format!("extension target `{}` is not a known type", target_name),
                 ext.target.1.clone(),
@@ -615,8 +711,7 @@ impl TypeRegistry {
 
         // Trait must exist.
         let trait_info = self
-            .traits
-            .get(&trait_name)
+            .get_trait(&trait_name)
             .ok_or_else(|| TyperError::at(
                 format!("unknown trait `{}` in impl", trait_name),
                 def.trait_ty.1.clone(),
@@ -687,7 +782,7 @@ impl TypeRegistry {
 
         // Blanket impls skip the direct target-exists check — T is a
         // placeholder, not a registered type.
-        if !is_blanket && !self.types.contains_key(&target_name) {
+        if !is_blanket && !self.has_type(&target_name) {
             return Err(TyperError::at(
                 format!("impl target `{}` is not a known type", target_name),
                 def.target.1.clone(),
@@ -703,7 +798,7 @@ impl TypeRegistry {
                     let canonical = self
                         .canonicalize_type_name(&b.trait_name, Some(file_id))
                         .unwrap_or_else(|| b.trait_name.clone());
-                    if !self.traits.contains_key(&canonical) {
+                    if !self.has_trait(&canonical) {
                         return Err(TyperError::at(
                             format!("unknown trait `{}` in bound", b.trait_name),
                             def.target.1.clone(),
@@ -832,7 +927,7 @@ impl TypeRegistry {
             return Ok(());
         }
 
-        let ty = self.types.get_mut(&target_name).unwrap();
+        let ty = self.get_type_mut(&target_name).unwrap();
         for (method, _) in &def.methods {
             let collides_same_trait = ty.methods.iter().any(|m| {
                 m.function.sig.name.0 == method.sig.name.0
@@ -895,12 +990,12 @@ impl TypeRegistry {
         // upper bound on iterations = number of blankets × types; a
         // round that attaches nothing terminates the loop.
         let max_rounds = blankets.len().saturating_add(1).saturating_mul(
-            self.types.len().saturating_add(1),
+            self.type_infos.len().saturating_add(1),
         );
         for _round in 0..=max_rounds {
-            let before = self.types.iter().map(|(_, i)| i.methods.len()).sum::<usize>();
+            let before = self.all_types().map(|i| i.methods.len()).sum::<usize>();
             self.attach_blanket_pass(&blankets);
-            let after = self.types.iter().map(|(_, i)| i.methods.len()).sum::<usize>();
+            let after = self.all_types().map(|i| i.methods.len()).sum::<usize>();
             if before == after {
                 break;
             }
@@ -947,7 +1042,7 @@ impl TypeRegistry {
         let generic_order: Vec<String> =
             blanket.generics.iter().map(|g| g.name.clone()).collect();
 
-        let candidates: Vec<String> = self.types.keys().cloned().collect();
+        let candidates: Vec<String> = self.type_ids.keys().cloned().collect();
         for type_name in candidates {
             if generic_order.iter().any(|n| *n == type_name) {
                 continue;
@@ -959,8 +1054,7 @@ impl TypeRegistry {
             // `CandidateArg(i)` bindings instead of stalling on
             // placeholder-to-placeholder matches.
             let candidate_params: Vec<String> = self
-                .types
-                .get(&type_name)
+                .get_type(&type_name)
                 .map(|info| info.templates.clone())
                 .unwrap_or_default();
             let Some(assignment) = self.satisfy_bounds(
@@ -994,7 +1088,7 @@ impl TypeRegistry {
     /// violation at inline time.
     fn attach_blanket_generic_target(&mut self, blanket: &ImplInfo) {
         // Container must be a registered type.
-        if !self.types.contains_key(&blanket.target_name) {
+        if !self.has_type(&blanket.target_name) {
             return;
         }
         let generic_order: Vec<String> =
@@ -1079,8 +1173,7 @@ impl TypeRegistry {
         // head args reference blanket generic names, we replace each
         // with the candidate's template name at that index.
         let candidate_params: Vec<String> = self
-            .types
-            .get(type_name)
+            .get_type(type_name)
             .map(|info| info.templates.clone())
             .unwrap_or_default();
         let attached_trait_args = translate_trait_args_for_candidate(
@@ -1089,7 +1182,7 @@ impl TypeRegistry {
             &candidate_params,
         );
 
-        let ty = self.types.get_mut(type_name).unwrap();
+        let ty = self.get_type_mut(type_name).unwrap();
         for method in &blanket.methods {
             let already = ty.methods.iter().any(|m| {
                 m.function.sig.name.0 == method.sig.name.0
@@ -1126,7 +1219,7 @@ impl TypeRegistry {
         candidate_params: &[String],
     ) -> Option<HashMap<String, crate::resolution::ResolvedArg>> {
         use crate::resolution::{ResolvedArg, unify_args};
-        let info = self.types.get(candidate)?;
+        let info = self.get_type(candidate)?;
         // Treat the target generic as an additional free name, pre-bound
         // to the candidate. Bounds that mention `T` (the target) then
         // check consistency instead of treating `T` as a concrete but
@@ -1188,7 +1281,7 @@ impl TypeRegistry {
         method_name: &str,
         trait_name: Option<&str>,
     ) -> Option<&MethodInfo> {
-        let info = self.types.get(type_name)?;
+        let info = self.get_type(type_name)?;
         info.methods.iter().find(|m| {
             m.function.sig.name.0 == method_name && m.from_trait.as_deref() == trait_name
         })
@@ -1260,7 +1353,7 @@ impl TypeRegistry {
         method_name: &str,
         trait_hint: Option<&str>,
     ) -> MethodResolution {
-        let Some(info) = self.types.get(type_name) else {
+        let Some(info) = self.get_type(type_name) else {
             return MethodResolution::NotFound {
                 reason: format!("unknown type `{}`", type_name),
             };
@@ -1465,7 +1558,7 @@ impl TypeRegistry {
             let canonical = self
                 .canonicalize_type_name(&ty.name.0, None)
                 .unwrap_or_else(|| ty.name.0.clone());
-            if let Some(info) = self.types.get(&canonical) {
+            if let Some(info) = self.get_type(&canonical) {
                 match &info.kind {
                     TypeKind::Struct(StructKind::Templated { .. }) => {
                         // Normalize the name for downstream sizing.
@@ -1493,7 +1586,7 @@ impl TypeRegistry {
         let canonical = self
             .canonicalize_type_name(&ty.name.0, None)
             .unwrap_or_else(|| ty.name.0.clone());
-        let info = self.types.get(&canonical).ok_or_else(|| {
+        let info = self.get_type(&canonical).ok_or_else(|| {
             TyperError::at(
                 format!("unknown type `{}`", ty.name.0),
                 sp.clone(),
@@ -1622,7 +1715,7 @@ impl TypeRegistry {
         let self_ty = &self_ty;
         let trait_head = &qself.trait_ty.0.name.0;
 
-        let trait_info = self.traits.get(trait_head).ok_or_else(|| {
+        let trait_info = self.get_trait(trait_head).ok_or_else(|| {
             TyperError::at(
                 format!("unknown trait `{}`", trait_head),
                 qself.trait_ty.1.clone(),
@@ -1680,7 +1773,7 @@ impl TypeRegistry {
             // Look up in the impl's methods list — trait template args
             // aren't kept directly on ImplInfo, but they're on the methods'
             // `trait_template_args`. Grab from the first method.
-            let info = self.types.get(&impl_.target_name).ok_or_else(|| {
+            let info = self.get_type(&impl_.target_name).ok_or_else(|| {
                 TyperError::at(
                     format!("impl target `{}` has no type info", impl_.target_name),
                     sp.clone(),
@@ -1740,7 +1833,7 @@ impl TypeRegistry {
             .unwrap_or_else(|| ty.name.0.clone());
         // Direct concrete lookup.
         if ty.templates.is_empty() {
-            let info = self.types.get(&canonical).ok_or_else(|| {
+            let info = self.get_type(&canonical).ok_or_else(|| {
                 TyperError::at(format!("unknown type `{}`", ty.name.0), sp.clone())
             })?;
             return match &info.kind {
@@ -1753,7 +1846,7 @@ impl TypeRegistry {
         }
 
         // Generic instantiation — substitute and compute.
-        let info = self.types.get(&canonical).ok_or_else(|| {
+        let info = self.get_type(&canonical).ok_or_else(|| {
             TyperError::at(format!("unknown type `{}`", ty.name.0), sp.clone())
         })?;
         let fields = match &info.kind {
@@ -1820,7 +1913,7 @@ impl TypeRegistry {
             .unwrap_or_else(|| ty.name.0.clone());
         // Direct concrete lookup.
         if ty.templates.is_empty() {
-            let info = self.types.get(&canonical).ok_or_else(|| {
+            let info = self.get_type(&canonical).ok_or_else(|| {
                 TyperError::at(format!("unknown type `{}`", ty.name.0), sp.clone())
             })?;
             return match &info.kind {
@@ -1833,7 +1926,7 @@ impl TypeRegistry {
         }
 
         // Generic instantiation — substitute and compute.
-        let info = self.types.get(&canonical).ok_or_else(|| {
+        let info = self.get_type(&canonical).ok_or_else(|| {
             TyperError::at(format!("unknown type `{}`", ty.name.0), sp.clone())
         })?;
         let variants = match &info.kind {
@@ -1944,7 +2037,7 @@ impl TypeRegistry {
                 ast::TypeOrValue::Value(_) => false,
                 ast::TypeOrValue::Type(inner) => self.type_is_templated(inner),
             }) || matches!(
-                self.types.get(&ty.name.0),
+                self.get_type(&ty.name.0),
                 Some(TypeInfo {
                     kind: TypeKind::Struct(StructKind::Templated { .. }),
                     ..
@@ -1954,7 +2047,7 @@ impl TypeRegistry {
                 })
             );
         }
-        match self.types.get(&ty.name.0) {
+        match self.get_type(&ty.name.0) {
             Some(TypeInfo { kind: TypeKind::Struct(StructKind::Templated { .. }), .. }) => true,
             Some(TypeInfo { kind: TypeKind::Enum(EnumKind::Templated { .. }), .. }) => true,
             Some(_) => false,

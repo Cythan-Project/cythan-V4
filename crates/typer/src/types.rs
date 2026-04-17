@@ -12,6 +12,20 @@ pub type CellCount = u32;
 /// increasing number; Phase 2 only needs to carry it through.
 pub type FileId = u32;
 
+/// Opaque handle for a registered type. Index into `TypeRegistry.type_infos`.
+///
+/// Created via `TypeRegistry::insert_type` / resolved via `type_id(name)`.
+/// Handles are stable for the registry's lifetime — migrating a type's name
+/// on cross-file collision rewrites the name map, NOT the `TypeInfo`'s slot,
+/// so any `TypeId` held elsewhere keeps pointing at the right data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TypeId(pub u32);
+
+/// Opaque handle for a registered trait. Index into
+/// `TypeRegistry.trait_infos`. Same stability guarantees as `TypeId`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TraitId(pub u32);
+
 /// The only hard-coded primitive.
 ///
 /// `U4` is declared in source as `struct U4 {}` (zero fields) but is special-

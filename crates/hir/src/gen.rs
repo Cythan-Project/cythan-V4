@@ -627,7 +627,7 @@ impl<'a> Generator<'a> {
         field: &str,
         sp: &new_parser::Span,
     ) -> Result<String, HirError> {
-        let info = self.reg.types.get(type_name).unwrap();
+        let info = self.reg.get_type(type_name).unwrap();
         // Re-read the struct's field layout; since layout only has names +
         // sizes, we reconstruct the AST type name by matching the cell size
         // to the primitive U4 / or a same-size struct. This is a pragmatic
@@ -698,8 +698,7 @@ impl<'a> Generator<'a> {
         }
         let field_offsets = self
             .reg
-            .types
-            .get(&resolved)
+            .get_type(&resolved)
             .and_then(|info| match &info.kind {
                 typer::TypeKind::Struct(typer::StructKind::Concrete(l)) => Some(
                     l.fields
@@ -908,7 +907,7 @@ impl<'a> Generator<'a> {
         // Determine scrutinee type (name + concrete template args).
         let scrut_ty = self.infer_expr_type(&scrutinee.0, &scrutinee.1)?;
         let resolved = self.resolve_ty_name(&scrut_ty);
-        let info = self.reg.types.get(&resolved).ok_or_else(|| {
+        let info = self.reg.get_type(&resolved).ok_or_else(|| {
             HirError::at(
                 format!("unknown scrutinee type `{}`", resolved),
                 sp.clone(),
@@ -1667,7 +1666,7 @@ impl<'a> Generator<'a> {
             // blanket calls, Self is supplied via the sources, so we
             // use the first `info.templates.len()` args (or the full
             // list if info isn't a known type).
-            let info = self.reg.types.get(type_name);
+            let info = self.reg.get_type(type_name);
             let self_arg_count = info.map(|i| i.templates.len()).unwrap_or(0);
             let take = self_arg_count.min(combined_args.len());
             let self_args: Vec<ConcreteTemplateArg> =
@@ -1718,7 +1717,7 @@ impl<'a> Generator<'a> {
         enclosing_type: &str,
         recv_args: &[ConcreteTemplateArg],
     ) -> String {
-        let Some(info) = self.reg.types.get(enclosing_type) else {
+        let Some(info) = self.reg.get_type(enclosing_type) else {
             return raw_name.to_string();
         };
         if info.templates.len() != recv_args.len() {
@@ -1747,7 +1746,7 @@ impl<'a> Generator<'a> {
         method: &str,
         recv_args: &[ConcreteTemplateArg],
     ) -> Option<String> {
-        let info = self.reg.types.get(type_name)?;
+        let info = self.reg.get_type(type_name)?;
         let lookup = |f: &typer::Fn| -> Option<String> {
             let ret_ty = match f {
                 typer::Fn::Simple(s) => s.body.sig.return_type.as_ref()?,
@@ -1804,7 +1803,7 @@ impl<'a> Generator<'a> {
         method: &str,
         args: &[ast::Spanned<ast::Expr>],
     ) -> Option<Vec<ConcreteTemplateArg>> {
-        let info = self.reg.types.get(type_name)?;
+        let info = self.reg.get_type(type_name)?;
         if info.templates.is_empty() {
             return None;
         }
@@ -1896,7 +1895,7 @@ impl<'a> Generator<'a> {
             ast::Expr::Field(recv, field) => {
                 let (recv_name, _) = self.concrete_type_of(&recv.0)?;
                 let resolved = self.resolve_ty_name(&recv_name);
-                let info = self.reg.types.get(&resolved)?;
+                let info = self.reg.get_type(&resolved)?;
                 let typer::TypeKind::Struct(typer::StructKind::Concrete(layout)) = &info.kind
                 else {
                     // Try via the receiver's template args
@@ -1943,7 +1942,7 @@ impl<'a> Generator<'a> {
                         };
                         let (lhs_name, lhs_args) = self.concrete_type_of(&l.0)?;
                         let resolved = self.resolve_ty_name(&lhs_name);
-                        let info = self.reg.types.get(&resolved)?;
+                        let info = self.reg.get_type(&resolved)?;
                         let key = typer::FnSig::new(&resolved, method);
                         let mut found: Option<&typer::Fn> = self.db.get(&key);
                         if found.is_none() {
@@ -2013,7 +2012,7 @@ impl<'a> Generator<'a> {
                     .map(|(tv, _)| lower_tv(tv))
                     .collect();
                 // Look up the method's declared return type and substitute.
-                let info = self.reg.types.get(&resolved_recv)?;
+                let info = self.reg.get_type(&resolved_recv)?;
                 let (f, fk) = self
                     .db
                     .get(&typer::FnSig::new(&resolved_recv, &name.0))
@@ -2076,7 +2075,7 @@ impl<'a> Generator<'a> {
                 // becomes the concrete `ArrayList<U4, 3, U4>`).
                 let (recv_name, recv_args) = self.concrete_type_of(&receiver.0)?;
                 let resolved = self.resolve_ty_name(&recv_name);
-                let info = self.reg.types.get(&resolved)?;
+                let info = self.reg.get_type(&resolved)?;
                 // Find the method's declared return type. Inherent first
                 // (FnSig::new), then any trait-keyed method on the same
                 // type (scan all functions). Trait-keyed methods are the
@@ -2164,7 +2163,7 @@ impl<'a> Generator<'a> {
                 }
                 let recv_ty = self.infer_expr_type(&recv.0, &recv.1).ok()?;
                 let resolved = self.resolve_ty_name(&recv_ty);
-                let info = self.reg.types.get(&resolved)?;
+                let info = self.reg.get_type(&resolved)?;
                 let typer::TypeKind::Struct(typer::StructKind::Concrete(layout)) = &info.kind
                 else {
                     return None;
@@ -2268,7 +2267,7 @@ impl<'a> Generator<'a> {
                 .resolve_struct_layout(&ty.0, &ty.1)
                 .map_err(|e| HirError::at(e.message, ty.1.clone()))?
         } else {
-            let info = self.reg.types.get(&resolved).ok_or_else(|| {
+            let info = self.reg.get_type(&resolved).ok_or_else(|| {
                 HirError::at(format!("unknown type `{}`", resolved), sp.clone())
             })?;
             match &info.kind {
@@ -2347,7 +2346,7 @@ impl<'a> Generator<'a> {
             return Ok(());
         };
         let resolved = self.resolve_ty_name(&ty.0.name.0);
-        let info = self.reg.types.get(&resolved).ok_or_else(|| {
+        let info = self.reg.get_type(&resolved).ok_or_else(|| {
             HirError::at(format!("unknown type `{}`", resolved), sp.clone())
         })?;
         let layout = match &info.kind {
@@ -2454,7 +2453,7 @@ impl<'a> Generator<'a> {
                 }
                 let recv_ty = self.infer_expr_type(&recv.0, &recv.1)?;
                 let resolved = self.resolve_ty_name(&recv_ty);
-                if let Some(info) = self.reg.types.get(&resolved) {
+                if let Some(info) = self.reg.get_type(&resolved) {
                     if let typer::TypeKind::Struct(typer::StructKind::Concrete(layout)) =
                         &info.kind
                     {
@@ -2516,7 +2515,7 @@ impl<'a> Generator<'a> {
                     .map(|(tv, _)| lower_tv(tv))
                     .collect();
                 let fallback = || resolved_recv.clone();
-                let Some(info) = self.reg.types.get(&resolved_recv) else {
+                let Some(info) = self.reg.get_type(&resolved_recv) else {
                     return Ok(fallback());
                 };
                 let lookup = |f: &typer::Fn| -> Option<String> {
@@ -2623,7 +2622,7 @@ impl<'a> Generator<'a> {
                 let substitute_template_ref = |raw_name: &str| -> String {
                     // Find the enclosing type's template params; if
                     // `raw_name` is one of them, map it to the concrete arg.
-                    let Some(info) = self.reg.types.get(&resolved) else {
+                    let Some(info) = self.reg.get_type(&resolved) else {
                         return raw_name.to_string();
                     };
                     if info.templates.len() != recv_args.len() {

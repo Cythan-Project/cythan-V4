@@ -31,7 +31,7 @@ fn registers_bool_with_concrete_layout_and_methods() {
     let items = items_from("std/Bool.ct");
     let r = TypeRegistry::from_items(&items).unwrap();
 
-    match &r.types["Bool"].kind {
+    match &r.get_type("Bool").unwrap().kind {
         TypeKind::Struct(StructKind::Concrete(layout)) => {
             assert_eq!(layout.size, 1);
             assert_eq!(layout.fields.len(), 1);
@@ -39,7 +39,7 @@ fn registers_bool_with_concrete_layout_and_methods() {
         }
         other => panic!("Bool should be concrete struct, got {:?}", other),
     }
-    let names: Vec<_> = r.types["Bool"]
+    let names: Vec<_> = r.get_type("Bool").unwrap()
         .methods
         .iter()
         .map(|m| m.function.sig.name.0.clone())
@@ -52,7 +52,7 @@ fn registers_bool_with_concrete_layout_and_methods() {
 fn registers_u8_with_size_2() {
     let items = items_from("std/U8.ct");
     let r = TypeRegistry::from_items(&items).unwrap();
-    match &r.types["U8"].kind {
+    match &r.get_type("U8").unwrap().kind {
         TypeKind::Struct(StructKind::Concrete(layout)) => {
             assert_eq!(layout.size, 2);
             assert_eq!(layout.fields[0].name, "lower");
@@ -76,15 +76,15 @@ fn templated_generic_types_are_stored_unresolved() {
     let items = parse_src(&combined);
     let r = TypeRegistry::from_items(&items).unwrap();
     assert!(matches!(
-        r.types["Array"].kind,
+        r.get_type("Array").unwrap().kind,
         TypeKind::Struct(StructKind::Templated { .. })
     ));
-    assert_eq!(r.types["Array"].templates, vec!["T", "E", "F"]);
+    assert_eq!(r.get_type("Array").unwrap().templates, vec!["T", "E", "F"]);
     assert!(matches!(
-        r.types["Option"].kind,
+        r.get_type("Option").unwrap().kind,
         TypeKind::Enum(EnumKind::Templated { .. })
     ));
-    assert_eq!(r.types["Option"].templates, vec!["T"]);
+    assert_eq!(r.get_type("Option").unwrap().templates, vec!["T"]);
 }
 
 #[test]
@@ -106,8 +106,8 @@ fn morpion_registry_shape() {
     let items = parse_src(&combined);
     // We allow errors here because generic instantiations aren't resolvable
     // yet, but the trait & enum must still be registered in either branch.
-    let (traits, types_with_cell) = match TypeRegistry::from_items(&items) {
-        Ok(r) => (r.traits.clone(), r.types.contains_key("Cell")),
+    let (has_eq, types_with_cell) = match TypeRegistry::from_items(&items) {
+        Ok(r) => (r.has_trait("Eq"), r.has_type("Cell")),
         Err(errs) => {
             // Allowed errors: generic instantiation ("Phase 6"),
             // "not a known type" for types discovered later, etc.
@@ -128,7 +128,7 @@ fn morpion_registry_shape() {
             return;
         }
     };
-    assert!(traits.contains_key("Eq"));
+    assert!(has_eq);
     assert!(types_with_cell);
 }
 
@@ -153,7 +153,7 @@ fn cell_enum_and_eq_impl_without_generics() {
     let r = TypeRegistry::from_items(&items).unwrap();
 
     // Cell is a concrete all-unit enum: total size 1 cell.
-    match &r.types["Cell"].kind {
+    match &r.get_type("Cell").unwrap().kind {
         TypeKind::Enum(EnumKind::Concrete(l)) => {
             assert_eq!(l.total_size(), 1);
             assert_eq!(l.variants.len(), 3);
@@ -162,5 +162,5 @@ fn cell_enum_and_eq_impl_without_generics() {
     }
     // Impl registered + method attached.
     assert_eq!(r.impls.len(), 1);
-    assert!(r.types["Cell"].methods.iter().any(|m| m.function.sig.name.0 == "eq"));
+    assert!(r.get_type("Cell").unwrap().methods.iter().any(|m| m.function.sig.name.0 == "eq"));
 }

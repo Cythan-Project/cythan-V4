@@ -417,7 +417,7 @@ pub fn monomorphize(
     let self_binding = if let Some(b) = &templated.blanket {
         resolve_self_from_blanket(b, &key.template_args, &templated.type_name)
     } else {
-        reg.types.get(&templated.type_name).and_then(|info| {
+        reg.get_type(&templated.type_name).and_then(|info| {
             let n_type_templates = info.templates.len();
             if n_type_templates <= key.template_args.len() {
                 let self_args: Vec<ConcreteTemplateArg> = key
@@ -458,8 +458,7 @@ pub fn monomorphize(
     // resolve bare-head calls like `Pair::new(...)` inside an `impl` for
     // `Pair<U4>`.
     let type_template_args: Vec<ast::TypeOrValue> = reg
-        .types
-        .get(&templated.type_name)
+        .get_type(&templated.type_name)
         .map(|info| {
             key.template_args
                 .iter()

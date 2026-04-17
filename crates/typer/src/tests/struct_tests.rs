@@ -10,7 +10,7 @@ fn registry_with(src: &str) -> TypeRegistry {
 }
 
 fn layout_of(r: &TypeRegistry, name: &str) -> StructLayout {
-    match &r.types.get(name).expect("type not found").kind {
+    match &r.get_type(name).expect("type not found").kind {
         TypeKind::Struct(StructKind::Concrete(l)) => l.clone(),
         other => panic!("{} is not a concrete struct: {:?}", name, other),
     }
@@ -19,7 +19,7 @@ fn layout_of(r: &TypeRegistry, name: &str) -> StructLayout {
 #[test]
 fn empty_registry_contains_u4_primitive() {
     let r = TypeRegistry::new();
-    let u4 = r.types.get("U4").expect("U4 pre-populated");
+    let u4 = r.get_type("U4").expect("U4 pre-populated");
     assert_eq!(u4.kind, TypeKind::Primitive { size: 1 });
     assert!(u4.templates.is_empty());
     assert!(u4.methods.is_empty());
@@ -67,7 +67,7 @@ fn struct_u4_marker_is_primitive() {
     // Declaring `struct U4 {}` in source must keep U4 as a 1-cell primitive,
     // not a zero-sized struct.
     let r = registry_with("struct U4 {}");
-    assert_eq!(r.types["U4"].kind, TypeKind::Primitive { size: 1 });
+    assert_eq!(r.get_type("U4").unwrap().kind, TypeKind::Primitive { size: 1 });
 }
 
 #[test]
@@ -84,7 +84,7 @@ fn struct_u4_with_fields_is_rejected() {
 #[test]
 fn templated_struct_stored_but_not_sized() {
     let r = registry_with("struct Array<T, E, F> {}");
-    let info = r.types.get("Array").unwrap();
+    let info = r.get_type("Array").unwrap();
     assert_eq!(info.templates, vec!["T", "E", "F"]);
     match &info.kind {
         TypeKind::Struct(StructKind::Templated { fields }) => {

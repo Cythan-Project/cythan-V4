@@ -144,7 +144,7 @@ fn concrete_arg_to_ast(a: &ConcreteTemplateArg) -> new_parser::ast::TypeOrValue 
 
 #[allow(dead_code)]
 fn size_of(reg: &typer::TypeRegistry, name: &str) -> Option<u32> {
-    let info = reg.types.get(name)?;
+    let info = reg.get_type(name)?;
     match &info.kind {
         typer::TypeKind::Primitive { size } => Some(*size),
         typer::TypeKind::Struct(typer::StructKind::Concrete(l)) => Some(l.size),

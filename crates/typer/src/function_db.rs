@@ -127,8 +127,8 @@ impl FunctionDB {
         // collision migration — FnSig keys align with the storage-key
         // form that type-name lookups resolve to. For unambiguous
         // types storage_key == info.name so this is a no-op.
-        for (storage_key, info) in &reg.types {
-            let type_name = storage_key.clone();
+        for (storage_key, info) in reg.iter_types() {
+            let type_name = storage_key.to_string();
             let type_templates = info.templates.clone();
             for m in &info.methods {
                 let method_templates: Vec<String> = m

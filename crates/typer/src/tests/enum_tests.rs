@@ -10,7 +10,7 @@ fn registry_with(src: &str) -> TypeRegistry {
 }
 
 fn enum_layout(r: &TypeRegistry, name: &str) -> EnumLayout {
-    match &r.types.get(name).expect("enum not found").kind {
+    match &r.get_type(name).expect("enum not found").kind {
         TypeKind::Enum(EnumKind::Concrete(l)) => l.clone(),
         other => panic!("{} is not a concrete enum: {:?}", name, other),
     }
@@ -93,7 +93,7 @@ fn enum_with_17_variants_uses_2_cell_discriminant() {
 #[test]
 fn templated_enum_is_stored_unresolved() {
     let r = registry_with("enum Option<T> { None, Some(T), }");
-    let info = r.types.get("Option").unwrap();
+    let info = r.get_type("Option").unwrap();
     assert_eq!(info.templates, vec!["T"]);
     match &info.kind {
         TypeKind::Enum(EnumKind::Templated { variants }) => {

@@ -15,5 +15,5 @@ pub use types::{
     discriminant_size_for, BlanketBinding, BoundRef, CellCount, EnumKind, EnumLayout,
     EnumVariantLayout, FieldLayout, FileId, GenericParamInfo, GenericSource, ImplInfo,
     MethodDispatch, MethodInfo, MethodResolution, StructKind, StructLayout, TemplatedVariant,
-    TraitInfo, TypeInfo, TypeKind, TyperError, U4_NAME, U4_SIZE,
+    TraitId, TraitInfo, TypeId, TypeInfo, TypeKind, TyperError, U4_NAME, U4_SIZE,
 };
