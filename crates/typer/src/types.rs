@@ -148,8 +148,9 @@ pub fn discriminant_size_for(variant_count: usize) -> CellCount {
 pub struct MethodInfo {
     pub function: ast::Function,
     pub file_id: FileId,
-    /// If this method came from a trait impl, carries the trait name.
-    pub from_trait: Option<String>,
+    /// If this method came from a trait impl, carries the trait id.
+    /// Resolved at registration time; `None` for inherent methods.
+    pub from_trait: Option<TraitId>,
     /// Concrete template args on the trait head of the impl — e.g. for
     /// `impl Convert<U4> for U4`, this is `[U4]`. Empty for inherent
     /// extensions and for impls of a non-generic trait. Used to
@@ -246,7 +247,9 @@ pub struct GenericParamInfo {
 /// A single trait bound on a generic parameter.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BoundRef {
-    pub trait_name: String,
+    /// Resolved id of the bound trait. Validated at registration —
+    /// unknown traits error there instead of at use sites.
+    pub trait_id: TraitId,
     /// Template args on the bound's trait head — may reference free
     /// generics by name (e.g. `T` in `Wrap<T>`).
     pub trait_args: Vec<ast::TypeOrValue>,

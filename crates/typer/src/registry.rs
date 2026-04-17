@@ -9,14 +9,24 @@ use crate::types::*;
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TypeRegistry {
     /// Dense storage for every registered type. Indexed by `TypeId`.
-    /// Entries never move; the name-lookup map `type_ids` is what
-    /// gets rewritten on cross-file collision migrations.
+    /// Entries never move; name-lookup tables get rewritten on
+    /// cross-file collision migrations, not the infos themselves.
     pub type_infos: Vec<TypeInfo>,
-    /// Name → `TypeId`. For unambiguous types this is the bare name;
-    /// on collision, both entries re-key to `<module>::<bare>` form.
+    /// One canonical lookup key per `TypeId`, parallel to `type_infos`.
+    /// For unambiguous types this is the bare name; for types that
+    /// collided across files it's the fully-qualified `<module>::<bare>`
+    /// form. Always guaranteed to be present as a key in `type_ids`,
+    /// so callers can use it as a lookup string.
+    pub type_canonical_keys: Vec<String>,
+    /// Every globally-unambiguous lookup key → `TypeId`. Includes:
+    ///   * the canonical bare name (unless ambiguous across files)
+    ///   * every fully-qualified `<module>::<bare>` form
+    /// Bare names that collide across files are removed here and kept
+    /// only in per-file scope maps below.
     pub type_ids: HashMap<String, TypeId>,
     /// Dense storage for every registered trait. Indexed by `TraitId`.
     pub trait_infos: Vec<TraitInfo>,
+    pub trait_canonical_keys: Vec<String>,
     pub trait_ids: HashMap<String, TraitId>,
     pub impls: Vec<ImplInfo>,
     /// Blanket impls: `impl<T: A + B> Trait for T { ... }`. Stored
@@ -25,32 +35,33 @@ pub struct TypeRegistry {
     /// remain in `impls`.
     pub blanket_impls: Vec<ImplInfo>,
     /// Per-file import scope: for each `FileId`, the set of trait
-    /// names brought into scope via `use Name;` — tracked separately
-    /// from `type_aliases` because trait-in-scope drives operator
-    /// dispatch, while type_aliases drives type-name resolution.
+    /// names brought into scope via `use Name;`. Drives operator
+    /// dispatch (trait-in-scope check).
     pub imports: HashMap<FileId, HashSet<String>>,
     /// Module path per file (e.g., `std::ArrayList` for
-    /// `std/ArrayList.ct`). Used to canonicalize declared type names.
+    /// `std/ArrayList.ct`). Used to derive fully-qualified names.
     pub file_module_paths: HashMap<FileId, String>,
-    /// Per-file type-name aliases set up by `use` statements. Maps a
-    /// short name (the leaf) to its canonical full name, scoped to
-    /// the file that issued the `use`.
-    pub type_aliases: HashMap<FileId, HashMap<String, String>>,
-    /// Global bare-name → storage-name map, for names that exist in
-    /// only one file. Ambiguous names (declared in multiple files)
-    /// aren't here — consumers must qualify or `use` to disambiguate.
-    pub bare_aliases: HashMap<String, String>,
-    /// Names that got declared in multiple files. Stored so we can
-    /// emit a useful "ambiguous; qualify or use" error at lookup time.
+    /// Per-file name → `TypeId` scope. Unified store for:
+    ///   * the file's own declarations (bare → id, takes precedence
+    ///     over the global ambiguous entry on collision)
+    ///   * `use path::X;` aliases (bare leaf → id from the full path)
+    /// Consulted BEFORE the global `type_ids` map.
+    pub file_type_scope: HashMap<FileId, HashMap<String, TypeId>>,
+    /// Same as `file_type_scope` but for traits.
+    pub file_trait_scope: HashMap<FileId, HashMap<String, TraitId>>,
+    /// Lazy resolution of `use` aliases: at registration time we may
+    /// not yet know the referenced type's `TypeId`, so the statement
+    /// is recorded here and resolved into the scope maps in a second
+    /// pass after all types/traits are registered.
+    pub pending_use_aliases: Vec<(FileId, String, String)>,
+    /// Names declared in 2+ files; bare lookups from non-declaring
+    /// files return `None`. Kept for diagnostics and to prevent
+    /// permissive fallback from picking one arbitrarily.
     pub ambiguous_bare: HashSet<String>,
-    /// The first file that declared each bare name. Used to migrate
-    /// the earlier-registered type to its fully-qualified storage
-    /// key when a later file declares the same bare name.
+    /// First file to declare each bare name — used during registration
+    /// to know which existing entry to migrate from bare → FQ when
+    /// a second file declares the same name.
     pub first_declarer: HashMap<String, FileId>,
-    /// Per-file mapping `bare_name → storage_name` for types (and
-    /// traits) declared in that file. Lets `canonicalize_type_name`
-    /// prefer a file's own declaration over an ambiguous bare lookup.
-    pub file_declarations: HashMap<FileId, HashMap<String, String>>,
 }
 
 /// Traits that operator sugar desugars into. Calls routed through these
@@ -73,18 +84,17 @@ impl TypeRegistry {
                 methods: Vec::new(),
             },
         );
-        // Primitive `U4` is bare-accessible everywhere.
-        r.bare_aliases.insert(U4_NAME.to_string(), U4_NAME.to_string());
         r
     }
 
     // --- dense-storage accessors -----------------------------------------
 
     /// Append a new `TypeInfo`, register `name` → fresh `TypeId`.
-    /// Returns the id.
+    /// The given `name` also becomes this id's canonical key.
     pub fn insert_type(&mut self, name: String, info: TypeInfo) -> TypeId {
         let id = TypeId(self.type_infos.len() as u32);
         self.type_infos.push(info);
+        self.type_canonical_keys.push(name.clone());
         self.type_ids.insert(name, id);
         id
     }
@@ -92,8 +102,19 @@ impl TypeRegistry {
     pub fn insert_trait(&mut self, name: String, info: TraitInfo) -> TraitId {
         let id = TraitId(self.trait_infos.len() as u32);
         self.trait_infos.push(info);
+        self.trait_canonical_keys.push(name.clone());
         self.trait_ids.insert(name, id);
         id
+    }
+
+    /// Swap the canonical key associated with `id`. Used when a
+    /// cross-file collision forces the earlier entry from bare to FQ.
+    fn set_type_canonical_key(&mut self, id: TypeId, new_key: String) {
+        self.type_canonical_keys[id.0 as usize] = new_key;
+    }
+
+    fn set_trait_canonical_key(&mut self, id: TraitId, new_key: String) {
+        self.trait_canonical_keys[id.0 as usize] = new_key;
     }
 
     /// Look up `name` → `TypeId`, following only the direct name index
@@ -144,31 +165,27 @@ impl TypeRegistry {
     }
 
     /// Iterate `(name, &TypeInfo)` pairs. Like the old `types.iter()`.
-    /// Order is iteration order of the `type_ids` map (unspecified).
+    /// Iterate `(canonical_key, &TypeInfo)` — one entry per unique
+    /// `TypeId`, using each id's canonical lookup key. Aliases (FQ
+    /// paths pointing at the same id) are NOT repeated. Use this for
+    /// any "once per type" pass (e.g. FunctionDB construction).
     pub fn iter_types(&self) -> impl Iterator<Item = (&str, &TypeInfo)> {
-        self.type_ids
+        self.type_canonical_keys
             .iter()
-            .map(move |(n, id)| (n.as_str(), &self.type_infos[id.0 as usize]))
+            .zip(self.type_infos.iter())
+            .map(|(k, info)| (k.as_str(), info))
+    }
+
+    pub fn iter_traits(&self) -> impl Iterator<Item = (&str, &TraitInfo)> {
+        self.trait_canonical_keys
+            .iter()
+            .zip(self.trait_infos.iter())
+            .map(|(k, info)| (k.as_str(), info))
     }
 
     /// Iterate `&TypeInfo` only. Like the old `types.values()`.
     pub fn all_types(&self) -> impl Iterator<Item = &TypeInfo> {
         self.type_infos.iter()
-    }
-
-    /// Rebind `name` to point at an existing `TypeId`. Used by the
-    /// collision-migration path (bare→FQ key rename without touching
-    /// the stored `TypeInfo`).
-    pub fn rename_type_key(&mut self, old_name: &str, new_name: String) {
-        if let Some(id) = self.type_ids.remove(old_name) {
-            self.type_ids.insert(new_name, id);
-        }
-    }
-
-    pub fn rename_trait_key(&mut self, old_name: &str, new_name: String) {
-        if let Some(id) = self.trait_ids.remove(old_name) {
-            self.trait_ids.insert(new_name, id);
-        }
     }
 
     /// Derive a module path for a file — strip `.ct`, replace path
@@ -218,11 +235,11 @@ impl TypeRegistry {
             let file_id = file_ix as FileId;
             r.file_module_paths
                 .insert(file_id, Self::derive_module_path(file_name));
-            r.type_aliases.entry(file_id).or_default();
         }
 
-        // Pass 1: collect structs/enums/traits (populates `types` and
-        // `traits` with their top-level declarations) and per-file imports.
+        // Pass 1: collect structs/enums/traits (populates `type_infos` /
+        // `trait_infos`) and record per-file `use` aliases for later
+        // resolution (they may reference types not yet registered).
         for (file_ix, (_file, items)) in files.iter().enumerate() {
             let file_id = file_ix as FileId;
             // Ensure the file has an imports entry even if no `use` statements.
@@ -233,17 +250,15 @@ impl TypeRegistry {
                     ast::Item::Enum(e) => r.register_enum_with_file(e, file_id),
                     ast::Item::Trait(t) => r.register_trait_with_file(t, file_id),
                     ast::Item::Use(u) => {
-                        // `use a::b::Foo;` — store a per-file alias
-                        // mapping the leaf to the full path, so the
-                        // resolver later finds it. Also track the bare
-                        // name in `imports` for operator trait scope.
                         let full = u.name.0.clone();
                         let leaf = full.rsplit("::").next().unwrap_or(&full).to_string();
-                        r.type_aliases
-                            .entry(file_id)
-                            .or_default()
-                            .insert(leaf.clone(), full);
-                        r.imports.entry(file_id).or_default().insert(leaf);
+                        // Tracked in `imports` for trait-in-scope checks
+                        // (operator dispatch).
+                        r.imports.entry(file_id).or_default().insert(leaf.clone());
+                        // Deferred: the target type/trait may not yet be
+                        // registered. Pass 1.5 resolves these into the
+                        // per-file scope maps below.
+                        r.pending_use_aliases.push((file_id, leaf, full));
                         Ok(())
                     }
                     _ => Ok(()),
@@ -251,6 +266,18 @@ impl TypeRegistry {
                 if let Err(e) = out {
                     errors.push(e);
                 }
+            }
+        }
+
+        // Pass 1.5: resolve `use` aliases now that all declarations are
+        // registered. Unresolvable aliases stay pending; the lookup
+        // path tolerates them falling through to None.
+        for (file_id, leaf, full) in std::mem::take(&mut r.pending_use_aliases) {
+            if let Some(id) = r.type_ids.get(&full).copied() {
+                r.file_type_scope.entry(file_id).or_default().insert(leaf.clone(), id);
+            }
+            if let Some(id) = r.trait_ids.get(&full).copied() {
+                r.file_trait_scope.entry(file_id).or_default().insert(leaf, id);
             }
         }
 
@@ -294,77 +321,68 @@ impl TypeRegistry {
         }
     }
 
-    /// Resolve a type reference written in source (bare `Foo`,
-    /// path-qualified `a::b::Foo`, or via a per-file `use` alias) to
-    /// its registry-keyed storage name. The registry currently keys
-    /// types by their bare name; this helper converts path and alias
-    /// forms to that bare name.
+    /// Resolve `name` (bare, path-qualified, or `use`-aliased) in the
+    /// given file's scope to a `TypeId`. Primary name-resolution API.
     ///
-    /// Rules, in order:
-    ///   1. `name` contains `::` → strip to the leaf, look up via
-    ///      `bare_aliases` to confirm that `<full_path> → leaf` is a
-    ///      known alias.
-    ///   2. Per-file `use` alias → mapped canonical (leaf form).
-    ///   3. Fallback to the name as-is (existing bare-name semantics).
+    /// Precedence: per-file scope (own decls and `use` aliases) wins
+    /// over the global name map. Ambiguous bare names return `None`
+    /// when queried without a file context that declares them.
+    pub fn resolve_type_id(&self, name: &str, file_id: Option<FileId>) -> Option<TypeId> {
+        if let Some(fid) = file_id {
+            if let Some(id) = self.file_type_scope.get(&fid).and_then(|m| m.get(name)) {
+                return Some(*id);
+            }
+        }
+        if !name.contains("::") && self.ambiguous_bare.contains(name) {
+            return None;
+        }
+        self.type_ids.get(name).copied()
+    }
+
+    /// Same as `resolve_type_id` but for traits.
+    pub fn resolve_trait_id(&self, name: &str, file_id: Option<FileId>) -> Option<TraitId> {
+        if let Some(fid) = file_id {
+            if let Some(id) = self.file_trait_scope.get(&fid).and_then(|m| m.get(name)) {
+                return Some(*id);
+            }
+        }
+        if !name.contains("::") && self.ambiguous_bare.contains(name) {
+            return None;
+        }
+        self.trait_ids.get(name).copied()
+    }
+
+    /// Back-compat helper that returns a storage-key string for `name`.
+    /// The returned key is always present in `type_ids` / `trait_ids`,
+    /// so callers can pass it straight to `get_type` / `get_trait`.
+    ///
+    /// Types win over traits when both share a name (matching the
+    /// previous behavior — both were keyed into the same global map).
     pub fn canonicalize_type_name(
         &self,
         name: &str,
         file_id: Option<FileId>,
     ) -> Option<String> {
-        if let Some(idx) = name.rfind("::") {
-            // Path-qualified. After a cross-file collision the storage
-            // key IS the FQ form, so check directly first.
-            if self.has_type(name) || self.has_trait(name) {
-                return Some(name.to_string());
-            }
-            if let Some(storage) = self.bare_aliases.get(name) {
-                return Some(storage.clone());
-            }
-            // Permissive fallback: if the leaf alone is a known (and
-            // unambiguous) type, accept it.
-            let leaf = &name[idx + 2..];
-            if !self.ambiguous_bare.contains(leaf)
-                && (self.has_type(leaf) || self.has_trait(leaf))
-            {
-                return Some(leaf.to_string());
-            }
-            return None;
+        if let Some(id) = self.resolve_type_id(name, file_id) {
+            return Some(self.type_canonical_keys[id.0 as usize].clone());
         }
-        // Bare name. A file's own declaration beats any global alias —
-        // this is what makes coexistence work when two files declare
-        // the same bare name.
-        if let Some(fid) = file_id {
-            if let Some(storage) = self
-                .file_declarations
-                .get(&fid)
-                .and_then(|m| m.get(name))
-            {
-                return Some(storage.clone());
-            }
-            if let Some(alias) = self.type_aliases.get(&fid).and_then(|m| m.get(name)) {
-                // The alias is the full path the user wrote in `use`.
-                // Recurse through the path-qualified branch.
-                if self.has_type(alias) || self.has_trait(alias) {
-                    return Some(alias.clone());
+        if let Some(id) = self.resolve_trait_id(name, file_id) {
+            return Some(self.trait_canonical_keys[id.0 as usize].clone());
+        }
+        // Permissive fallback for fully-qualified paths whose exact
+        // key isn't registered but whose leaf is a globally-known,
+        // unambiguous type. Preserves tests that make up a module
+        // prefix (e.g. `nonsense::Foo` when only `Foo` is declared).
+        if let Some(idx) = name.rfind("::") {
+            let leaf = &name[idx + 2..];
+            if !self.ambiguous_bare.contains(leaf) {
+                if self.has_type(leaf) {
+                    return Some(leaf.to_string());
                 }
-                if let Some(storage) = self.bare_aliases.get(alias) {
-                    return Some(storage.clone());
-                }
-                let leaf = alias.rsplit("::").next().unwrap_or(alias);
-                if self.has_type(leaf) || self.has_trait(leaf) {
+                if self.has_trait(leaf) {
                     return Some(leaf.to_string());
                 }
             }
-        }
-        // Unambiguous global bare name.
-        if self.ambiguous_bare.contains(name) {
-            return None;
-        }
-        if let Some(storage) = self.bare_aliases.get(name) {
-            return Some(storage.clone());
-        }
-        if self.has_type(name) || self.has_trait(name) {
-            return Some(name.to_string());
         }
         None
     }
@@ -395,15 +413,16 @@ impl TypeRegistry {
 
     /// File-aware struct registration. Storage key is the bare name
     /// when unambiguous; on collision with a type declared in another
-    /// file, both entries get migrated to fully-qualified keys (the
-    /// earlier one is moved lazily on the second declarer's arrival).
+    /// file, both entries get migrated to fully-qualified keys.
     pub fn register_struct_with_file(
         &mut self,
         def: &ast::StructDef,
         file_id: FileId,
     ) -> Result<(), TyperError> {
         let key = self.reserve_registration_key(&def.name.0, file_id);
-        self.register_struct_core_at(def, &key)
+        self.register_struct_core_at(def, &key)?;
+        self.alias_type_post_register(&def.name.0, &key, file_id);
+        Ok(())
     }
 
     pub fn register_enum_with_file(
@@ -412,7 +431,9 @@ impl TypeRegistry {
         file_id: FileId,
     ) -> Result<(), TyperError> {
         let key = self.reserve_registration_key(&def.name.0, file_id);
-        self.register_enum_core_at(def, &key)
+        self.register_enum_core_at(def, &key)?;
+        self.alias_type_post_register(&def.name.0, &key, file_id);
+        Ok(())
     }
 
     pub fn register_trait_with_file(
@@ -421,24 +442,44 @@ impl TypeRegistry {
         file_id: FileId,
     ) -> Result<(), TyperError> {
         let key = self.reserve_registration_key(&def.name.0, file_id);
-        self.register_trait_core_at(def, &key)
+        self.register_trait_core_at(def, &key)?;
+        self.alias_trait_post_register(&def.name.0, &key, file_id);
+        Ok(())
+    }
+
+    /// Post-registration bookkeeping: expose the just-stored type
+    /// under every valid lookup form and record its file-local scope.
+    fn alias_type_post_register(&mut self, bare: &str, stored_key: &str, file_id: FileId) {
+        let Some(id) = self.type_ids.get(stored_key).copied() else { return };
+        // Always alias the FQ form so path references resolve globally.
+        let module = self.file_module_paths.get(&file_id).cloned().unwrap_or_default();
+        if !module.is_empty() {
+            let fq = Self::join_path(&module, bare);
+            self.type_ids.insert(fq, id);
+        }
+        // The declaring file sees the bare name via scope, winning over
+        // any globally-ambiguous entry.
+        self.file_type_scope.entry(file_id).or_default().insert(bare.to_string(), id);
+    }
+
+    fn alias_trait_post_register(&mut self, bare: &str, stored_key: &str, file_id: FileId) {
+        let Some(id) = self.trait_ids.get(stored_key).copied() else { return };
+        let module = self.file_module_paths.get(&file_id).cloned().unwrap_or_default();
+        if !module.is_empty() {
+            let fq = Self::join_path(&module, bare);
+            self.trait_ids.insert(fq, id);
+        }
+        self.file_trait_scope.entry(file_id).or_default().insert(bare.to_string(), id);
     }
 
     /// Pick the storage key for a type/trait about to be registered.
     ///
-    /// Also maintains the side tables that make bare-and-path lookups
-    /// work across files:
-    ///   - `first_declarer`: which file first claimed this bare name
-    ///   - `bare_aliases`: `<fq> → <storage>` and `<bare> → <storage>`
-    ///     for unambiguous names
-    ///   - `ambiguous_bare`: bare names declared in 2+ files
-    ///   - `file_declarations`: per-file `<bare> → <storage>` so a
-    ///     declaring file can still bare-reference its own type
-    ///
-    /// On a cross-file collision, the earlier registered entry is
-    /// *migrated*: its storage key changes from bare to
-    /// `<prev_module>::<bare>`, and this function returns the new
-    /// declarer's own FQ key for the caller to register under.
+    /// Returns the bare name on a first declaration (simplest case).
+    /// On a cross-file collision, migrates the earlier entry to its
+    /// fully-qualified key (`<module>::<bare>`) and returns the new
+    /// declarer's own FQ key. Same-file re-declarations return the
+    /// key that was previously assigned so the core's duplicate-check
+    /// fires against the existing entry.
     fn reserve_registration_key(&mut self, bare: &str, file_id: FileId) -> String {
         let module = self
             .file_module_paths
@@ -449,33 +490,32 @@ impl TypeRegistry {
 
         match self.first_declarer.get(bare).copied() {
             None => {
+                // First declaration of this bare name anywhere. Register
+                // under bare key. Post-registration we'll also alias the
+                // FQ form → same id (see `register_*_with_file`).
                 self.first_declarer.insert(bare.to_string(), file_id);
-                self.file_declarations
-                    .entry(file_id)
-                    .or_default()
-                    .insert(bare.to_string(), bare.to_string());
-                if !module.is_empty() {
-                    self.bare_aliases.insert(fq, bare.to_string());
-                }
-                self.bare_aliases
-                    .entry(bare.to_string())
-                    .or_insert_with(|| bare.to_string());
                 bare.to_string()
             }
             Some(prev) if prev == file_id => {
-                // Same file redeclares: return whatever key the file
-                // originally registered under. The core's duplicate
-                // check fires afterwards and reports the real error.
-                self.file_declarations
+                // Same file redeclares — return whichever key this file
+                // originally registered under (bare or FQ after collision).
+                self.file_type_scope
                     .get(&file_id)
                     .and_then(|m| m.get(bare))
-                    .cloned()
+                    .and_then(|id| Some(self.type_canonical_keys[id.0 as usize].clone()))
+                    .or_else(|| {
+                        self.file_trait_scope
+                            .get(&file_id)
+                            .and_then(|m| m.get(bare))
+                            .map(|id| self.trait_canonical_keys[id.0 as usize].clone())
+                    })
                     .unwrap_or_else(|| bare.to_string())
             }
             Some(prev_file_id) => {
-                // Cross-file collision. Migrate the earlier entry (if
-                // it's still at the bare key) and register this one
-                // under its own FQ key.
+                // Cross-file collision. The earlier entry is still keyed
+                // at bare; migrate it to the previous declarer's FQ form,
+                // drop the shared bare name from the global map, and
+                // record both files' bare → id in their per-file scopes.
                 if !self.ambiguous_bare.contains(bare) {
                     let prev_module = self
                         .file_module_paths
@@ -484,28 +524,27 @@ impl TypeRegistry {
                         .unwrap_or_default();
                     let prev_fq = Self::join_path(&prev_module, bare);
                     if prev_fq != bare {
-                        // Migration is purely a name-key rename — the
-                        // underlying `TypeInfo`/`TraitInfo` stays at
-                        // the same `TypeId`/`TraitId`, so any handle
-                        // already held elsewhere remains valid.
-                        self.rename_type_key(bare, prev_fq.clone());
-                        self.rename_trait_key(bare, prev_fq.clone());
-                        self.bare_aliases.insert(prev_fq.clone(), prev_fq.clone());
+                        // Both types and traits can share a bare name,
+                        // so handle each independently.
+                        if let Some(id) = self.type_ids.remove(bare) {
+                            self.type_ids.insert(prev_fq.clone(), id);
+                            self.set_type_canonical_key(id, prev_fq.clone());
+                            self.file_type_scope
+                                .entry(prev_file_id)
+                                .or_default()
+                                .insert(bare.to_string(), id);
+                        }
+                        if let Some(id) = self.trait_ids.remove(bare) {
+                            self.trait_ids.insert(prev_fq.clone(), id);
+                            self.set_trait_canonical_key(id, prev_fq.clone());
+                            self.file_trait_scope
+                                .entry(prev_file_id)
+                                .or_default()
+                                .insert(bare.to_string(), id);
+                        }
                     }
-                    self.bare_aliases.remove(bare);
                     self.ambiguous_bare.insert(bare.to_string());
-                    self.file_declarations
-                        .entry(prev_file_id)
-                        .or_default()
-                        .insert(bare.to_string(), prev_fq);
                 }
-                if !module.is_empty() {
-                    self.bare_aliases.insert(fq.clone(), fq.clone());
-                }
-                self.file_declarations
-                    .entry(file_id)
-                    .or_default()
-                    .insert(bare.to_string(), fq.clone());
                 fq
             }
         }
@@ -702,21 +741,18 @@ impl TypeRegistry {
         // the path doesn't resolve — later validation catches it.
         let trait_name_raw = def.trait_ty.0.name.0.clone();
         let target_name_raw = def.target.0.name.0.clone();
-        let trait_name = self
-            .canonicalize_type_name(&trait_name_raw, Some(file_id))
-            .unwrap_or(trait_name_raw);
+        let trait_id = self
+            .resolve_trait_id(&trait_name_raw, Some(file_id))
+            .ok_or_else(|| TyperError::at(
+                format!("unknown trait `{}` in impl", trait_name_raw),
+                def.trait_ty.1.clone(),
+            ))?;
+        let trait_name = self.trait_canonical_keys[trait_id.0 as usize].clone();
         let target_name = self
             .canonicalize_type_name(&target_name_raw, Some(file_id))
             .unwrap_or(target_name_raw);
 
-        // Trait must exist.
-        let trait_info = self
-            .get_trait(&trait_name)
-            .ok_or_else(|| TyperError::at(
-                format!("unknown trait `{}` in impl", trait_name),
-                def.trait_ty.1.clone(),
-            ))?
-            .clone();
+        let trait_info = self.trait_by_id(trait_id).clone();
 
         // A blanket impl is anything with a non-empty generic list on
         // the `impl` header. Two shapes are supported:
@@ -752,33 +788,29 @@ impl TypeRegistry {
                 ));
             }
         }
-        let generics: Vec<GenericParamInfo> = def
-            .generics
-            .iter()
-            .map(|g| GenericParamInfo {
+        // Resolve each bound's trait reference to a `TraitId` up
+        // front so downstream comparisons are id-based. Unknown
+        // traits error here; typos don't leak to the blanket pass.
+        let mut generics: Vec<GenericParamInfo> = Vec::with_capacity(def.generics.len());
+        for g in &def.generics {
+            let mut bounds: Vec<BoundRef> = Vec::with_capacity(g.bounds.len());
+            for (t, _) in &g.bounds {
+                let trait_id = self
+                    .resolve_trait_id(&t.name.0, Some(file_id))
+                    .ok_or_else(|| TyperError::at(
+                        format!("unknown trait `{}` in bound", t.name.0),
+                        def.target.1.clone(),
+                    ))?;
+                bounds.push(BoundRef {
+                    trait_id,
+                    trait_args: t.templates.iter().map(|(tv, _)| tv.clone()).collect(),
+                });
+            }
+            generics.push(GenericParamInfo {
                 name: g.name.0.clone(),
-                bounds: g
-                    .bounds
-                    .iter()
-                    .map(|(t, _)| {
-                        // Canonicalize bound trait references too so
-                        // `T: lib::Tag::Tag` matches impls that
-                        // registered as bare `Tag`.
-                        let canonical = self
-                            .canonicalize_type_name(&t.name.0, Some(file_id))
-                            .unwrap_or_else(|| t.name.0.clone());
-                        BoundRef {
-                            trait_name: canonical,
-                            trait_args: t
-                                .templates
-                                .iter()
-                                .map(|(tv, _)| tv.clone())
-                                .collect(),
-                        }
-                    })
-                    .collect(),
-            })
-            .collect();
+                bounds,
+            });
+        }
 
         // Blanket impls skip the direct target-exists check — T is a
         // placeholder, not a registered type.
@@ -787,25 +819,6 @@ impl TypeRegistry {
                 format!("impl target `{}` is not a known type", target_name),
                 def.target.1.clone(),
             ));
-        }
-
-        // For a blanket impl, also validate that each bound names an
-        // existing trait. (Catch typos early; the post-pass relies on
-        // this later.)
-        if is_blanket {
-            for g in &generics {
-                for b in &g.bounds {
-                    let canonical = self
-                        .canonicalize_type_name(&b.trait_name, Some(file_id))
-                        .unwrap_or_else(|| b.trait_name.clone());
-                    if !self.has_trait(&canonical) {
-                        return Err(TyperError::at(
-                            format!("unknown trait `{}` in bound", b.trait_name),
-                            def.target.1.clone(),
-                        ));
-                    }
-                }
-            }
         }
 
         // Every associated type of the trait must be bound, and no extras.
@@ -931,7 +944,7 @@ impl TypeRegistry {
         for (method, _) in &def.methods {
             let collides_same_trait = ty.methods.iter().any(|m| {
                 m.function.sig.name.0 == method.sig.name.0
-                    && m.from_trait.as_deref() == Some(trait_name.as_str())
+                    && m.from_trait == Some(trait_id)
                     && m.trait_template_args == trait_args
             });
             if collides_same_trait {
@@ -946,7 +959,7 @@ impl TypeRegistry {
             ty.methods.push(MethodInfo {
                 function: method.clone(),
                 file_id,
-                from_trait: Some(trait_name.clone()),
+                from_trait: Some(trait_id),
                 trait_template_args: trait_args.clone(),
                 blanket: None,
             });
@@ -1042,7 +1055,7 @@ impl TypeRegistry {
         let generic_order: Vec<String> =
             blanket.generics.iter().map(|g| g.name.clone()).collect();
 
-        let candidates: Vec<String> = self.type_ids.keys().cloned().collect();
+        let candidates: Vec<String> = self.type_canonical_keys.clone();
         for type_name in candidates {
             if generic_order.iter().any(|n| *n == type_name) {
                 continue;
@@ -1182,11 +1195,17 @@ impl TypeRegistry {
             &candidate_params,
         );
 
+        // Blanket's trait stored by name for now (see ImplInfo); fetch
+        // its id once so attached methods carry a `TraitId`.
+        let trait_id = match self.trait_id(&blanket.trait_name) {
+            Some(id) => id,
+            None => return,
+        };
         let ty = self.get_type_mut(type_name).unwrap();
         for method in &blanket.methods {
             let already = ty.methods.iter().any(|m| {
                 m.function.sig.name.0 == method.sig.name.0
-                    && m.from_trait.as_deref() == Some(blanket.trait_name.as_str())
+                    && m.from_trait == Some(trait_id)
             });
             if already {
                 continue;
@@ -1194,7 +1213,7 @@ impl TypeRegistry {
             ty.methods.push(MethodInfo {
                 function: method.clone(),
                 file_id: blanket.file_id,
-                from_trait: Some(blanket.trait_name.clone()),
+                from_trait: Some(trait_id),
                 trait_template_args: attached_trait_args.clone(),
                 blanket: Some(binding.clone()),
             });
@@ -1237,7 +1256,7 @@ impl TypeRegistry {
         );
         'each_bound: for bound in bounds {
             for m in &info.methods {
-                if m.from_trait.as_deref() != Some(&bound.trait_name) {
+                if m.from_trait != Some(bound.trait_id) {
                     continue;
                 }
                 // Candidate impl: try to unify bound.trait_args against
@@ -1282,8 +1301,18 @@ impl TypeRegistry {
         trait_name: Option<&str>,
     ) -> Option<&MethodInfo> {
         let info = self.get_type(type_name)?;
+        // Convert the trait-name hint to an id once so we can compare
+        // against stored `from_trait: Option<TraitId>`. A hint that
+        // doesn't resolve means no match — fall through the iter.
+        let trait_hint_id = match trait_name {
+            Some(n) => match self.trait_id(n) {
+                Some(id) => Some(Some(id)),
+                None => return None,
+            },
+            None => Some(None),
+        };
         info.methods.iter().find(|m| {
-            m.function.sig.name.0 == method_name && m.from_trait.as_deref() == trait_name
+            m.function.sig.name.0 == method_name && trait_hint_id == Some(m.from_trait)
         })
     }
 
@@ -1362,13 +1391,16 @@ impl TypeRegistry {
         // Explicit qualification: `MyTrait::my_method(args)`. Pick only
         // methods that came from `MyTrait`.
         if let Some(trait_name) = trait_hint {
-            for m in &info.methods {
-                if m.function.sig.name.0 == method_name
-                    && m.from_trait.as_deref() == Some(trait_name)
-                {
-                    return MethodResolution::Trait {
-                        trait_name: trait_name.to_string(),
-                    };
+            let hint_id = self.trait_id(trait_name);
+            if let Some(tid) = hint_id {
+                for m in &info.methods {
+                    if m.function.sig.name.0 == method_name
+                        && m.from_trait == Some(tid)
+                    {
+                        return MethodResolution::Trait {
+                            trait_name: trait_name.to_string(),
+                        };
+                    }
                 }
             }
             return MethodResolution::NotFound {
@@ -1395,7 +1427,8 @@ impl TypeRegistry {
             if m.function.sig.name.0 != method_name {
                 continue;
             }
-            if let Some(t) = &m.from_trait {
+            if let Some(tid) = m.from_trait {
+                let t = &self.trait_canonical_keys[tid.0 as usize];
                 if imports.contains(t) || OPERATOR_TRAITS.iter().any(|op| op == t) {
                     in_scope.push(t.clone());
                 } else {
@@ -1779,8 +1812,9 @@ impl TypeRegistry {
                     sp.clone(),
                 )
             })?;
+            let head_id = self.trait_id(trait_head);
             for m in &info.methods {
-                if m.from_trait.as_deref() == Some(trait_head.as_str())
+                if m.from_trait == head_id
                     && !m.trait_template_args.is_empty()
                 {
                     if let Some(tv) = m.trait_template_args.get(pos) {

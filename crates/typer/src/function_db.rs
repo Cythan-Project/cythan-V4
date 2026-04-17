@@ -139,7 +139,13 @@ impl FunctionDB {
                     .map(|t| t.0.clone())
                     .collect();
 
-                let key = match &m.from_trait {
+                // Resolve the `TraitId` back to its canonical name for
+                // the string-keyed FnSig / SimpleFn payload. HIR gen
+                // consumes these as strings.
+                let from_trait_name: Option<String> = m
+                    .from_trait
+                    .map(|id| reg.trait_canonical_keys[id.0 as usize].clone());
+                let key = match &from_trait_name {
                     None => FnSig::new(type_name.clone(), m.function.sig.name.0.clone()),
                     Some(t) => FnSig::new_trait(
                         type_name.clone(),
@@ -164,7 +170,7 @@ impl FunctionDB {
                             body: m.function.clone(),
                             sig: flat,
                             type_name: type_name.clone(),
-                            from_trait: m.from_trait.clone(),
+                            from_trait: from_trait_name.clone(),
                             file_id: m.file_id,
                             type_template_args: Vec::new(),
                         }),
@@ -190,7 +196,7 @@ impl FunctionDB {
                         body: m.function.clone(),
                         type_name: type_name.clone(),
                         templates,
-                        from_trait: m.from_trait.clone(),
+                        from_trait: from_trait_name.clone(),
                         file_id: m.file_id,
                         blanket: m.blanket.clone(),
                     })

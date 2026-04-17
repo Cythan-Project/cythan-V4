@@ -3,32 +3,41 @@
 Weakest seams in the compiler, ranked by current pain and how load-bearing
 they'll become. Items earlier in the list tend to unblock later ones.
 
-## 1. Name-based type identity (biggest) — PARTIALLY DONE
+## 1. Name-based type identity (biggest) — DONE
 
-`TypeRegistry.types: HashMap<String, TypeInfo>` keyed by display name. The
-cross-file collision work made this visible: `bare_aliases`,
+`TypeRegistry.types: HashMap<String, TypeInfo>` keyed by display name.
+The cross-file collision work made this visible: `bare_aliases`,
 `file_declarations`, `first_declarer`, `ambiguous_bare`, `type_aliases`,
-`imports`, plus a ~60-line `canonicalize_type_name` fallback chain — all
-just to decide "which type?".
+`imports`, plus a ~60-line `canonicalize_type_name` fallback chain.
 
 **Step 1 (done):** Introduced `TypeId(u32)` / `TraitId(u32)` opaque
 handles. Storage moved to dense `Vec<TypeInfo>` / `Vec<TraitInfo>`;
-names live in a side `HashMap<String, TypeId>`. Every lookup now goes
+names live in a side `HashMap<String, TypeId>`. Every lookup goes
 through accessors (`get_type`, `has_type`, `type_id`, `type_by_id`, …).
-Cross-file collision migration became a pure name-key rename — the
+Cross-file collision migration became a name-key rename — the
 underlying `TypeInfo` never moves, so any held `TypeId` stays valid.
 
-**Step 2 (pending):** Propagate `TypeId` outward. Today external
-callers (HIR gen, FlatSig, monomorph) still pass strings through the
-accessors; they should hold `TypeId` directly and stop re-resolving by
-name on every lookup. That requires `SlotInfo`, `MethodInfo.from_trait`,
-`BoundRef.trait_name`, `ImplInfo.{trait_name, target_name}`, etc. to
-carry IDs.
+**Step 2 (done):** `MethodInfo.from_trait` and `BoundRef.trait_name`
+now store `Option<TraitId>` / `TraitId`. Trait existence is checked at
+registration (fail-fast on typos); method-dispatch comparisons are
+integer equality. `FunctionDB` / `SimpleFn` / `TemplatedFn` still
+surface names as strings at their public API — that's the boundary
+where IDs cross back into user-facing form.
 
-**Step 3 (pending):** Collapse the name-resolution side tables
-(`bare_aliases`, `file_declarations`, `first_declarer`,
-`ambiguous_bare`, `type_aliases`) into a single file-aware
-`resolve(name, file_id) -> Option<TypeId>` entry point.
+**Step 3 (done):** Collapsed the name-resolution side tables:
+`bare_aliases` is gone entirely (FQ paths register directly in
+`type_ids` / `trait_ids` alongside the bare form), and
+`file_declarations` + `type_aliases` merged into `file_type_scope` /
+`file_trait_scope` (per-file `name → TypeId`/`TraitId`). `use`
+statements deferred-resolve through `pending_use_aliases` in a
+sub-pass. New primary API: `resolve_type_id(name, file_id)` /
+`resolve_trait_id(name, file_id)`; `canonicalize_type_name` is a
+back-compat shim that delegates to the canonical-key table.
+
+**Remaining (future):** `SlotInfo.type_name`, `ImplInfo.{trait_name,
+target_name}`, and the various HIR paths still thread strings. Moving
+those to IDs is a separate, larger refactor — touches `hir/gen.rs`
+extensively. Not blocking; flagged as a follow-up.
 
 ## 2. Two parsers in-tree
 

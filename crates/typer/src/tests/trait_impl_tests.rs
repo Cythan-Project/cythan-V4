@@ -45,7 +45,7 @@ fn valid_impl_accepted_and_method_attached_to_target() {
     assert_eq!(r.impls[0].target_name, "Cell");
     // The attached method remembers where it came from.
     let eq = cell.methods.iter().find(|m| m.function.sig.name.0 == "eq").unwrap();
-    assert_eq!(eq.from_trait.as_deref(), Some("Eq"));
+    assert_eq!(eq.from_trait, Some(r.trait_id("Eq").unwrap()));
 }
 
 #[test]
