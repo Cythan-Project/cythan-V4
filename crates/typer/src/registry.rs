@@ -291,7 +291,7 @@ impl TypeRegistry {
                 file_id,
                 from_trait: None,
                 trait_template_args: Vec::new(),
-                blanket_generic: None,
+                blanket: None,
             });
         }
         Ok(())
@@ -339,7 +339,18 @@ impl TypeRegistry {
             .iter()
             .map(|g| GenericParamInfo {
                 name: g.name.0.clone(),
-                bounds: g.bounds.iter().map(|(t, _)| t.name.0.clone()).collect(),
+                bounds: g
+                    .bounds
+                    .iter()
+                    .map(|(t, _)| BoundRef {
+                        trait_name: t.name.0.clone(),
+                        trait_args: t
+                            .templates
+                            .iter()
+                            .map(|(tv, _)| tv.clone())
+                            .collect(),
+                    })
+                    .collect(),
             })
             .collect();
 
@@ -358,9 +369,9 @@ impl TypeRegistry {
         if is_blanket {
             for g in &generics {
                 for b in &g.bounds {
-                    if !self.traits.contains_key(b) {
+                    if !self.traits.contains_key(&b.trait_name) {
                         return Err(TyperError::at(
-                            format!("unknown trait `{}` in bound", b),
+                            format!("unknown trait `{}` in bound", b.trait_name),
                             def.target.1.clone(),
                         ));
                     }
@@ -489,7 +500,7 @@ impl TypeRegistry {
                 file_id,
                 from_trait: Some(trait_name.clone()),
                 trait_template_args: trait_args.clone(),
-                blanket_generic: None,
+                blanket: None,
             });
         }
 
@@ -509,38 +520,49 @@ impl TypeRegistry {
     }
 
     /// For each blanket impl, walk every registered non-generic concrete
-    /// type; if the type satisfies all bounds of the blanket's generic
-    /// param, attach the blanket's methods to the type's `methods` list
-    /// with `blanket_generic` set. Collisions (inherent or another trait
-    /// impl already providing the same method) push errors but keep
-    /// going so the caller sees every problem at once.
+    /// type and test whether it satisfies the blanket's target-generic
+    /// bounds. Satisfaction is a unification problem: the bound
+    /// `E: Wrap<T>` matches if the candidate E has an `impl Wrap<?> for
+    /// E` for some concrete `?`, which gets recorded as a binding for
+    /// the free generic `T`. Bindings must stay consistent across
+    /// bounds; any mismatch skips that candidate.
+    ///
+    /// When a candidate satisfies all bounds with some assignment, the
+    /// blanket's methods are attached to the candidate with a
+    /// `BlanketBinding` describing the full ordered args list (the
+    /// target slot is `None`; the others are `Some(concrete)`).
     fn attach_blanket_impls(&mut self, errors: &mut Vec<TyperError>) {
         // Snapshot the blanket list — we'll mutate `self.types` below.
         let blankets = self.blanket_impls.clone();
 
-        // Collect each type's current (trait_name, trait_template_args)
-        // pairs so we can test "does X implement trait B?". This uses the
-        // methods list that's already populated by register_impl.
-        let type_has_trait = |types: &HashMap<String, TypeInfo>,
-                              type_name: &str,
-                              trait_name: &str|
-         -> bool {
-            types
-                .get(type_name)
-                .map(|info| info.methods.iter().any(|m| m.from_trait.as_deref() == Some(trait_name)))
-                .unwrap_or(false)
-        };
-
         for blanket in &blankets {
-            // Phase 1 requires exactly one generic param.
-            let Some(tparam) = blanket.generics.first() else {
-                continue;
+            // Identify the target generic param — the one the impl is
+            // "for". `register_impl` already validated that the target is
+            // a bare generic-param reference; find it by name.
+            let target_index = match blanket
+                .generics
+                .iter()
+                .position(|g| g.name == blanket.target_name)
+            {
+                Some(i) => i,
+                None => continue,
             };
+            let target_generic = &blanket.generics[target_index];
+            let free_names: Vec<String> = blanket
+                .generics
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i != target_index)
+                .map(|(_, g)| g.name.clone())
+                .collect();
+            let generic_order: Vec<String> =
+                blanket.generics.iter().map(|g| g.name.clone()).collect();
+
             let candidates: Vec<String> = self.types.keys().cloned().collect();
             for type_name in candidates {
-                // Skip the generic param name itself (it's a placeholder
-                // and usually shadowed by a real type only by accident).
-                if type_name == tparam.name {
+                // Skip the generic param names (they're placeholders and
+                // usually don't shadow real types, but guard anyway).
+                if generic_order.iter().any(|n| *n == type_name) {
                     continue;
                 }
                 // Phase 1: non-generic targets only.
@@ -548,17 +570,53 @@ impl TypeRegistry {
                 if !info_ref.templates.is_empty() {
                     continue;
                 }
-                // Bounds check.
-                if !tparam
-                    .bounds
-                    .iter()
-                    .all(|b| type_has_trait(&self.types, &type_name, b))
-                {
+                // Try to satisfy every bound on the target generic,
+                // building up a consistent assignment for the free
+                // generics along the way. The target generic itself is
+                // pre-bound to the candidate type — bounds like
+                // `T: Add<T>` need that to unify.
+                let Some(assignment) = self.satisfy_bounds(
+                    &type_name,
+                    &target_generic.name,
+                    &target_generic.bounds,
+                    &free_names,
+                ) else {
+                    continue;
+                };
+
+                // Build the ordered generic_args: target slot is None;
+                // every free slot gets its resolved binding.
+                let mut generic_args: Vec<Option<ast::TypeOrValue>> =
+                    Vec::with_capacity(blanket.generics.len());
+                for (i, g) in blanket.generics.iter().enumerate() {
+                    if i == target_index {
+                        generic_args.push(None);
+                    } else {
+                        // If the bound resolution didn't touch this free
+                        // generic (it's referenced nowhere in the
+                        // bounds), we have no information. Skip this
+                        // attachment — it's an ill-formed impl anyway.
+                        match assignment.get(&g.name) {
+                            Some(v) => generic_args.push(Some(v.clone())),
+                            None => {
+                                // Can't resolve → skip candidate silently.
+                                // (A stricter mode would push an error.)
+                                generic_args.clear();
+                                break;
+                            }
+                        }
+                    }
+                }
+                if generic_args.is_empty() && !blanket.generics.is_empty() {
                     continue;
                 }
-                // Attach each blanket method. Skip if the type already
-                // has the method from the same trait (direct impl wins,
-                // or a blanket already applied — don't re-attach).
+
+                let binding = BlanketBinding {
+                    generic_args,
+                    target_index,
+                    generic_names: generic_order.clone(),
+                };
+
                 let ty = self.types.get_mut(&type_name).unwrap();
                 for method in &blanket.methods {
                     let already = ty.methods.iter().any(|m| {
@@ -574,7 +632,7 @@ impl TypeRegistry {
                         file_id: blanket.file_id,
                         from_trait: Some(blanket.trait_name.clone()),
                         trait_template_args: Vec::new(),
-                        blanket_generic: Some(tparam.name.clone()),
+                        blanket: Some(binding.clone()),
                     });
                 }
             }
@@ -582,17 +640,79 @@ impl TypeRegistry {
         let _ = errors;
     }
 
+    /// Try to satisfy every bound on a candidate type. Returns `Some`
+    /// with the assignment of free generics → concrete types on
+    /// success, `None` when some bound has no matching impl or when
+    /// unification finds a contradiction across bounds.
+    ///
+    /// When a bound has multiple matching impls (e.g., `Wrap<U4>` AND
+    /// `Wrap<U8>` both for `E`), we take the first that unifies — that
+    /// picks a single attachment. A future extension could emit one
+    /// attachment per distinct assignment.
+    fn satisfy_bounds(
+        &self,
+        candidate: &str,
+        target_name: &str,
+        bounds: &[BoundRef],
+        free_names: &[String],
+    ) -> Option<HashMap<String, ast::TypeOrValue>> {
+        let info = self.types.get(candidate)?;
+        // Treat the target generic as an additional free name, pre-bound
+        // to the candidate. Bounds that mention `T` (the target) then
+        // check consistency instead of treating `T` as a concrete but
+        // unknown head.
+        let mut all_free: Vec<String> = free_names.to_vec();
+        all_free.push(target_name.to_string());
+        let mut assignment: HashMap<String, ast::TypeOrValue> = HashMap::new();
+        assignment.insert(
+            target_name.to_string(),
+            ast::TypeOrValue::Type(ast::Type {
+                name: (candidate.to_string(), 0..0),
+                templates: Vec::new(),
+                qself: None,
+            }),
+        );
+        'each_bound: for bound in bounds {
+            for m in &info.methods {
+                if m.from_trait.as_deref() != Some(&bound.trait_name) {
+                    continue;
+                }
+                // Don't recurse into attachments from blanket impls —
+                // trait-impl membership is only about direct impls for
+                // now. (A full implementation could chase these.)
+                if m.blanket.is_some() {
+                    continue;
+                }
+                // Candidate impl: try to unify bound.trait_args against
+                // the concrete impl's trait_template_args.
+                let start = assignment.clone();
+                if let Some(next) =
+                    unify_args(&bound.trait_args, &m.trait_template_args, &all_free, start)
+                {
+                    assignment = next;
+                    continue 'each_bound;
+                }
+            }
+            // No impl matched this bound.
+            return None;
+        }
+        // Strip the target's own binding from the final assignment —
+        // callers only want the FREE generics' bindings.
+        assignment.remove(target_name);
+        Some(assignment)
+    }
+
     /// If `(type_name, method_name, trait_name)` matches a method that
-    /// was attached via a blanket impl, return the generic param name
-    /// (e.g. `"T"`). HIR gen uses this to prepend the receiver's
-    /// concrete type to the Call's template args so monomorphization
-    /// binds the generic correctly.
-    pub fn method_blanket_generic(
+    /// was attached via a blanket impl, return its BlanketBinding. HIR
+    /// gen uses this to thread receiver + pre-resolved bindings into
+    /// the Call's template_args so the monomorphizer binds every
+    /// blanket generic correctly.
+    pub fn method_blanket(
         &self,
         type_name: &str,
         method_name: &str,
         trait_name: Option<&str>,
-    ) -> Option<String> {
+    ) -> Option<BlanketBinding> {
         let info = self.types.get(type_name)?;
         for m in &info.methods {
             if m.function.sig.name.0 != method_name {
@@ -601,8 +721,8 @@ impl TypeRegistry {
             if m.from_trait.as_deref() != trait_name {
                 continue;
             }
-            if let Some(bg) = &m.blanket_generic {
-                return Some(bg.clone());
+            if let Some(b) = &m.blanket {
+                return Some(b.clone());
             }
         }
         None
@@ -1372,6 +1492,100 @@ impl ImplDefExt for ast::ImplDef {
 /// precise multi-instantiation dispatch can narrow further.
 fn impl_target_matches(impl_target_name: &str, target: &ast::Type) -> bool {
     impl_target_name == target.name.0
+}
+
+/// Unify two argument lists position-wise, extending `assignment` with
+/// any new bindings discovered for free generics. Returns `None` on any
+/// contradiction.
+fn unify_args(
+    bound_args: &[ast::TypeOrValue],
+    impl_args: &[ast::TypeOrValue],
+    free: &[String],
+    mut assignment: std::collections::HashMap<String, ast::TypeOrValue>,
+) -> Option<std::collections::HashMap<String, ast::TypeOrValue>> {
+    if bound_args.len() != impl_args.len() {
+        return None;
+    }
+    for (b, i) in bound_args.iter().zip(impl_args.iter()) {
+        assignment = unify_tv(b, i, free, assignment)?;
+    }
+    Some(assignment)
+}
+
+fn unify_tv(
+    bound: &ast::TypeOrValue,
+    impl_arg: &ast::TypeOrValue,
+    free: &[String],
+    mut assignment: std::collections::HashMap<String, ast::TypeOrValue>,
+) -> Option<std::collections::HashMap<String, ast::TypeOrValue>> {
+    match (bound, impl_arg) {
+        (ast::TypeOrValue::Value(a), ast::TypeOrValue::Value(b)) => {
+            if a == b {
+                Some(assignment)
+            } else {
+                None
+            }
+        }
+        (ast::TypeOrValue::Type(bt), ast::TypeOrValue::Type(it)) => {
+            // Bare-name free generic on the bound side → bind/check.
+            if bt.templates.is_empty() && free.iter().any(|f| f == &bt.name.0) {
+                let proposed = ast::TypeOrValue::Type(it.clone());
+                match assignment.get(&bt.name.0) {
+                    Some(existing) if !tv_structural_eq(existing, &proposed) => return None,
+                    Some(_) => {}
+                    None => {
+                        assignment.insert(bt.name.0.clone(), proposed);
+                    }
+                }
+                return Some(assignment);
+            }
+            // Concrete: heads and args must match.
+            if bt.name.0 != it.name.0 {
+                return None;
+            }
+            let b_args: Vec<ast::TypeOrValue> =
+                bt.templates.iter().map(|(t, _)| t.clone()).collect();
+            let i_args: Vec<ast::TypeOrValue> =
+                it.templates.iter().map(|(t, _)| t.clone()).collect();
+            unify_args(&b_args, &i_args, free, assignment)
+        }
+        _ => None,
+    }
+}
+
+/// Structural equality on `TypeOrValue`, ignoring spans. `#[derive(PartialEq)]`
+/// on `ast::Type` compares spans, which makes synthesized types (with
+/// `0..0` spans) compare unequal to parsed ones even when they represent
+/// the same type.
+fn tv_structural_eq(a: &ast::TypeOrValue, b: &ast::TypeOrValue) -> bool {
+    match (a, b) {
+        (ast::TypeOrValue::Value(x), ast::TypeOrValue::Value(y)) => x == y,
+        (ast::TypeOrValue::Type(x), ast::TypeOrValue::Type(y)) => ty_structural_eq(x, y),
+        _ => false,
+    }
+}
+
+fn ty_structural_eq(a: &ast::Type, b: &ast::Type) -> bool {
+    if a.name.0 != b.name.0 {
+        return false;
+    }
+    if a.templates.len() != b.templates.len() {
+        return false;
+    }
+    for ((av, _), (bv, _)) in a.templates.iter().zip(b.templates.iter()) {
+        if !tv_structural_eq(av, bv) {
+            return false;
+        }
+    }
+    // qself equality: require both none or both structurally equal.
+    match (&a.qself, &b.qself) {
+        (None, None) => true,
+        (Some(ax), Some(bx)) => {
+            ty_structural_eq(&ax.self_ty.0, &bx.self_ty.0)
+                && ty_structural_eq(&ax.trait_ty.0, &bx.trait_ty.0)
+        }
+        _ => false,
+    }
 }
 
 /// Substitute template parameter references in an AST type with concrete

@@ -141,11 +141,29 @@ pub struct MethodInfo {
     /// extensions and for impls of a non-generic trait. Used to
     /// distinguish multiple `impl Convert<T>` for the same target type.
     pub trait_template_args: Vec<ast::TypeOrValue>,
-    /// If this method was attached via a blanket `impl<T: ...> Trait
-    /// for T { ... }`, carries the generic param name (`T`). The HIR
-    /// generator uses it to thread the concrete receiver type into the
-    /// Call's template_args so the monomorphizer can substitute `T`.
-    pub blanket_generic: Option<String>,
+    /// If this method was attached via a blanket `impl<T, E: Wrap<T>>
+    /// MyTrait for E { ... }`, carries the per-instantiation bindings
+    /// that the post-pass resolved. HIR gen uses it to thread the
+    /// receiver's concrete type into the target slot at each call site.
+    pub blanket: Option<BlanketBinding>,
+}
+
+/// Per-attachment data for a blanket impl method. Produced by the typer
+/// post-pass when a concrete type satisfies the blanket's target bounds.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BlanketBinding {
+    /// Ordered list matching the blanket's `generics` declaration.
+    /// Every non-target slot is `Some(concrete)` — pre-bound from the
+    /// target type's bound impls via unification. The target slot
+    /// itself is `None`; HIR gen fills it with the receiver's concrete
+    /// type at each call site.
+    pub generic_args: Vec<Option<ast::TypeOrValue>>,
+    /// Index into `generic_args` of the blanket's target generic (the
+    /// one the impl is "for"). Always the position with `None`.
+    pub target_index: usize,
+    /// Names of the blanket's generics, mirroring `generic_args`.
+    /// Stored for diagnostics and for builders that walk by name.
+    pub generic_names: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -174,10 +192,21 @@ pub struct ImplInfo {
 #[derive(Debug, Clone, PartialEq)]
 pub struct GenericParamInfo {
     pub name: String,
-    /// Bound trait names — e.g. for `T: IndexedGet + Length`, this is
-    /// `["IndexedGet", "Length"]`. Phase 1 ignores any template args on
-    /// the bound traits.
-    pub bounds: Vec<String>,
+    /// Bounds: each one a trait reference possibly carrying template
+    /// args that reference other generic params. For `T: IndexedGet +
+    /// Length`, this is `[{IndexedGet, []}, {Length, []}]`. For
+    /// `E: Wrap<T>`, this is `[{Wrap, [T]}]` where `T` may resolve to a
+    /// free generic declared earlier on the same impl header.
+    pub bounds: Vec<BoundRef>,
+}
+
+/// A single trait bound on a generic parameter.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoundRef {
+    pub trait_name: String,
+    /// Template args on the bound's trait head — may reference free
+    /// generics by name (e.g. `T` in `Wrap<T>`).
+    pub trait_args: Vec<ast::TypeOrValue>,
 }
 
 // ---- error type -----------------------------------------------------------

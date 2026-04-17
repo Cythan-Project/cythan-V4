@@ -138,10 +138,11 @@ impl FunctionDB {
 
                 // Blanket-origin methods always need monomorphization —
                 // the body is stored once on the blanket and reused across
-                // every satisfying target type, with `T` substituted at
-                // inline time. Register them as Templated with a synthetic
-                // leading template (the blanket's generic param name).
-                let is_blanket = m.blanket_generic.is_some();
+                // every satisfying target type, with generic params
+                // substituted at inline time. Register them as Templated
+                // with the blanket's full ordered generic name list as
+                // the synthetic leading templates.
+                let is_blanket = m.blanket.is_some();
                 let is_simple = !is_blanket
                     && type_templates.is_empty()
                     && method_templates.is_empty();
@@ -162,8 +163,8 @@ impl FunctionDB {
                     }
                 } else {
                     let mut templates: Vec<String> = Vec::new();
-                    if let Some(bg) = &m.blanket_generic {
-                        templates.push(bg.clone());
+                    if let Some(b) = &m.blanket {
+                        templates.extend(b.generic_names.iter().cloned());
                     }
                     templates.extend(type_templates.clone());
                     templates.extend(method_templates);

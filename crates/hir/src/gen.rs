@@ -1307,22 +1307,34 @@ impl<'a> Generator<'a> {
         let tpl = lower_templates(templates);
         let recv_ty_args = self.infer_receiver_type_args(&receiver.0);
         // Detect blanket-impl dispatch up front so both the return-size
-        // lookup and the emitted Call include the blanket `T` binding.
+        // lookup and the emitted Call include the blanket's full binding.
         let early_trait = self.resolve_trait_for(&resolved_recv, &name.0);
-        let is_blanket = self
+        let blanket_info = self
             .reg
-            .method_blanket_generic(&resolved_recv, &name.0, early_trait.as_deref())
-            .is_some();
-        // `method_args_for_size` mirrors `combined` below — but positioned
-        // as method-level templates (which is how lookup_return_size_full
-        // consumes the blanket's `T`, since `Foo` has zero type-level
-        // templates).
-        let method_args_for_size: Vec<ConcreteTemplateArg> = if is_blanket {
-            let mut v = Vec::with_capacity(1 + tpl.len());
-            v.push(ConcreteTemplateArg::Type(ConcreteType {
-                name: resolved_recv.clone(),
-                args: recv_ty_args.clone(),
-            }));
+            .method_blanket(&resolved_recv, &name.0, early_trait.as_deref());
+        // `method_args_for_size` mirrors `combined` below — it's the
+        // ordered concrete args list that the callee's Templated templates
+        // consume. For blankets, fill the target slot with the receiver
+        // and the rest from pre-resolved bindings.
+        let method_args_for_size: Vec<ConcreteTemplateArg> = if let Some(b) = &blanket_info {
+            let mut v = Vec::with_capacity(b.generic_args.len() + tpl.len());
+            for (i, slot) in b.generic_args.iter().enumerate() {
+                if i == b.target_index {
+                    v.push(ConcreteTemplateArg::Type(ConcreteType {
+                        name: resolved_recv.clone(),
+                        args: recv_ty_args.clone(),
+                    }));
+                } else if let Some(tv) = slot {
+                    v.push(lower_tv(tv));
+                } else {
+                    // Shouldn't happen — post-pass only attaches with
+                    // fully resolved non-target slots.
+                    v.push(ConcreteTemplateArg::Type(ConcreteType {
+                        name: "<?>".to_string(),
+                        args: Vec::new(),
+                    }));
+                }
+            }
             v.extend(tpl.clone());
             v
         } else {
@@ -1368,13 +1380,22 @@ impl<'a> Generator<'a> {
         // type. That binding lives at position 0 of the callee's
         // Templated template list, so we prepend the receiver type here.
         let mut combined: Vec<ConcreteTemplateArg> = Vec::new();
-        if is_blanket {
-            combined.push(ConcreteTemplateArg::Type(ConcreteType {
-                name: resolved_recv.clone(),
-                args: recv_ty_args.clone(),
-            }));
+        if let Some(b) = &blanket_info {
+            // Emit the blanket's full args in declaration order; the
+            // target slot carries the concrete receiver type.
+            for (i, slot) in b.generic_args.iter().enumerate() {
+                if i == b.target_index {
+                    combined.push(ConcreteTemplateArg::Type(ConcreteType {
+                        name: resolved_recv.clone(),
+                        args: recv_ty_args.clone(),
+                    }));
+                } else if let Some(tv) = slot {
+                    combined.push(lower_tv(tv));
+                }
+            }
+        } else {
+            combined.extend(recv_ty_args);
         }
-        combined.extend(recv_ty_args);
         combined.extend(tpl);
         block.push(HirOp::Call {
             target: FnRef {

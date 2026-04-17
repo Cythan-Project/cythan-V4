@@ -426,7 +426,9 @@ fn blanket_over_operator_trait_bound() {
             }
         }
         trait Square { fn square(self): Foo; }
-        impl<T: Add> Square for T {
+        // Explicit `Add<T>` in the bound — unifies with the impl's
+        // `Add<Foo>` by binding T = Foo for the Foo target.
+        impl<T: Add<T>> Square for T {
             fn square(self): Foo { self + self }
         }
         use Square;
@@ -570,6 +572,225 @@ fn blanket_body_uses_self_type_binding() {
                 Foo f = Foo { v: 7, };
                 Foo r = f.chain();
                 r.v
+            }
+        }
+    "#;
+    let entry = typer::FnSig::new("U4", "test");
+    assert_eq!(run_program(src, &entry), vec![7]);
+}
+
+// =========================================================================
+// `impl<T, E: Wrap<T>> Untouched for E` — trait-template-arg bounds
+// with a separate generic param. The resolver picks `E` as the target,
+// unifies `Wrap<T>` against `E`'s `Wrap<?>` impls to bind `T`, and
+// attaches `Untouched` only to types that have a matching `Wrap`.
+// =========================================================================
+
+// =========================================================================
+// A type that doesn't implement the bound trait does NOT get attached.
+// Here `Bare` has no Wrap impl, so the blanket's Untouched never lands
+// on Bare. Calling `b.untouched()` should fail to resolve — the test
+// confirms this by NOT calling it and only checking the Foo path.
+// =========================================================================
+
+#[test]
+fn bound_with_trait_template_arg_rejects_non_satisfier() {
+    let src = r#"
+        use Wrap;
+        use Untouched;
+        struct Foo { U4 v, }
+        struct Bare { U4 w, }
+        trait Wrap<T> { fn wrap(self): T; }
+        trait Untouched { fn untouched(self): U4; }
+
+        impl Wrap<U4> for Foo {
+            fn wrap(self): U4 { self.v }
+        }
+
+        impl<T, E: Wrap<T>> Untouched for E {
+            fn untouched(self): U4 { 8 }
+        }
+
+        extension U4 {
+            fn test(): U4 {
+                Foo f = Foo { v: 0, };
+                f.untouched()
+            }
+        }
+    "#;
+    let entry = typer::FnSig::new("U4", "test");
+    assert_eq!(run_program(src, &entry), vec![8]);
+}
+
+// =========================================================================
+// Body uses the free generic `T`: the unified `T` from the bound
+// matches the value returned by the bound method, so the body's `T`
+// types resolve to concrete.
+// =========================================================================
+
+#[test]
+fn blanket_body_uses_free_generic_bound_from_trait_arg() {
+    let src = r#"
+        use Wrap;
+        use Double;
+        struct Foo { U4 v, }
+        trait Wrap<T> { fn wrap(self): T; }
+        trait Double { fn double(self): U4; }
+
+        impl Wrap<U4> for Foo {
+            fn wrap(self): U4 { self.v }
+        }
+
+        // `self.wrap()` returns T (which = U4 for Foo). Body adds two
+        // `T`-typed values and returns U4.
+        impl<T, E: Wrap<T>> Double for E {
+            fn double(self): U4 { self.wrap() + self.wrap() }
+        }
+
+        extension U4 {
+            fn test(): U4 {
+                Foo f = Foo { v: 4, };
+                f.double()
+            }
+        }
+    "#;
+    let entry = typer::FnSig::new("U4", "test");
+    assert_eq!(run_program(src, &entry), vec![8]);
+}
+
+// =========================================================================
+// Two bounds share the same free generic — assignments must be
+// consistent. Here both `Wrap<T>` and `Emit<T>` name T; the
+// implementer must implement both with matching args.
+// =========================================================================
+
+#[test]
+fn two_bounds_sharing_free_generic_unify() {
+    let src = r#"
+        use Wrap;
+        use Emit;
+        use Both;
+        struct Foo { U4 v, }
+        trait Wrap<T> { fn wrap(self): T; }
+        trait Emit<T> { fn emit(self): T; }
+        trait Both { fn both(self): U4; }
+
+        impl Wrap<U4> for Foo { fn wrap(self): U4 { self.v } }
+        impl Emit<U4> for Foo { fn emit(self): U4 { self.v + 1 } }
+
+        impl<T, E: Wrap<T> + Emit<T>> Both for E {
+            fn both(self): U4 { self.wrap() + self.emit() }
+        }
+
+        extension U4 {
+            fn test(): U4 {
+                Foo f = Foo { v: 3, };
+                f.both()
+            }
+        }
+    "#;
+    let entry = typer::FnSig::new("U4", "test");
+    // wrap = 3; emit = 3 + 1 = 4; sum = 7
+    assert_eq!(run_program(src, &entry), vec![7]);
+}
+
+// =========================================================================
+// Two bounds with a mix of concrete and free: `Wrap<T>` (free) +
+// `Eq<U4>` (concrete arg). Both must match.
+// =========================================================================
+
+#[test]
+fn mixed_free_and_concrete_bound_args() {
+    let src = r#"
+        use Wrap;
+        use MarkU4;
+        use Tagged;
+        struct Foo { U4 v, }
+        trait Wrap<T> { fn wrap(self): T; }
+        trait MarkU4 { fn mark(self): U4; }
+        trait Tagged { fn tagged(self): U4; }
+
+        impl Wrap<U4> for Foo { fn wrap(self): U4 { self.v } }
+        impl MarkU4 for Foo { fn mark(self): U4 { 9 } }
+
+        // T is free, MarkU4 is concrete and unparameterized.
+        impl<T, E: Wrap<T> + MarkU4> Tagged for E {
+            fn tagged(self): U4 { self.wrap() + self.mark() }
+        }
+
+        extension U4 {
+            fn test(): U4 {
+                Foo f = Foo { v: 2, };
+                f.tagged()
+            }
+        }
+    "#;
+    let entry = typer::FnSig::new("U4", "test");
+    // wrap = 2; mark = 9; sum = 11 (U4 clamps to 11)
+    assert_eq!(run_program(src, &entry), vec![11]);
+}
+
+// =========================================================================
+// Resolution across two different types: both `Foo` (with Wrap<U4>)
+// and `Bar` (with Wrap<U8>, after we make U8 a valid Wrap arg)
+// would attach independently — T=U4 for Foo, T=U8 for Bar. Each gets
+// its own monomorph.
+//
+// For phase 1 we only exercise two different target types with the
+// same free-generic binding, but this confirms cross-target dispatch.
+// =========================================================================
+
+#[test]
+fn trait_arg_bound_resolves_per_target_type() {
+    let src = r#"
+        use Wrap;
+        use Echo;
+        struct A { U4 a, }
+        struct B { U4 b, }
+        trait Wrap<T> { fn wrap(self): T; }
+        trait Echo { fn echo(self): U4; }
+
+        impl Wrap<U4> for A { fn wrap(self): U4 { self.a } }
+        impl Wrap<U4> for B { fn wrap(self): U4 { self.b + 1 } }
+
+        impl<T, E: Wrap<T>> Echo for E {
+            fn echo(self): U4 { self.wrap() }
+        }
+
+        extension U4 {
+            fn test(): U4 {
+                A a = A { a: 4, };
+                B b = B { b: 2, };
+                a.echo() + b.echo()
+            }
+        }
+    "#;
+    let entry = typer::FnSig::new("U4", "test");
+    // a.echo = 4; b.echo = 2 + 1 = 3; sum = 7
+    assert_eq!(run_program(src, &entry), vec![7]);
+}
+
+#[test]
+fn bound_with_trait_template_arg_binds_free_generic() {
+    let src = r#"
+        use Wrap;
+        use Untouched;
+        struct Foo { U4 v, }
+        trait Wrap<T> { fn wrap(self): T; }
+        trait Untouched { fn untouched(self): U4; }
+
+        impl Wrap<U4> for Foo {
+            fn wrap(self): U4 { self.v }
+        }
+
+        impl<T, E: Wrap<T>> Untouched for E {
+            fn untouched(self): U4 { 7 }
+        }
+
+        extension U4 {
+            fn test(): U4 {
+                Foo f = Foo { v: 0, };
+                f.untouched()
             }
         }
     "#;
