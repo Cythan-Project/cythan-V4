@@ -103,13 +103,25 @@ enum NewCommand {
         /// Main source file (e.g. `examples/new_syntax/Morpion.ct`).
         file: PathBuf,
     },
-    /// Compile to HIR and write a human-readable `.hir` dump.
+    /// Compile to HIR and/or MIR and write human-readable text dumps.
+    /// At least one of `--hir` / `--mir` must be supplied.
     Build {
         /// Main source file.
         file: PathBuf,
-        /// Output HIR text file.
-        #[arg(short, long)]
-        output: PathBuf,
+        /// Write HIR text dump here (per-function; no entry needed).
+        #[arg(long, value_name = "FILE")]
+        hir: Option<PathBuf>,
+        /// Write MIR text dump here. Requires an entry point — inlining
+        /// starts there and the resulting flat `MirCodeBlock` is dumped.
+        #[arg(long, value_name = "FILE")]
+        mir: Option<PathBuf>,
+        /// Entry-point type name (for `--mir`). Defaults to the file's
+        /// stem (e.g. `Morpion.ct` → `Morpion`).
+        #[arg(long)]
+        entry_type: Option<String>,
+        /// Entry-point method (for `--mir`). Defaults to `main`.
+        #[arg(long, default_value = "main")]
+        entry_method: String,
     },
     /// Full compile + MIR-interpret against stdin/stdout.
     Run {
@@ -315,24 +327,63 @@ fn run_new_command(command: NewCommand, new_std_dir: &Path) {
                 }
             }
         }
-        NewCommand::Build { file, output } => {
+        NewCommand::Build {
+            file,
+            hir,
+            mir,
+            entry_type,
+            entry_method,
+        } => {
+            if hir.is_none() && mir.is_none() {
+                die("at least one of --hir / --mir must be supplied");
+            }
             let files = gather_or_die(new_std_dir, &file);
             let refs: Vec<(&str, String)> = files
                 .iter()
                 .map(|(n, s)| (n.as_str(), s.clone()))
                 .collect();
-            match new_pipeline::build_hir(&refs) {
-                Ok(built) => {
-                    let text = new_pipeline::hir_to_text(&built.hir);
-                    std::fs::write(&output, text)
-                        .unwrap_or_else(|e| die(&format!("write {}: {}", output.display(), e)));
-                    eprintln!(
-                        "wrote HIR for {} function(s) to {}",
-                        built.hir.len(),
-                        output.display()
-                    );
+
+            if let Some(hir_path) = &hir {
+                match new_pipeline::build_hir(&refs) {
+                    Ok(built) => {
+                        let text = new_pipeline::hir_to_text(&built.hir);
+                        std::fs::write(hir_path, text).unwrap_or_else(|e| {
+                            die(&format!("write {}: {}", hir_path.display(), e))
+                        });
+                        eprintln!(
+                            "wrote HIR for {} function(s) to {}",
+                            built.hir.len(),
+                            hir_path.display()
+                        );
+                    }
+                    Err(msg) => die(&msg),
                 }
-                Err(msg) => die(&msg),
+            }
+
+            if let Some(mir_path) = &mir {
+                let entry_type = entry_type.unwrap_or_else(|| {
+                    file.file_stem()
+                        .expect("main file has no stem")
+                        .to_string_lossy()
+                        .into_owned()
+                });
+                let entry = typer::FnSig::new(&entry_type, &entry_method);
+                match new_pipeline::compile(&refs, &entry) {
+                    Ok(mir_block) => {
+                        let text = new_pipeline::mir_to_text(&mir_block);
+                        std::fs::write(mir_path, text).unwrap_or_else(|e| {
+                            die(&format!("write {}: {}", mir_path.display(), e))
+                        });
+                        eprintln!(
+                            "wrote MIR ({} ops) for {}::{} to {}",
+                            mir_block.0.len(),
+                            entry_type,
+                            entry_method,
+                            mir_path.display()
+                        );
+                    }
+                    Err(msg) => die(&msg),
+                }
             }
         }
         NewCommand::Run {

@@ -107,8 +107,12 @@ regression test `u4_literal_above_cell_range_still_terminates` in
 - `cythan new check <file>` — run the full new pipeline up through
   HIR gen; exits non-zero on any error, or prints a one-line summary
   `ok: <N> types, <N> traits, <N> functions (<N> simple)`.
-- `cythan new build <file> -o <file.hir>` — compile to HIR and write
-  a human-readable text dump (sorted by `FnSig` for stable diffs).
+- `cythan new build <file> [--hir <file.hir>] [--mir <file.mir>]`
+  — compile and dump either or both IRs as human-readable text.
+  `--hir` is per-function (sorted by `FnSig` for stable diffs);
+  `--mir` inlines from an entry point (`--entry-type`, `--entry-method`;
+  defaults: file stem, `main`) and dumps the flat `MirCodeBlock`
+  using `Mir`'s own `Display`.
 - `cythan new run <file>` — full compile + MIR interpret, wired to
   stdin/stdout. Accepts `--entry-type` / `--entry-method` (defaults:
   file stem / `main`) and `--mem-cells` (default 4096).

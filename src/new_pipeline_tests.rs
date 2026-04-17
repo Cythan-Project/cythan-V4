@@ -246,6 +246,34 @@ fn toolchain_build_hir_produces_dump() {
 }
 
 #[test]
+fn toolchain_build_mir_produces_dump() {
+    let mut files = new_syntax_stdlib();
+    files.push((
+        "MirDump.ct",
+        r#"
+            struct MirDump {}
+            extension MirDump {
+                fn main(): U4 { 7 }
+            }
+        "#
+        .to_string(),
+    ));
+    let entry = typer::FnSig::new("MirDump", "main");
+    let mir = cythan_driver::new_pipeline::compile(&files, &entry).expect("compile");
+    let text = cythan_driver::new_pipeline::mir_to_text(&mir);
+    assert!(!text.is_empty(), "MIR dump empty");
+    // The literal 7 must appear as a Set value somewhere in the dump
+    // — it's our entry function's only constant.
+    assert!(text.contains('7'), "MIR dump doesn't reference the literal 7:\n{}", text);
+    // Sanity: the dump shouldn't still carry HIR-only concepts.
+    assert!(
+        !text.contains("call "),
+        "MIR dump should not contain HIR-style `call` (all calls inlined):\n{}",
+        text
+    );
+}
+
+#[test]
 fn harness_compile_and_run_are_composable() {
     // The compile / run split lets callers reuse the compiled MIR
     // across multiple scripted inputs — useful for interaction

@@ -118,6 +118,17 @@ pub fn hir_to_text(hir: &HashMap<typer::FnSig, HirFunction>) -> String {
     text_dump::dump_program(hir)
 }
 
+/// Render a compiled, inlined MIR block as text. Uses `mir::Mir`'s
+/// existing `Display` impl — one op per line, nested blocks indented.
+pub fn mir_to_text(block: &MirCodeBlock) -> String {
+    block
+        .0
+        .iter()
+        .map(|op| op.to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Compile a program through the new pipeline, producing the fully
 /// inlined MIR block ready to execute.
 pub fn compile(
