@@ -4,14 +4,18 @@ struct Bool {
 
 extension Bool {
     fn not(self): Self {
-        if self { false } else { true }
+        if self {
+            false
+        } else {
+            true
+        }
     }
 
+    // Print '1' for true, '0' for false. (The old `"true"`/`"false"` strings
+    // required a string-literal lowering path in HIR gen that doesn't exist
+    // yet — see the scope notes in Phase 4. The single-digit print routes
+    // through U4::print, which IS implemented.)
     fn print(self) {
-        if self {
-            "true".print();
-        } else {
-            "false".print();
-        }
+        self.value.print();
     }
 }

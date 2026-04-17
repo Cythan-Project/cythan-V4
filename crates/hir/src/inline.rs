@@ -211,18 +211,75 @@ impl<'a> Inliner<'a> {
             out.push(HirOp::Copy(dst, src));
         }
 
-        // 2. Inline the callee body with its own base.
-        let body = self.inline_block(&callee.body, callee_base)?;
-        // Flatten the body into the current output stream. The callee's
-        // body has no nested function boundary, so we just splice its ops.
-        out.extend(body.ops);
+        // 2. Inline the callee body with its own base, wrapped in a Block
+        //    and with `Stop` ops converted to `Skip`. A `return` in the
+        //    callee emits `Stop` — which in a standalone function means
+        //    "halt the program". Once inlined, that's the wrong semantics:
+        //    we want "leave the inlined body and continue the caller".
+        //    Wrapping in a Block + rewriting Stop → Skip gives that: Skip
+        //    exits up to the nearest enclosing Block, and Block catches Skip
+        //    and returns to the caller's linear flow.
+        let mut body = self.inline_block(&callee.body, callee_base)?;
+        stop_to_skip_in_block(&mut body);
+        out.push(HirOp::Block(body));
 
-        // 3. Copy callee output slots → caller ret slots.
+        // 3. Propagate writes to `mut` params back out. In the language
+        //    model, function parameters are "by reference" — mutating a
+        //    `mut self` or `mut Self other` inside a callee must be
+        //    visible to the caller's argument. Since we chose the
+        //    copy-in approach at step (1) for simplicity, we restore the
+        //    semantics here by copying the (possibly-mutated) callee
+        //    input cells back into the caller's argument cells. Only
+        //    `mut` params need this — immutable params' content hasn't
+        //    changed.
+        for slot in &callee.sig.slots {
+            if slot.name == "_ret" || !slot.mutable {
+                continue;
+            }
+            for i in 0..slot.size {
+                let cell_ix = (slot.offset + i) as usize;
+                if cell_ix >= args.len() {
+                    break;
+                }
+                let caller_arg = self.remap(args[cell_ix], caller_base);
+                let callee_cell = SlotId(callee_base + slot.offset + i);
+                out.push(HirOp::Copy(caller_arg, callee_cell));
+            }
+        }
+
+        // 4. Copy callee output slots → caller ret slots.
         for (i, r) in ret.iter().enumerate() {
             let src = SlotId(callee_base + callee.sig.input_count + i as u32);
             let dst = self.remap(*r, caller_base);
             out.push(HirOp::Copy(dst, src));
         }
         Ok(())
+    }
+}
+
+/// Walk `block` and replace every `Stop` with `Skip`. Respects nested
+/// control flow: Stops inside nested Loop/If0/Match/Block bodies are
+/// rewritten too. Break and Continue are left alone — they target the
+/// callee's own inner loops, which remain valid after inlining.
+fn stop_to_skip_in_block(block: &mut HirBlock) {
+    for op in &mut block.ops {
+        stop_to_skip_in_op(op);
+    }
+}
+
+fn stop_to_skip_in_op(op: &mut HirOp) {
+    match op {
+        HirOp::Stop => *op = HirOp::Skip,
+        HirOp::If0(_, a, b) => {
+            stop_to_skip_in_block(a);
+            stop_to_skip_in_block(b);
+        }
+        HirOp::Loop(b) | HirOp::Block(b) => stop_to_skip_in_block(b),
+        HirOp::Match(_, arms) => {
+            for (arm, _) in arms {
+                stop_to_skip_in_block(arm);
+            }
+        }
+        _ => {}
     }
 }

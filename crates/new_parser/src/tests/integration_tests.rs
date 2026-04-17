@@ -63,15 +63,44 @@ fn method_names(ext: &ExtensionDef) -> Vec<String> {
 
 #[test]
 fn test_parse_u4() {
+    // After the operator-trait rewrite, U4.ct has:
+    //   - `struct U4 {}` (primitive marker)
+    //   - `extension U4 { zero, input, printDec, print }` — inherent methods
+    //   - trait impls for Eq, Ord, Add, Sub, AddAssign, SubAssign (each
+    //     contributing its own methods via a separate Item::Impl node).
     let items = parse_file("std/U4.ct");
     let s = find_struct(&items, "U4");
     assert_eq!(s.fields.len(), 0);
     assert_eq!(s.templates.len(), 0);
 
+    // Inherent methods on the extension: only the ones not tied to ops.
     let ext = find_extension(&items, "U4");
     let names = method_names(ext);
-    for expected in ["zero", "input", "equals", "greater", "sub", "printDec", "print"] {
+    for expected in ["zero", "input", "printDec", "print"] {
         assert!(names.iter().any(|n| n == expected), "missing method {}", expected);
+    }
+    // Old method names should have been replaced by trait impls.
+    assert!(!names.iter().any(|n| n == "equals"), "stale `equals` method");
+    assert!(!names.iter().any(|n| n == "greater"), "stale `greater` method");
+    assert!(!names.iter().any(|n| n == "sub"), "stale `sub` inherent method");
+
+    // Impl blocks for U4: each trait gets its own.
+    let impl_traits: std::collections::HashSet<String> = items
+        .iter()
+        .filter_map(|(it, _)| match it {
+            crate::ast::Item::Impl(i) if i.target.0.name.0 == "U4" => {
+                Some(i.trait_ty.0.name.0.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    for expected in ["Eq", "Ord", "Add", "Sub", "AddAssign", "SubAssign"] {
+        assert!(
+            impl_traits.contains(expected),
+            "missing `impl {} for U4`, have {:?}",
+            expected,
+            impl_traits
+        );
     }
 }
 

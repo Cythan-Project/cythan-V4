@@ -35,22 +35,25 @@ fn ops_list(hir: &HirFunction) -> &[HirOp] {
 #[test]
 fn builtin_has_method_catalog() {
     let p = BuiltinNatives::new();
-    assert!(p.has_method("U4", "inc"));
-    assert!(p.has_method("U4", "dec"));
+    // System register ops + Array layout primitives are the full native surface.
+    // Operators (eq/add/sub/...) are stdlib, NOT natives — assert that.
     assert!(p.has_method("System", "setRegister"));
     assert!(p.has_method("System", "getRegister"));
     assert!(p.has_method("System", "debug"));
     assert!(p.has_method("Array", "setDyn"));
     assert!(p.has_method("Array", "getDyn"));
     assert!(p.has_method("Array", "len"));
+    assert!(!p.has_method("U4", "inc"), "U4::inc is stdlib, not native");
+    assert!(!p.has_method("U4", "dec"), "U4::dec is stdlib, not native");
+    assert!(!p.has_method("U4", "add"), "U4::add is stdlib, not native");
+    assert!(!p.has_method("U4", "eq"), "U4::eq is stdlib, not native");
     assert!(!p.has_method("U4", "not_a_native"));
     assert!(!p.has_method("Foo", "anything"));
 }
 
 #[test]
-fn provider_emits_directly_via_api() {
-    // Direct invocation of BuiltinNatives without going through the HIR
-    // generator. Useful sanity-check that the NativeCall API is ergonomic.
+fn provider_emits_directly_via_api_system() {
+    // Direct invocation of BuiltinNatives: System::setRegister<0>(value).
     let reg = typer::TypeRegistry::new();
     let p = BuiltinNatives::new();
 
@@ -65,49 +68,21 @@ fn provider_emits_directly_via_api() {
         let arg_slots = [SlotId(3)];
         let ret_slots: [SlotId; 0] = [];
         let call = NativeCall {
-            type_name: "U4",
-            method: "inc",
-            template_args: &[],
+            type_name: "System",
+            method: "setRegister",
+            template_args: &[ConcreteTemplateArg::Value(0)],
             arg_slots: &arg_slots,
             ret_slots: &ret_slots,
             receiver_type_args: &[],
-            receiver_cell_count: 1,
+            receiver_cell_count: 0,
             registry: &reg,
         };
-        p.generate(call, &mut em).expect("native inc");
+        p.generate(call, &mut em).expect("native setRegister");
     }
-    assert_eq!(ops, vec![HirOp::Inc(SlotId(3))]);
-}
-
-// ---------- Step 7.2: U4::inc / U4::dec ------------------------------------
-
-#[test]
-fn u4_inc_native_emits_inc_op() {
-    // Need a source where `self.inc()` is syntactically valid — we have to
-    // declare the stub in the stdlib so the parser + typer accept it.
-    let src = r#"
-        extension U4 {
-            fn inc(mut self) {}
-            fn caller(mut U4 x): U4 { x.inc(); x }
-        }
-    "#;
-    let hir = compile_with_natives(src, "U4", "caller");
-    let has_inc = hir.body.ops.iter().any(|op| matches!(op, HirOp::Inc(_)));
-    let has_call = hir.body.ops.iter().any(|op| matches!(op, HirOp::Call { .. }));
-    assert!(has_inc, "expected Inc op, got: {:#?}", hir.body.ops);
-    assert!(!has_call, "Call op should have been replaced: {:#?}", hir.body.ops);
-}
-
-#[test]
-fn u4_dec_native_emits_dec_op() {
-    let src = r#"
-        extension U4 {
-            fn dec(mut self) {}
-            fn caller(mut U4 x): U4 { x.dec(); x }
-        }
-    "#;
-    let hir = compile_with_natives(src, "U4", "caller");
-    assert!(hir.body.ops.iter().any(|op| matches!(op, HirOp::Dec(_))));
+    assert_eq!(
+        ops,
+        vec![HirOp::WriteRegister(0, either::Either::Right(SlotId(3)))]
+    );
 }
 
 // ---------- Step 7.3: System::setRegister / getRegister -------------------

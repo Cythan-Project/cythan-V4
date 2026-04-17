@@ -13,7 +13,7 @@ mod tests;
 
 pub use call_graph::{build_call_graph, CallGraph};
 pub use error::HirError;
-pub use gen::gen_function;
+pub use gen::{gen_function, gen_function_with_natives};
 pub use inline::{hir_to_mir, inline_program};
 pub use interp::{CapturedIo, InterpError, Interpreter, IoContext};
 pub use ir::{ConcreteTemplateArg, ConcreteType, FnRef, HirBlock, HirFunction, HirOp, SlotId};

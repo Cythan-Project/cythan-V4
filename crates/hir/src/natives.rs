@@ -103,16 +103,18 @@ impl Default for BuiltinNatives {
 
 impl NativeProvider for BuiltinNatives {
     fn has_method(&self, type_name: &str, method: &str) -> bool {
+        // The only "true" natives are the VM-level primitives: the
+        // System register ops (there is literally no way to implement them
+        // in user code) and Array, whose layout/addressing is under the
+        // compiler's direct control. Operators (`+`, `-`, `==`, ...) live
+        // in the stdlib — see `examples/new_syntax/std/Ops.ct` and their
+        // impls in `std/U4.ct`.
         matches!(
             (type_name, method),
-            // Val / U4
-            ("U4", "inc") | ("U4", "dec")
-            // System
-            | ("System", "setRegister")
+            ("System", "setRegister")
             | ("System", "getRegister")
             | ("System", "debug")
             | ("System", "debugType")
-            // Array
             | ("Array", "len")
             | ("Array", "set")
             | ("Array", "get")
@@ -123,9 +125,6 @@ impl NativeProvider for BuiltinNatives {
 
     fn generate(&self, call: NativeCall<'_>, emitter: &mut NativeEmitter<'_>) -> Result<(), String> {
         match (call.type_name, call.method) {
-            ("U4", "inc") => emit_u4_inc(&call, emitter),
-            ("U4", "dec") => emit_u4_dec(&call, emitter),
-
             ("System", "setRegister") => emit_system_set_register(&call, emitter),
             ("System", "getRegister") => emit_system_get_register(&call, emitter),
             ("System", "debug") | ("System", "debugType") => Ok(()),
@@ -138,27 +137,6 @@ impl NativeProvider for BuiltinNatives {
             _ => Err(format!("native {}::{} not implemented", call.type_name, call.method)),
         }
     }
-}
-
-// ---- U4 (Val) ------------------------------------------------------------
-
-fn emit_u4_inc(call: &NativeCall<'_>, emitter: &mut NativeEmitter<'_>) -> Result<(), String> {
-    let slot = first_receiver(call, "U4::inc")?;
-    emitter.emit(HirOp::Inc(slot));
-    Ok(())
-}
-
-fn emit_u4_dec(call: &NativeCall<'_>, emitter: &mut NativeEmitter<'_>) -> Result<(), String> {
-    let slot = first_receiver(call, "U4::dec")?;
-    emitter.emit(HirOp::Dec(slot));
-    Ok(())
-}
-
-fn first_receiver(call: &NativeCall<'_>, label: &str) -> Result<SlotId, String> {
-    if call.receiver_cell_count == 0 {
-        return Err(format!("{}: missing self receiver", label));
-    }
-    Ok(call.arg_slots[0])
 }
 
 // ---- System --------------------------------------------------------------

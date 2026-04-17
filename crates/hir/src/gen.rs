@@ -365,8 +365,19 @@ impl<'a> Generator<'a> {
                 self.gen_match(scrutinee, arms, sp, dst, block)
             }
             ast::Expr::Block(inner) => {
+                // Inline the block's statements directly instead of wrapping
+                // them in `HirOp::Block`. Scoping is already handled at the
+                // generator level (gen_block pushes/pops a scope); we don't
+                // need a runtime `Block` here and must NOT emit one because
+                // `Block` catches `Skip` — which the inliner uses to
+                // represent function-return out of an inlined callee. An
+                // inner `Block` from a source `{ ... }` would swallow the
+                // Skip prematurely, trapping `return` inside the wrong
+                // frame.
                 let sub = self.gen_block(&inner.0.stmts, dst)?;
-                block.push(HirOp::Block(sub));
+                for op in sub.ops {
+                    block.push(op);
+                }
                 Ok(())
             }
 

@@ -1,0 +1,33 @@
+// Operator traits. Each binary operator in the language desugars to a
+// method call on one of these traits; the compiler looks for an `impl` and
+// dispatches through it. These traits are in the compiler's
+// `OPERATOR_TRAITS` list, so callers don't need `use Add;` / `use Eq;` to
+// use `+` or `==` — the sugar implicitly brings them into scope.
+
+trait Eq {
+    fn eq(self, Self other): Bool;
+    fn ne(self, Self other): Bool;
+}
+
+trait Ord {
+    fn lt(self, Self other): Bool;
+    fn gt(self, Self other): Bool;
+    fn le(self, Self other): Bool;
+    fn ge(self, Self other): Bool;
+}
+
+trait Add {
+    fn add(self, Self other): Self;
+}
+
+trait Sub {
+    fn sub(self, Self other): Self;
+}
+
+trait AddAssign {
+    fn add_assign(mut self, Self other);
+}
+
+trait SubAssign {
+    fn sub_assign(mut self, Self other);
+}
