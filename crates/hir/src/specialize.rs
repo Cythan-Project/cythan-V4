@@ -252,8 +252,17 @@ fn specialize_op(op: HirOp, ctx: &mut Ctx, out: &mut Vec<HirOp>) {
             out.push(HirOp::Match(scrutinee, specialized_arms));
         }
         HirOp::Loop(body) => {
+            // Only slots actually mutated inside the loop body
+            // become unknown on each iteration. Read-only slots
+            // keep the caller's domain — propagate it into the
+            // body so folds that depend on outer constants still
+            // fire inside the loop.
             let mutated = slots_mutated(&body);
-            let specialized = specialize_block(body, &Ctx::default());
+            let mut loop_ctx = ctx.clone();
+            for s in &mutated {
+                loop_ctx.forget(*s);
+            }
+            let specialized = specialize_block(body, &loop_ctx);
             out.push(HirOp::Loop(specialized));
             for s in mutated {
                 ctx.forget(s);

@@ -233,10 +233,15 @@ scrutinee's domain get their body spliced in place.
    WriteRegister(1, slot=s0)` → `WriteRegister(1, literal=7)`.
 
 **Loop / Call / Block boundaries** clear the context of every slot
-mutated inside them — a safe over-approximation. Arm join after
-a `Match` clears only slots some arm mutated; untouched slots'
-domains survive. Joining arms' post-states into a union of
-domains (instead of clearing) is a future extension.
+*mutated* inside them. Read-only slots keep their domain both
+**inside** the loop body (propagated into the body's initial ctx)
+and **across** the loop exit. That lets a loop body fold a nested
+`if_zero` against a constant set outside the loop, and lets code
+after the loop still treat the outer constant as known.
+
+Arm join after a `Match` clears only slots some arm mutated;
+untouched slots' domains survive. Joining arms' post-states into a
+union of domains (instead of clearing) is a future extension.
 
 **Impact on the games benchmark** (Cythan VM step count):
 

@@ -307,8 +307,14 @@ fn walk_op(
             out.push(HirOp::Match(scrutinee, new_arms));
         }
         HirOp::Loop(body) => {
+            // Preserve knowledge of slots the body doesn't touch —
+            // only mutated slots become unknown per iteration.
             let mutated = slots_mutated(&body);
-            let new_body = walk_block(body, &Ctx::default(), cache, fns, new_calls);
+            let mut loop_ctx = ctx.clone();
+            for s in &mutated {
+                loop_ctx.forget(*s);
+            }
+            let new_body = walk_block(body, &loop_ctx, cache, fns, new_calls);
             for s in mutated {
                 ctx.forget(s);
             }

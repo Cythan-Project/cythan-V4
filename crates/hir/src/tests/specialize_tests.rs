@@ -136,10 +136,10 @@ fn inc_dec_track_known_value() {
 }
 
 #[test]
-fn loop_boundary_clears_known_values() {
+fn mutated_slot_is_forgotten_after_loop() {
     // Set(s0, 3); Loop { Inc(s0) }; Copy(s1, s0)
-    //   After the loop, s0 could be anything — the Copy must NOT
-    //   collapse to a Set(s1, 3).
+    //   After the loop, s0 could be anything (Inc ran N times) —
+    //   the Copy must NOT collapse to a Set(s1, 3).
     let input = blk(vec![
         HirOp::Set(sid(0), 3),
         HirOp::Loop(blk(vec![HirOp::Inc(sid(0))])),
@@ -148,7 +148,56 @@ fn loop_boundary_clears_known_values() {
     let out = specialize_to_fixpoint(input);
     assert!(
         out.ops.iter().any(|op| matches!(op, HirOp::Copy(SlotId(1), SlotId(0)))),
-        "Copy must survive after the loop — s0 is unknown: {:#?}",
+        "Copy must survive — s0 is mutated inside the loop: {:#?}",
+        out.ops
+    );
+}
+
+#[test]
+fn readonly_slot_keeps_domain_inside_loop() {
+    // Set(s0, 5); Loop { Inc(s1); if_zero(s0, [Break], []) }
+    //   s0 is NOT mutated inside the loop — its domain {5}
+    //   survives into the body. The nested if_zero's scrutinee
+    //   is known to be `5` (nonzero), so the then (Break) arm
+    //   is dead; the whole if_zero folds to its else body
+    //   (which is empty). The loop body specializes to just
+    //   `Inc(s1)`.
+    let input = blk(vec![
+        HirOp::Set(sid(0), 5),
+        HirOp::Loop(blk(vec![
+            HirOp::Inc(sid(1)),
+            if_zero(sid(0), vec![HirOp::Break], vec![]),
+        ])),
+    ]);
+    let out = specialize_to_fixpoint(input);
+    let HirOp::Loop(body) = &out.ops[1] else {
+        panic!("Loop missing at index 1");
+    };
+    assert!(
+        !body.ops.iter().any(|op| matches!(op, HirOp::Match(..))),
+        "nested if_zero on read-only s0==5 should have folded: {:#?}",
+        body.ops
+    );
+    assert!(
+        !body.ops.iter().any(|op| matches!(op, HirOp::Break)),
+        "dead then-branch body (Break) should have been dropped"
+    );
+}
+
+#[test]
+fn readonly_slot_keeps_domain_across_loop_exit() {
+    // Set(s0, 7); Loop { Inc(s1); Break }; Copy(s2, s0)
+    //   s0 read-only inside the loop, so its domain {7} survives
+    //   the loop exit — the Copy should collapse to Set(s2, 7).
+    let input = blk(vec![
+        HirOp::Set(sid(0), 7),
+        HirOp::Loop(blk(vec![HirOp::Inc(sid(1)), HirOp::Break])),
+        HirOp::Copy(sid(2), sid(0)),
+    ]);
+    let out = specialize_to_fixpoint(input);
+    assert!(
+        out.ops.iter().any(|op| matches!(op, HirOp::Set(SlotId(2), 7))),
+        "Copy must collapse to Set(s2, 7) — s0 is read-only: {:#?}",
         out.ops
     );
 }
