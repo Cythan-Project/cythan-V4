@@ -12,9 +12,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use hir::{
-    eliminate_dead_writes, gen_function_with_natives, hir_to_mir, inline_program_full,
-    optimize_block, specialize_monomorph, specialize_to_fixpoint, text_dump, BuiltinNatives,
-    HirFunction, SlotId,
+    elide_unused_args, elide_unused_args_with_stats, eliminate_dead_writes,
+    gen_function_with_natives, hir_to_mir, inline_program_full, optimize_block,
+    specialize_monomorph, specialize_to_fixpoint, text_dump, BuiltinNatives, HirFunction, SlotId,
 };
 use lir::CompilableInstruction;
 use mir::{MemoryState, MirCodeBlock, MirState};
@@ -285,6 +285,14 @@ pub struct PipelineStats {
     /// Sum of HIR ops across every function *after* the pre-inline
     /// specialization monomorphizer (grows with new variants).
     pub hir_ops_post_spec_mono: usize,
+    /// Number of input cells dropped by the unused-arg elision
+    /// pass (`crates/hir/src/arg_elide.rs`). Aggregated across
+    /// every function trimmed over all fixpoint rounds.
+    pub arg_elide_dropped_cells: u32,
+    /// Number of distinct functions that lost at least one param
+    /// to elision (counted per fixpoint round — a function that
+    /// shrinks in two rounds counts twice).
+    pub arg_elide_functions_trimmed: u32,
     /// HIR ops in the flattened program after inlining + monomorph.
     pub hir_ops_post_inline: usize,
     /// HIR ops after the flow-sensitive specialization cleanup
@@ -305,12 +313,15 @@ impl std::fmt::Display for PipelineStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(
             f,
-            "HIR: {} fn — {} ops  →  spec-mono: +{} variant{}, {} ops  →  inlined: {} ops  →  cleanup: {} ops",
+            "HIR: {} fn — {} ops  →  spec-mono: +{} variant{}, {} ops  →  arg-elide: −{} cell{} ({} fn)  →  inlined: {} ops  →  cleanup: {} ops",
             self.hir_functions,
             self.hir_ops_pre_inline,
             self.specialized_variants,
             if self.specialized_variants == 1 { "" } else { "s" },
             self.hir_ops_post_spec_mono,
+            self.arg_elide_dropped_cells,
+            if self.arg_elide_dropped_cells == 1 { "" } else { "s" },
+            self.arg_elide_functions_trimmed,
             self.hir_ops_post_inline,
             self.hir_ops_post_specialize,
         )?;
@@ -355,7 +366,13 @@ pub fn compile_with_stats(
         .map(|f| hir::count_ops(&f.body))
         .sum();
 
-    let inlined = inline_program_full(&spec.functions, entry, Some(&built.reg), Some(&built.db))
+    // Drop unused function arguments across the program. Runs
+    // after spec-monomorph so per-variant usage info (post
+    // domain-propagation) drives elision. See
+    // `crates/hir/src/arg_elide.rs`.
+    let (trimmed, elide_stats) = elide_unused_args_with_stats(spec.functions, entry);
+
+    let inlined = inline_program_full(&trimmed, entry, Some(&built.reg), Some(&built.db))
         .map_err(|e| format!("inline: {}", e))?;
     let hir_ops_post_inline = hir::count_ops(&inlined.body);
 
@@ -379,6 +396,8 @@ pub fn compile_with_stats(
         specialized_variants,
         hir_ops_pre_inline,
         hir_ops_post_spec_mono,
+        arg_elide_dropped_cells: elide_stats.dropped_cells,
+        arg_elide_functions_trimmed: elide_stats.functions_trimmed,
         hir_ops_post_inline,
         hir_ops_post_specialize,
         mir_ops,
@@ -539,7 +558,12 @@ pub fn compile(
     // (base_sig, arg_domains). The fns map grows; the inliner
     // picks the tighter body at each call site.
     let spec = specialize_monomorph(built.hir, entry);
-    let inlined = inline_program_full(&spec.functions, entry, Some(&built.reg), Some(&built.db))
+    // Drop unused function arguments across the program (see
+    // `crates/hir/src/arg_elide.rs`). Runs post-spec so
+    // domain-propagation-driven constant folding has already had
+    // its chance to reveal newly-unused params.
+    let trimmed = elide_unused_args(spec.functions, entry);
+    let inlined = inline_program_full(&trimmed, entry, Some(&built.reg), Some(&built.db))
         .map_err(|e| format!("inline: {}", e))?;
     // Post-inline sweep: flow-sensitive const propagation + match
     // folding, followed by dead-store elimination (overwrite-based)

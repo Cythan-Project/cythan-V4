@@ -1,3 +1,4 @@
+pub mod arg_elide;
 pub mod array_synth;
 pub mod call_graph;
 pub mod error;
@@ -15,6 +16,10 @@ pub mod text_dump;
 #[cfg(test)]
 mod tests;
 
+pub use arg_elide::{
+    elide_unused_args, elide_unused_args_with_stats, summarize as summarize_arg_usage, ElideStats,
+    FnSummary,
+};
 pub use array_synth::{ArrayMonomorphCache, ArraySpec};
 pub use call_graph::{build_call_graph, CallGraph};
 pub use error::HirError;
