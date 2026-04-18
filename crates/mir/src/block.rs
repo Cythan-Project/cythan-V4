@@ -92,13 +92,18 @@ impl MirCodeBlock {
         .unwrap();
         after
     } */
-    #[allow(dead_code)]
+    /// Total MIR ops, recursively counting nested blocks (loops,
+    /// match arms, if branches). Useful for pipeline-stage stats —
+    /// shallow `.0.len()` under-counts deeply-nested programs.
     pub fn instr_count(&self) -> usize {
         self.0
             .iter()
             .map(|x| match x {
                 Mir::If0(_, a, b) => a.instr_count() + b.instr_count() + 1,
                 Mir::Loop(a) | Mir::Block(a) => 1 + a.instr_count(),
+                Mir::Match(_, arms) => {
+                    1 + arms.iter().map(|(blk, _)| blk.instr_count()).sum::<usize>()
+                }
                 _ => 1,
             })
             .sum()

@@ -19,7 +19,7 @@ pub use error::HirError;
 pub use gen::{gen_function, gen_function_with_natives};
 pub use inline::{hir_to_mir, inline_program, inline_program_full};
 pub use interp::{CapturedIo, InterpError, Interpreter, IoContext};
-pub use ir::{ConcreteTemplateArg, ConcreteType, FnRef, HirBlock, HirFunction, HirOp, SlotId};
+pub use ir::{count_ops, ConcreteTemplateArg, ConcreteType, FnRef, HirBlock, HirFunction, HirOp, SlotId};
 pub use monomorph::{monomorphize, MonomorphKey};
 pub use natives::{BuiltinNatives, NativeCall, NativeEmitter, NativeProvider};
 pub use opt::{optimize_block, optimize_function};

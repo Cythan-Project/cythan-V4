@@ -246,6 +246,15 @@ pub fn mir_to_text(block: &MirCodeBlock) -> String {
         .join("\n")
 }
 
+/// Lower a MIR block to LIR *without* running the LIR optimizer.
+/// Useful when you want to show pre-opt counts for pipeline stats;
+/// production paths should use `mir_to_lir`.
+pub fn mir_to_lir_raw(block: &MirCodeBlock) -> Vec<CompilableInstruction> {
+    let mut state = MirState::default();
+    block.to_asm(&mut state);
+    state.instructions
+}
+
 /// Lower a MIR block to the LIR (flat `Vec<CompilableInstruction>`).
 /// Runs the LIR optimizer (`opt_asm`) afterwards so callers see the
 /// same form the bytecode compiler uses.
@@ -254,6 +263,97 @@ pub fn mir_to_lir(block: &MirCodeBlock) -> Vec<CompilableInstruction> {
     block.to_asm(&mut state);
     state.opt_asm();
     state.instructions
+}
+
+// ---- pipeline-stage stats -------------------------------------------------
+
+/// Per-stage instruction / word counts collected during `compile`.
+/// Rendered by `Display` as a Rust-style multi-line summary the
+/// `build` and `run` CLI commands print before the artefact reports.
+#[derive(Debug, Clone, Default)]
+pub struct PipelineStats {
+    /// Number of HIR functions the generator produced.
+    pub hir_functions: usize,
+    /// Sum of HIR ops across every generated function, pre-inline.
+    pub hir_ops_pre_inline: usize,
+    /// HIR ops in the flattened program after inlining + monomorph.
+    pub hir_ops_post_inline: usize,
+    /// MIR ops after `hir_to_mir` (no MIR opt yet in the new pipeline).
+    pub mir_ops: usize,
+    /// LIR instructions straight out of `to_asm`, before `opt_asm`.
+    pub lir_instructions_pre_opt: usize,
+    /// LIR instructions after `opt_asm`.
+    pub lir_instructions_post_opt: usize,
+    /// Bytecode word count. `None` when the caller didn't compile
+    /// all the way down (e.g. `check` stops at HIR gen).
+    pub bytecode_words: Option<usize>,
+}
+
+impl std::fmt::Display for PipelineStats {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(
+            f,
+            "HIR: {} function{} — {} ops  →  inlined: {} ops",
+            self.hir_functions,
+            if self.hir_functions == 1 { "" } else { "s" },
+            self.hir_ops_pre_inline,
+            self.hir_ops_post_inline,
+        )?;
+        writeln!(f, "MIR: {} ops", self.mir_ops)?;
+        let saved = self
+            .lir_instructions_pre_opt
+            .saturating_sub(self.lir_instructions_post_opt);
+        writeln!(
+            f,
+            "LIR: {} → {} instructions  (opt_asm removed {})",
+            self.lir_instructions_pre_opt, self.lir_instructions_post_opt, saved,
+        )?;
+        if let Some(words) = self.bytecode_words {
+            writeln!(f, "Cythan bytecode: {} words", words)?;
+        }
+        Ok(())
+    }
+}
+
+/// Compile-with-stats variant. Same as `compile` but also returns
+/// counts from each pipeline stage (pre/post inline, MIR, pre/post
+/// LIR opt). The CLI surfaces these so developers can eyeball how
+/// much the LIR peephole buys them and how many HIR ops a program
+/// actually expands to after inlining.
+pub fn compile_with_stats(
+    files: &[(&str, String)],
+    entry: &typer::FnSig,
+) -> Result<(MirCodeBlock, PipelineStats), String> {
+    let built = build_hir(files)?;
+    let hir_functions = built.hir.len();
+    let hir_ops_pre_inline: usize = built
+        .hir
+        .values()
+        .map(|f| hir::count_ops(&f.body))
+        .sum();
+
+    let inlined = inline_program_full(&built.hir, entry, Some(&built.reg), Some(&built.db))
+        .map_err(|e| format!("inline: {}", e))?;
+    let hir_ops_post_inline = hir::count_ops(&inlined.body);
+
+    let mir = hir_to_mir(&inlined.body).map_err(|e| format!("mir: {}", e))?;
+    let mir_ops = mir.instr_count();
+
+    let lir_pre = mir_to_lir_raw(&mir);
+    let lir_instructions_pre_opt = lir_pre.len();
+    let lir = mir_to_lir(&mir);
+    let lir_instructions_post_opt = lir.len();
+
+    let stats = PipelineStats {
+        hir_functions,
+        hir_ops_pre_inline,
+        hir_ops_post_inline,
+        mir_ops,
+        lir_instructions_pre_opt,
+        lir_instructions_post_opt,
+        bytecode_words: None,
+    };
+    Ok((mir, stats))
 }
 
 /// Render LIR as text — one instruction per line, using

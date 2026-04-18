@@ -178,7 +178,8 @@ fn run_build(
         .map(String::from)
         .unwrap_or_else(|| file_stem(file));
     let entry = typer::FnSig::new(&entry_type, entry_method);
-    let mir = new_pipeline::compile(&refs, &entry).unwrap_or_else(|e| die(&e));
+    let (mir, mut stats) =
+        new_pipeline::compile_with_stats(&refs, &entry).unwrap_or_else(|e| die(&e));
 
     if let Some(path) = mir_out {
         std::fs::write(path, new_pipeline::mir_to_text(&mir))
@@ -209,6 +210,7 @@ fn run_build(
         }
         if let Some(path) = cythan_out {
             let bytecode = new_pipeline::lir_to_bytecode(lir);
+            stats.bytecode_words = Some(bytecode.len());
             std::fs::write(path, new_pipeline::bytecode_to_text(&bytecode))
                 .unwrap_or_else(|e| die(&format!("write {}: {}", path.display(), e)));
             eprintln!(
@@ -220,6 +222,9 @@ fn run_build(
             );
         }
     }
+
+    eprintln!("\n-- pipeline stats --");
+    eprint!("{}", stats);
 }
 
 // ---- run -----------------------------------------------------------------
@@ -238,10 +243,14 @@ fn run_program(
     let files = gather_or_die(std_dir, file);
     let refs: Vec<(&str, String)> = files.iter().map(|(n, s)| (n.as_str(), s.clone())).collect();
     let entry = typer::FnSig::new(&entry_type, entry_method);
-    let mir = new_pipeline::compile(&refs, &entry).unwrap_or_else(|e| die(&e));
+    let (mir, stats) =
+        new_pipeline::compile_with_stats(&refs, &entry).unwrap_or_else(|e| die(&e));
+
+    eprintln!("-- pipeline stats --");
+    eprint!("{}", stats);
 
     eprintln!(
-        "running {}::{} on backend `{}`",
+        "\nrunning {}::{} on backend `{}`",
         entry_type, entry_method, backend
     );
     match backend {
@@ -255,6 +264,7 @@ fn run_program(
         Backend::Lir | Backend::Cythan => {
             let lir = new_pipeline::mir_to_lir(&mir);
             let bytecode = new_pipeline::lir_to_bytecode(lir);
+            eprintln!("Cythan bytecode: {} words", bytecode.len());
             let (steps, _) = cythan_driver::run_context::run_bin(&bytecode, mir::StdIoContext);
             eprintln!("done ({} VM steps)", steps);
         }

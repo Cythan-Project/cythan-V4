@@ -68,6 +68,21 @@ impl HirOp {
     }
 }
 
+/// Total HIR ops in a block, recursively counting every nested
+/// block (loop bodies, match arms, if-zero arms, call args — just
+/// op nodes, not slot references).
+pub fn count_ops(block: &HirBlock) -> usize {
+    block.ops.iter().map(count_op).sum()
+}
+
+fn count_op(op: &HirOp) -> usize {
+    match op {
+        HirOp::Loop(b) | HirOp::Block(b) => 1 + count_ops(b),
+        HirOp::Match(_, arms) => 1 + arms.iter().map(|(b, _)| count_ops(b)).sum::<usize>(),
+        _ => 1,
+    }
+}
+
 /// A block carries an optional `result_slot`, used for expression-based
 /// semantics: the last expression in the block copies its value into
 /// `result_slot`. For statement-only blocks, `result_slot` is `None`.

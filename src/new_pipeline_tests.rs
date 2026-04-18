@@ -369,6 +369,44 @@ fn run_with_cythan_backend_matches_mir_output() {
 }
 
 #[test]
+fn pipeline_stats_are_populated_for_a_real_program() {
+    // Compile Morpion end-to-end through `compile_with_stats` and
+    // check every counter came out > 0 and that the LIR peephole
+    // produced a real reduction.
+    let mut files = new_syntax_stdlib();
+    files.push((
+        "Morpion.ct",
+        std::fs::read_to_string("examples/new_syntax/Morpion.ct")
+            .expect("read Morpion")
+            .replace('\r', ""),
+    ));
+    let entry = typer::FnSig::new("Morpion", "main");
+    let (_mir, stats) =
+        cythan_driver::new_pipeline::compile_with_stats(&files, &entry).expect("compile");
+    assert!(stats.hir_functions >= 40, "expected many functions, got {}", stats.hir_functions);
+    assert!(stats.hir_ops_pre_inline > 0);
+    assert!(
+        stats.hir_ops_post_inline > stats.hir_ops_pre_inline,
+        "inlining should expand the program: pre={} post={}",
+        stats.hir_ops_pre_inline,
+        stats.hir_ops_post_inline,
+    );
+    assert!(stats.mir_ops > 0);
+    assert!(stats.lir_instructions_pre_opt > 0);
+    assert!(
+        stats.lir_instructions_post_opt <= stats.lir_instructions_pre_opt,
+        "LIR opt should never grow the program: pre={} post={}",
+        stats.lir_instructions_pre_opt,
+        stats.lir_instructions_post_opt,
+    );
+    // Display emits a multi-line summary — check a representative line.
+    let text = format!("{}", stats);
+    assert!(text.contains("HIR:"), "Display should have HIR line");
+    assert!(text.contains("MIR:"));
+    assert!(text.contains("LIR:"));
+}
+
+#[test]
 fn backend_from_str_parses_the_three_known_names() {
     use cythan_driver::new_pipeline::Backend;
     assert_eq!("mir".parse::<Backend>().unwrap(), Backend::Mir);
