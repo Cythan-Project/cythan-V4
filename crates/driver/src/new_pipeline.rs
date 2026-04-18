@@ -16,7 +16,8 @@ use hir::{
     elide_redundant_mut, elide_redundant_mut_with_stats, elide_unused_args,
     elide_unused_args_with_stats, eliminate_dead_writes, gen_function_with_natives, hir_to_mir,
     inline_program_full, optimize_block, specialize_monomorph, specialize_to_fixpoint, text_dump,
-    BuiltinNatives, HirFunction, SlotId,
+    unroll_loops, unroll_loops_with_stats, BuiltinNatives, HirFunction, SlotId,
+    DEFAULT_UNROLL_FACTOR,
 };
 use lir::CompilableInstruction;
 use mir::{MemoryState, MirCodeBlock, MirState};
@@ -301,6 +302,12 @@ pub struct PipelineStats {
     pub arg_elide_functions_trimmed: u32,
     /// HIR ops in the flattened program after inlining + monomorph.
     pub hir_ops_post_inline: usize,
+    /// Number of innermost `Loop` ops whose body got duplicated
+    /// by the unroll pass (`crates/hir/src/unroll.rs`).
+    pub loops_unrolled: u32,
+    /// HIR ops added by unrolling (sum of `body_ops * (factor-1)`
+    /// across every unrolled loop).
+    pub unroll_ops_added: u32,
     /// HIR ops after the flow-sensitive specialization cleanup
     /// pass. `<=` `hir_ops_post_inline`.
     pub hir_ops_post_specialize: usize,
@@ -319,7 +326,7 @@ impl std::fmt::Display for PipelineStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(
             f,
-            "HIR: {} fn — {} ops  →  spec-mono: +{} variant{}, {} ops  →  mut-elide: −{} mut  →  arg-elide: −{} cell{} ({} fn)  →  inlined: {} ops  →  cleanup: {} ops",
+            "HIR: {} fn — {} ops  →  spec-mono: +{} variant{}, {} ops  →  mut-elide: −{} mut  →  arg-elide: −{} cell{} ({} fn)  →  inlined: {} ops  →  unroll: {} loops (+{} ops)  →  cleanup: {} ops",
             self.hir_functions,
             self.hir_ops_pre_inline,
             self.specialized_variants,
@@ -330,6 +337,8 @@ impl std::fmt::Display for PipelineStats {
             if self.arg_elide_dropped_cells == 1 { "" } else { "s" },
             self.arg_elide_functions_trimmed,
             self.hir_ops_post_inline,
+            self.loops_unrolled,
+            self.unroll_ops_added,
             self.hir_ops_post_specialize,
         )?;
         writeln!(f, "MIR: {} ops", self.mir_ops)?;
@@ -393,7 +402,13 @@ pub fn compile_with_stats(
         .map_err(|e| format!("inline: {}", e))?;
     let hir_ops_post_inline = hir::count_ops(&inlined.body);
 
-    let specialized_body = specialize_to_fixpoint(inlined.body.clone());
+    // Unroll innermost loops before the cleanup passes so that
+    // domain-based specialization + constant folding + LVA all
+    // get to see + fold across the duplicated bodies (see
+    // `crates/hir/src/unroll.rs`).
+    let (unrolled_body, unroll_stats) =
+        unroll_loops_with_stats(inlined.body.clone(), DEFAULT_UNROLL_FACTOR);
+    let specialized_body = specialize_to_fixpoint(unrolled_body);
     let cleaned_body = optimize_block(specialized_body);
     let live_at_exit = output_slots_of(&inlined.sig);
     let lva_body = eliminate_dead_writes(cleaned_body, &live_at_exit);
@@ -417,6 +432,8 @@ pub fn compile_with_stats(
         arg_elide_dropped_cells: elide_stats.dropped_cells,
         arg_elide_functions_trimmed: elide_stats.functions_trimmed,
         hir_ops_post_inline,
+        loops_unrolled: unroll_stats.loops_unrolled,
+        unroll_ops_added: unroll_stats.ops_added,
         hir_ops_post_specialize,
         mir_ops,
         lir_instructions_pre_opt,
@@ -592,12 +609,13 @@ pub fn compile(
     let trimmed = elide_unused_args(demut, entry);
     let inlined = inline_program_full(&trimmed, entry, Some(&reg), Some(&db))
         .map_err(|e| format!("inline: {}", e))?;
-    // Post-inline sweep: flow-sensitive const propagation + match
-    // folding, followed by dead-store elimination (overwrite-based)
-    // and liveness-based dead-write elimination. LVA catches
-    // writes that are never read at all — not just ones
-    // immediately overwritten.
-    let specialized = specialize_to_fixpoint(inlined.body);
+    // Post-inline sweep: loop unrolling, flow-sensitive const
+    // propagation + match folding, dead-store elimination
+    // (overwrite-based), and liveness-based dead-write
+    // elimination. Unroll goes first so specialize + LVA see
+    // the duplicated bodies and can fold + clean across copies.
+    let unrolled = unroll_loops(inlined.body, DEFAULT_UNROLL_FACTOR);
+    let specialized = specialize_to_fixpoint(unrolled);
     let cleaned = optimize_block(specialized);
     let live_at_exit = output_slots_of(&inlined.sig);
     let lva_cleaned = eliminate_dead_writes(cleaned, &live_at_exit);

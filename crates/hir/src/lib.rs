@@ -13,6 +13,7 @@ pub mod opt;
 pub mod spec_monomorph;
 pub mod specialize;
 pub mod text_dump;
+pub mod unroll;
 
 #[cfg(test)]
 mod tests;
@@ -25,6 +26,7 @@ pub use mut_elide::{
     compute_effective_mutation, elide_redundant_mut, elide_redundant_mut_with_stats,
     summarize_mutation, FnMutationSummary, MutationElideStats,
 };
+pub use unroll::{unroll_loops, unroll_loops_with_stats, UnrollStats, DEFAULT_UNROLL_FACTOR};
 pub use array_synth::{ArrayMonomorphCache, ArraySpec};
 pub use call_graph::{build_call_graph, CallGraph};
 pub use error::HirError;
