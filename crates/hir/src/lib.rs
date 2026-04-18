@@ -8,6 +8,7 @@ pub mod ir;
 pub mod monomorph;
 pub mod natives;
 pub mod opt;
+pub mod specialize;
 pub mod text_dump;
 
 #[cfg(test)]
@@ -23,6 +24,7 @@ pub use ir::{count_ops, ConcreteTemplateArg, ConcreteType, FnRef, HirBlock, HirF
 pub use monomorph::{monomorphize, MonomorphKey};
 pub use natives::{BuiltinNatives, NativeCall, NativeEmitter, NativeProvider};
 pub use opt::{optimize_block, optimize_function};
+pub use specialize::specialize_to_fixpoint;
 
 /// Alias used by the interpreter and inliner for dispatch keys.
 pub type FnSigKey = typer::FnSig;

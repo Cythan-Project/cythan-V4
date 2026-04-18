@@ -12,8 +12,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use hir::{
-    gen_function_with_natives, hir_to_mir, inline_program_full, text_dump, BuiltinNatives,
-    HirFunction,
+    gen_function_with_natives, hir_to_mir, inline_program_full, specialize_to_fixpoint,
+    text_dump, BuiltinNatives, HirFunction,
 };
 use lir::CompilableInstruction;
 use mir::{MemoryState, MirCodeBlock, MirState};
@@ -278,7 +278,10 @@ pub struct PipelineStats {
     pub hir_ops_pre_inline: usize,
     /// HIR ops in the flattened program after inlining + monomorph.
     pub hir_ops_post_inline: usize,
-    /// MIR ops after `hir_to_mir` (no MIR opt yet in the new pipeline).
+    /// HIR ops after the specialization pass (flow-sensitive const
+    /// prop + match folding). `<=` `hir_ops_post_inline`.
+    pub hir_ops_post_specialize: usize,
+    /// MIR ops after `hir_to_mir` (no dedicated MIR opt yet).
     pub mir_ops: usize,
     /// LIR instructions straight out of `to_asm`, before `opt_asm`.
     pub lir_instructions_pre_opt: usize,
@@ -293,11 +296,12 @@ impl std::fmt::Display for PipelineStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(
             f,
-            "HIR: {} function{} — {} ops  →  inlined: {} ops",
+            "HIR: {} function{} — {} ops  →  inlined: {} ops  →  specialized: {} ops",
             self.hir_functions,
             if self.hir_functions == 1 { "" } else { "s" },
             self.hir_ops_pre_inline,
             self.hir_ops_post_inline,
+            self.hir_ops_post_specialize,
         )?;
         writeln!(f, "MIR: {} ops", self.mir_ops)?;
         let saved = self
@@ -336,7 +340,10 @@ pub fn compile_with_stats(
         .map_err(|e| format!("inline: {}", e))?;
     let hir_ops_post_inline = hir::count_ops(&inlined.body);
 
-    let mir = hir_to_mir(&inlined.body).map_err(|e| format!("mir: {}", e))?;
+    let specialized_body = specialize_to_fixpoint(inlined.body);
+    let hir_ops_post_specialize = hir::count_ops(&specialized_body);
+
+    let mir = hir_to_mir(&specialized_body).map_err(|e| format!("mir: {}", e))?;
     let mir_ops = mir.instr_count();
 
     let lir_pre = mir_to_lir_raw(&mir);
@@ -348,6 +355,7 @@ pub fn compile_with_stats(
         hir_functions,
         hir_ops_pre_inline,
         hir_ops_post_inline,
+        hir_ops_post_specialize,
         mir_ops,
         lir_instructions_pre_opt,
         lir_instructions_post_opt,
@@ -504,7 +512,11 @@ pub fn compile(
     let built = build_hir(files)?;
     let inlined = inline_program_full(&built.hir, entry, Some(&built.reg), Some(&built.db))
         .map_err(|e| format!("inline: {}", e))?;
-    hir_to_mir(&inlined.body).map_err(|e| format!("mir: {}", e))
+    // Specialization pass: flow-sensitive const propagation + match
+    // folding on the inlined body. Noticeable savings on programs
+    // with many `if_zero(const, ...)` patterns (most of them).
+    let specialized = specialize_to_fixpoint(inlined.body);
+    hir_to_mir(&specialized).map_err(|e| format!("mir: {}", e))
 }
 
 /// Default MIR-step ceiling for test harnesses. Every interaction

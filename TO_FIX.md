@@ -134,6 +134,51 @@ Error: [E0001] cannot find type `Fooo` in this scope
 **Tests.** `crates/hir/src/tests/diagnostic_tests.rs` covers every
 error kind listed above plus both rendering modes — 9 tests.
 
+## HIR specialization pass — DONE
+
+Flow-sensitive constant propagation + match folding on the inlined
+HIR body. Runs in `hir::specialize::specialize_to_fixpoint` —
+wired into `new_pipeline::compile` between
+`inline_program_full` and `hir_to_mir`.
+
+**What it folds:**
+1. **Constant propagation through `Copy`.** `Set(s0, 7); Copy(s1, s0)`
+   → `Set(s0, 7); Set(s1, 7)`.
+2. **`Inc` / `Dec` on known slots.** The tracked value updates, so
+   later reads still benefit.
+3. **`Match` folding on known scrutinees.** The matching arm's body
+   is spliced in place; other arms are dropped.
+4. **Arm-local scrutinee knowledge.** Inside an arm whose values
+   list is a singleton (e.g. the `[0]` arm of `if_zero`), the
+   scrutinee is tracked as that value for that arm only. Lets
+   nested `if_zero(s0, …)` patterns that recur inside the `then`
+   branch fold away.
+5. **`WriteRegister` on known source.** `Set(s0, 7);
+   WriteRegister(1, slot=s0)` → `WriteRegister(1, literal=7)`.
+
+**Loop / Call / Block boundaries** clear the context of every slot
+mutated inside them — a safe over-approximation. Joining match
+arms' post-states could preserve more knowledge (a future
+extension).
+
+**Impact on the games benchmark** (Cythan VM step count):
+
+| scenario                 | pre-specialize | post-specialize |       Δ |
+|--------------------------|---------------:|----------------:|--------:|
+| chess fool_mate_4158     |        555,158 |         554,486 |    −672 |
+| morpion cats_game        |        125,937 |         124,278 |  −1,659 |
+| morpion diagonal_o_wins  |         98,250 |          97,053 |  −1,197 |
+| pendu win_gramire        |        123,103 |         123,103 |       0 |
+| pendu lose_hhhhhh        |         93,357 |          93,357 |       0 |
+
+Bytecode size: Morpion 17,512 → 15,156 words (−13%), Chess 65,458
+→ 61,714 words (−6%).
+
+**Tests:** `crates/hir/src/tests/specialize_tests.rs` — 7 tests
+covering constant propagation, match folding (known zero, known
+non-zero), arm-local knowledge, `Inc`/`Dec` tracking, loop-boundary
+conservatism, and literal-WriteRegister collapse.
+
 ## HIR `If0` → unified `Match` — DONE
 
 `HirOp::If0` removed from the IR. All zero-versus-nonzero branching
