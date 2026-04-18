@@ -6,6 +6,9 @@ use cythan_driver::new_pipeline::{self, Backend};
 #[cfg(test)]
 mod new_pipeline_tests;
 
+#[cfg(test)]
+mod bench_games_tests;
+
 #[derive(Parser)]
 #[command(
     name = "cythan",

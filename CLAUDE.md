@@ -102,6 +102,23 @@ the full pipeline (harness + games + toolchain) live in
 program uses `MemoryState::new_with_limit` or `Interpreter::step_limit`
 so a bad loop fails in bounded time.
 
+## Per-commit benchmark
+
+`src/bench_games_tests.rs::bench_games_report` runs the games on the
+Cythan VM and records step counts to `benchmarks/games.txt`. Gated
+behind `#[ignore]` (≈60s per run). Regenerate before a commit so the
+diff shows how the change moved the numbers:
+
+```bash
+cargo test --bin cythan-v4 bench_games_report -- --ignored --nocapture
+git add benchmarks/games.txt
+```
+
+Columns: `game`, `scenario`, `vm_steps` (Cythan VM instructions
+executed), `out_bytes` (captured transcript length), `bytecode_words`
+(size of the compiled program). Scenarios sort `(game, scenario)` for
+line-level diffs.
+
 ## File Formats
 
 - `.ct`  — Cythan source.
