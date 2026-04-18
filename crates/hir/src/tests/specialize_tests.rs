@@ -154,6 +154,129 @@ fn loop_boundary_clears_known_values() {
 }
 
 #[test]
+fn nested_if_zero_in_else_arm_folds_to_else_body() {
+    // if_zero(s0,
+    //   then = [],
+    //   else = [ if_zero(s0, then=[Set(s1,10)], else=[Set(s1,99)]) ],
+    // )
+    // In the outer `else` arm, s0 ∈ {1..=15}. The nested `if_zero`
+    // on the same slot can prove its `then` arm (`s0 == 0`) dead,
+    // so the whole nested match specializes to just its `else`
+    // body: Set(s1, 99).
+    let input = blk(vec![if_zero(
+        sid(0),
+        vec![], // then: nothing
+        vec![if_zero(
+            sid(0),
+            vec![HirOp::Set(sid(1), 10)],
+            vec![HirOp::Set(sid(1), 99)],
+        )],
+    )]);
+    let out = specialize_to_fixpoint(input);
+    // The outer Match survives (scrutinee unknown at entry), but
+    // its `else` arm body should no longer contain any Match —
+    // only the `Set(s1, 99)` from the spliced inner `else`.
+    let HirOp::Match(_, arms) = &out.ops[0] else {
+        panic!("expected outer Match to survive");
+    };
+    let else_arm = &arms[1].0;
+    assert!(
+        !else_arm.ops.iter().any(|op| matches!(op, HirOp::Match(..))),
+        "nested if_zero should have folded in the else arm: {:#?}",
+        else_arm.ops
+    );
+    assert!(
+        else_arm.ops.iter().any(|op| matches!(op, HirOp::Set(SlotId(1), 99))),
+        "expected Set(s1, 99) from the nested else arm"
+    );
+    assert!(
+        !else_arm.ops.iter().any(|op| matches!(op, HirOp::Set(SlotId(1), 10))),
+        "Set(s1, 10) from the dead nested then arm must be gone"
+    );
+}
+
+#[test]
+fn match_arm_with_unreachable_values_is_pruned() {
+    // Set(s0, 0) → s0 is known {0}. A Match with arms
+    // `[3]` (dead) and `[0,1,2]` should drop the first arm.
+    let input = blk(vec![
+        HirOp::Set(sid(0), 0),
+        HirOp::Match(
+            sid(0),
+            vec![
+                (blk(vec![HirOp::Set(sid(1), 30)]), vec![3]),
+                (blk(vec![HirOp::Set(sid(1), 99)]), vec![0, 1, 2]),
+            ],
+        ),
+    ]);
+    let out = specialize_to_fixpoint(input);
+    // The 0 arm entirely contains {0}, so it fires — the pass
+    // splices its body (Set(s1, 99)) in place and drops the Match.
+    assert!(
+        out.ops.iter().any(|op| matches!(op, HirOp::Set(SlotId(1), 99))),
+        "spliced body missing"
+    );
+    assert!(
+        out.ops.iter().all(|op| !matches!(op, HirOp::Set(SlotId(1), 30))),
+        "dead arm survived"
+    );
+}
+
+#[test]
+fn forbidden_value_narrows_intersecting_arms() {
+    // Enter the `else` arm of an if_zero, where s0 ∈ {1..=15}.
+    // Inside, a Match(s0, [[0, 5], [10]]) has an arm `[0, 5]` —
+    // intersected with {1..=15} that's just `{5}`, but the pass
+    // doesn't rewrite value lists (arm shapes stay). It just
+    // confirms no arm is entirely dead: both `[0, 5]` and `[10]`
+    // intersect {1..=15}, so both survive.
+    //
+    // The interesting part: add an arm `[0]` — wholly outside
+    // {1..=15} — and watch it disappear.
+    let input = blk(vec![if_zero(
+        sid(0),
+        vec![], // then
+        vec![HirOp::Match(
+            sid(0),
+            vec![
+                (blk(vec![HirOp::Set(sid(1), 1)]), vec![0]), // dead
+                (blk(vec![HirOp::Set(sid(1), 2)]), vec![7]),
+                (blk(vec![HirOp::Set(sid(1), 3)]), vec![0, 10]), // intersects
+            ],
+        )],
+    )]);
+    let out = specialize_to_fixpoint(input);
+    // The outer Match survives; look into its else arm.
+    let HirOp::Match(_, arms) = &out.ops[0] else {
+        panic!("outer Match expected");
+    };
+    let else_body = &arms[1].0;
+    // Find the inner Match — it should have 2 arms now (first dead).
+    let inner = else_body
+        .ops
+        .iter()
+        .find_map(|op| match op {
+            HirOp::Match(_, a) => Some(a),
+            _ => None,
+        })
+        .expect("inner Match should survive");
+    assert_eq!(
+        inner.len(),
+        2,
+        "one dead arm should have been pruned; got {:#?}",
+        inner
+    );
+    // The remaining arm bodies must include both Set(s1,2) and Set(s1,3).
+    let has_2 = inner
+        .iter()
+        .any(|(b, _)| b.ops.iter().any(|op| matches!(op, HirOp::Set(SlotId(1), 2))));
+    let has_3 = inner
+        .iter()
+        .any(|(b, _)| b.ops.iter().any(|op| matches!(op, HirOp::Set(SlotId(1), 3))));
+    assert!(has_2 && has_3);
+}
+
+#[test]
 fn write_register_with_known_slot_collapses_to_literal() {
     // Set(s0, 7); WriteRegister(1, slot=s0)
     //   →  Set(s0, 7); WriteRegister(1, literal=7)

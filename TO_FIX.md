@@ -134,32 +134,48 @@ Error: [E0001] cannot find type `Fooo` in this scope
 **Tests.** `crates/hir/src/tests/diagnostic_tests.rs` covers every
 error kind listed above plus both rendering modes — 9 tests.
 
-## HIR specialization pass — DONE
+## HIR specialization pass — DONE (domain tracking)
 
-Flow-sensitive constant propagation + match folding on the inlined
-HIR body. Runs in `hir::specialize::specialize_to_fixpoint` —
-wired into `new_pipeline::compile` between
-`inline_program_full` and `hir_to_mir`.
+Flow-sensitive **domain** propagation + match folding on the inlined
+HIR body. Runs in `hir::specialize::specialize_to_fixpoint` — wired
+into `new_pipeline::compile` between `inline_program_full` and
+`hir_to_mir`.
+
+The pass tracks, per slot, the **set of possible u4 values** as a
+16-bit bitmask (`Domain(u16)`). Default is `Domain::ALL` — we know
+nothing. Bits get cleared as the pass moves through ops; arms
+whose value lists don't intersect the scrutinee's domain are
+pruned from the `Match` entirely; arms that fully contain the
+scrutinee's domain get their body spliced in place.
 
 **What it folds:**
-1. **Constant propagation through `Copy`.** `Set(s0, 7); Copy(s1, s0)`
-   → `Set(s0, 7); Set(s1, 7)`.
-2. **`Inc` / `Dec` on known slots.** The tracked value updates, so
-   later reads still benefit.
-3. **`Match` folding on known scrutinees.** The matching arm's body
-   is spliced in place; other arms are dropped.
-4. **Arm-local scrutinee knowledge.** Inside an arm whose values
-   list is a singleton (e.g. the `[0]` arm of `if_zero`), the
-   scrutinee is tracked as that value for that arm only. Lets
-   nested `if_zero(s0, …)` patterns that recur inside the `then`
-   branch fold away.
-5. **`WriteRegister` on known source.** `Set(s0, 7);
+1. **Constant propagation through `Copy`.** `Set(s0, 7);
+   Copy(s1, s0)` → `Set(s0, 7); Set(s1, 7)` (Domain collapses to
+   a singleton, then `Copy` → `Set`).
+2. **`Inc` / `Dec` on known slots.** The whole bitmask shifts by
+   one with wrap-around, so even non-singleton domains get
+   refined.
+3. **`Match` folding on contained scrutinee.** When the scrutinee's
+   domain is a subset of some arm's values, that arm always fires
+   and is spliced in; the rest of the `Match` is dropped.
+4. **Dead-arm pruning.** Arms whose value set doesn't overlap the
+   current scrutinee domain vanish from the `Match`. Example: in
+   the `else` arm of an outer `if_zero(s0, …)`, `s0 ∈ {1..=15}`;
+   a nested `Match(s0, [[0, 5], [10]])` drops the `[0]`-only arm
+   and narrows `[0, 5]` effectively to `{5}`.
+5. **Arm-local domain narrowing.** Entering an arm narrows the
+   scrutinee domain to that arm's values. `if x == 0 { if x == 0 { … } }`
+   collapses at the first fixpoint round — the inner match's
+   domain is `{0}`, wholly in the `[0]` arm, so the body is
+   spliced.
+6. **`WriteRegister` on known source.** `Set(s0, 7);
    WriteRegister(1, slot=s0)` → `WriteRegister(1, literal=7)`.
 
 **Loop / Call / Block boundaries** clear the context of every slot
-mutated inside them — a safe over-approximation. Joining match
-arms' post-states could preserve more knowledge (a future
-extension).
+mutated inside them — a safe over-approximation. Arm join after
+a `Match` clears only slots some arm mutated; untouched slots'
+domains survive. Joining arms' post-states into a union of
+domains (instead of clearing) is a future extension.
 
 **Impact on the games benchmark** (Cythan VM step count):
 
@@ -174,10 +190,15 @@ extension).
 Bytecode size: Morpion 17,512 → 15,156 words (−13%), Chess 65,458
 → 61,714 words (−6%).
 
-**Tests:** `crates/hir/src/tests/specialize_tests.rs` — 7 tests
-covering constant propagation, match folding (known zero, known
-non-zero), arm-local knowledge, `Inc`/`Dec` tracking, loop-boundary
-conservatism, and literal-WriteRegister collapse.
+**Tests:** `crates/hir/src/tests/specialize_tests.rs` — 10 tests
+covering constant propagation, match folding, arm-local
+knowledge, `Inc`/`Dec` tracking, loop-boundary conservatism,
+literal-WriteRegister collapse, nested-`if_zero`-in-else
+folding, and unreachable-arm pruning.
+
+Plus 6 unit tests on the `Domain` helper itself
+(singleton / from_values / inc / dec / intersect / subset) in
+`hir::specialize::domain_tests`.
 
 ## HIR `If0` → unified `Match` — DONE
 
