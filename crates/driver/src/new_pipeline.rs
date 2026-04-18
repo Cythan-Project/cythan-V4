@@ -12,8 +12,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use hir::{
-    gen_function_with_natives, hir_to_mir, inline_program_full, specialize_to_fixpoint,
-    text_dump, BuiltinNatives, HirFunction,
+    gen_function_with_natives, hir_to_mir, inline_program_full, specialize_monomorph,
+    specialize_to_fixpoint, text_dump, BuiltinNatives, HirFunction,
 };
 use lir::CompilableInstruction;
 use mir::{MemoryState, MirCodeBlock, MirState};
@@ -274,12 +274,20 @@ pub fn mir_to_lir(block: &MirCodeBlock) -> Vec<CompilableInstruction> {
 pub struct PipelineStats {
     /// Number of HIR functions the generator produced.
     pub hir_functions: usize,
-    /// Sum of HIR ops across every generated function, pre-inline.
+    /// Specialized variants minted by the pre-inline specialization
+    /// monomorphizer. `functions + specialized_variants` is the
+    /// total bodies the inliner saw.
+    pub specialized_variants: usize,
+    /// Sum of HIR ops across every generated function, pre-inline
+    /// and pre-specialization.
     pub hir_ops_pre_inline: usize,
+    /// Sum of HIR ops across every function *after* the pre-inline
+    /// specialization monomorphizer (grows with new variants).
+    pub hir_ops_post_spec_mono: usize,
     /// HIR ops in the flattened program after inlining + monomorph.
     pub hir_ops_post_inline: usize,
-    /// HIR ops after the specialization pass (flow-sensitive const
-    /// prop + match folding). `<=` `hir_ops_post_inline`.
+    /// HIR ops after the flow-sensitive specialization cleanup
+    /// pass. `<=` `hir_ops_post_inline`.
     pub hir_ops_post_specialize: usize,
     /// MIR ops after `hir_to_mir` (no dedicated MIR opt yet).
     pub mir_ops: usize,
@@ -296,10 +304,12 @@ impl std::fmt::Display for PipelineStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(
             f,
-            "HIR: {} function{} — {} ops  →  inlined: {} ops  →  specialized: {} ops",
+            "HIR: {} fn — {} ops  →  spec-mono: +{} variant{}, {} ops  →  inlined: {} ops  →  cleanup: {} ops",
             self.hir_functions,
-            if self.hir_functions == 1 { "" } else { "s" },
             self.hir_ops_pre_inline,
+            self.specialized_variants,
+            if self.specialized_variants == 1 { "" } else { "s" },
+            self.hir_ops_post_spec_mono,
             self.hir_ops_post_inline,
             self.hir_ops_post_specialize,
         )?;
@@ -336,7 +346,15 @@ pub fn compile_with_stats(
         .map(|f| hir::count_ops(&f.body))
         .sum();
 
-    let inlined = inline_program_full(&built.hir, entry, Some(&built.reg), Some(&built.db))
+    let spec = specialize_monomorph(built.hir, entry);
+    let specialized_variants = spec.specialized_count;
+    let hir_ops_post_spec_mono: usize = spec
+        .functions
+        .values()
+        .map(|f| hir::count_ops(&f.body))
+        .sum();
+
+    let inlined = inline_program_full(&spec.functions, entry, Some(&built.reg), Some(&built.db))
         .map_err(|e| format!("inline: {}", e))?;
     let hir_ops_post_inline = hir::count_ops(&inlined.body);
 
@@ -353,7 +371,9 @@ pub fn compile_with_stats(
 
     let stats = PipelineStats {
         hir_functions,
+        specialized_variants,
         hir_ops_pre_inline,
+        hir_ops_post_spec_mono,
         hir_ops_post_inline,
         hir_ops_post_specialize,
         mir_ops,
@@ -510,11 +530,15 @@ pub fn compile(
     entry: &typer::FnSig,
 ) -> Result<MirCodeBlock, String> {
     let built = build_hir(files)?;
-    let inlined = inline_program_full(&built.hir, entry, Some(&built.reg), Some(&built.db))
+    // Pre-inline specialization: emits named variants per
+    // (base_sig, arg_domains). The fns map grows; the inliner
+    // picks the tighter body at each call site.
+    let spec = specialize_monomorph(built.hir, entry);
+    let inlined = inline_program_full(&spec.functions, entry, Some(&built.reg), Some(&built.db))
         .map_err(|e| format!("inline: {}", e))?;
-    // Specialization pass: flow-sensitive const propagation + match
-    // folding on the inlined body. Noticeable savings on programs
-    // with many `if_zero(const, ...)` patterns (most of them).
+    // Post-inline sweep: flow-sensitive const propagation + match
+    // folding that can only see across the freshly spliced-in
+    // bodies.
     let specialized = specialize_to_fixpoint(inlined.body);
     hir_to_mir(&specialized).map_err(|e| format!("mir: {}", e))
 }

@@ -161,12 +161,21 @@ fn run_build(
     let refs: Vec<(&str, String)> = files.iter().map(|(n, s)| (n.as_str(), s.clone())).collect();
 
     if let Some(path) = hir_out {
+        // Run specialization too — the dump is more useful when it
+        // shows the specialized variants alongside the base fns.
         let built = new_pipeline::build_hir(&refs).unwrap_or_else(|e| die(&e));
-        std::fs::write(path, new_pipeline::hir_to_text(&built.hir))
+        let entry_type_for_hir = entry_type_override
+            .map(String::from)
+            .unwrap_or_else(|| file_stem(file));
+        let entry = typer::FnSig::new(&entry_type_for_hir, entry_method);
+        let spec = hir::specialize_monomorph(built.hir, &entry);
+        std::fs::write(path, new_pipeline::hir_to_text(&spec.functions))
             .unwrap_or_else(|e| die(&format!("write {}: {}", path.display(), e)));
         eprintln!(
-            "wrote HIR for {} function(s) to {}",
-            built.hir.len(),
+            "wrote HIR for {} function(s) ({} base + {} specialized) to {}",
+            spec.functions.len(),
+            spec.functions.len() - spec.specialized_count,
+            spec.specialized_count,
             path.display()
         );
     }

@@ -137,11 +137,28 @@ impl Ctx {
     }
 }
 
-/// Run the specialization pass to a fixpoint.
-pub fn specialize_to_fixpoint(mut block: HirBlock) -> HirBlock {
+/// Run the specialization pass to a fixpoint with no outer
+/// knowledge — equivalent to `specialize_to_fixpoint_with_domains`
+/// with an empty seed.
+pub fn specialize_to_fixpoint(block: HirBlock) -> HirBlock {
+    specialize_to_fixpoint_with_domains(block, &[])
+}
+
+/// Run the pass to a fixpoint, seeding the initial context with
+/// per-parameter domains. Used by `spec_monomorph` to fold the
+/// freshly-minted specialized variants *before* the inliner splices
+/// them in, so the inlined HIR post-inline is strictly smaller.
+pub fn specialize_to_fixpoint_with_domains(
+    mut block: HirBlock,
+    arg_domains: &[Domain],
+) -> HirBlock {
     for _ in 0..8 {
         let before = block.clone();
-        block = specialize_block(block, &Ctx::default());
+        let mut ctx = Ctx::default();
+        for (i, d) in arg_domains.iter().enumerate() {
+            ctx.put(SlotId(i as u32), *d);
+        }
+        block = specialize_block(block, &ctx);
         if block == before {
             break;
         }

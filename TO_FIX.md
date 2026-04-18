@@ -134,6 +134,67 @@ Error: [E0001] cannot find type `Fooo` in this scope
 **Tests.** `crates/hir/src/tests/diagnostic_tests.rs` covers every
 error kind listed above plus both rendering modes — 9 tests.
 
+## Pre-inline specialization monomorphizer — DONE
+
+Classical specialization: mint one `HirFunction` variant per unique
+`(base_sig, argument_domains)` tuple encountered at call sites.
+Lives in `hir::spec_monomorph`, runs in `new_pipeline::compile`
+between `build_hir` and `inline_program_full`.
+
+**Variant naming** — each variant's method name becomes
+`{original}${dom0},{dom1},…` where each `dom` is the u16 domain
+bitmask in hex. ALL (`*`) is omitted when trailing.
+
+Examples from Morpion:
+```
+fn Morpion::get$*,*,*,*,*,*,*,*,*,1   — self.get(0)  (pos singleton {0})
+fn Morpion::get$*,*,*,*,*,*,*,*,*,2   — self.get(1)  (pos singleton {1})
+fn Morpion::get$*,*,*,*,*,*,*,*,*,4   — self.get(2)
+...
+fn Morpion::get$*,*,*,*,*,*,*,*,*,100 — self.get(8)  (bit 8 = 0x100)
+```
+
+9 of `Morpion::get`'s 9 constant-indexed calls inside `winner()`
+each spawn a distinct specialized variant; same for the other
+ordering helpers. Total on Morpion: **22 specialized variants**
+added alongside 44 base functions.
+
+**Fold-at-creation.** Each variant's body is specialized with
+`specialize_to_fixpoint_with_domains(base.body, &arg_domains)`
+when it's minted, so the stored variant is already shrunken.
+Variant bodies are visible in `cargo run -- build <file> --hir
+out.hir` — useful for debugging.
+
+**Pipeline stats — one stage extra:**
+```
+HIR: 44 fn — 508 ops  →  spec-mono: +22 variants, 652 ops
+              →  inlined: 1923 ops  →  cleanup: 1752 ops
+```
+
+Pre-inline grows (508 → 652, +28%) with the new variants;
+post-inline + cleanup is unchanged because the post-inline
+`specialize_to_fixpoint` was already catching the same folds
+reachable only by inlining each copy with the caller's context.
+
+**Runtime impact on the games benchmark: 0.** The Cythan VM step
+counts and bytecode sizes are byte-identical to the pre-spec-mono
+version. Reason: the flow-sensitive post-inline cleanup already
+catches every fold the pre-inline variant creation enables —
+the two passes are equivalent in output for this codebase, just
+compute the result in different orders.
+
+**What pre-inline specialization *does* win:**
+1. **Debuggability** — variants appear as named functions in HIR
+   dumps, with readable mangles.
+2. **Compile-time efficiency** — a function called N times with
+   the same context is folded once, not N times.
+3. **Cache friendliness** — variants are shareable across
+   compilation units (future incremental compilation).
+
+The runtime-size win would require optimizations the post-inline
+pass can't do (cross-arm domain joins, slot-allocation shrinking,
+multi-return specialization). Those are future work.
+
 ## HIR specialization pass — DONE (domain tracking)
 
 Flow-sensitive **domain** propagation + match folding on the inlined
