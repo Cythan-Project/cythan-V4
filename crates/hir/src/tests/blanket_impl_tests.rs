@@ -70,7 +70,7 @@ fn run_program(extra: &str, entry: &typer::FnSig) -> Vec<u8> {
     struct Null;
     impl mir::RunContext for Null {
         fn input(&mut self) -> u8 { 0 }
-        fn print(&mut self, _: char) {}
+        fn print(&mut self, _: u8) {}
     }
     let mut state = mir::MemoryState::new_with_limit((inlined.slot_count as usize + 64).max(256), 4, 5_000_000);
     let mut ctx = Null;

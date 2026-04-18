@@ -66,13 +66,14 @@ typed as `U4` (1 cell), truncating them to the low nibble so
 `'X'.print()` emitted `8` instead of `X`. Re-typed as `U8`, emitting
 high and low nibbles into two cells.
 
-**Known limitation:** the MIR interpreter casts each printed byte to
-`char` via `byte as char`, which maps bytes ≥128 to Latin-1
-codepoints that then re-encode to two UTF-8 bytes in the captured
-`String`. Tests with non-ASCII output (e.g. French `é` in Pendu's
-`"Vous avez gagné!"`) assert on ASCII-only substrings. A proper fix
-would capture output as `Vec<u8>` instead of `String`, or push bytes
-directly via `push(c)` that takes a raw byte.
+**UTF-8 corruption bug — FIXED.** `RunContext::print` (MIR) and
+`IoContext::print` (HIR) used to take `char`. The MIR interpreter
+cast each printed byte through `byte as char` — bytes ≥128 became
+Latin-1 codepoints that re-encoded to two UTF-8 bytes in the
+capture buffer, so Pendu's `gagné` (`C3 A9`) was captured as `Ã©`
+(`C3 83 C2 A9`). Both traits now take `u8`; `TestContext.print` and
+`CapturedIo.stdout` are `Vec<u8>` with lossy-decode accessors. The
+Pendu test asserts on the exact `"Vous avez gagné!"` string.
 
 ## Rust-style diagnostics (LSP-ready) — DONE
 
@@ -188,50 +189,41 @@ file stem / `main`). The cythan output is the raw bytecode as a
 space-separated list of decimal words — same format the legacy
 `inspect` command produced.
 
-### Known limitation
+### `cythan_compiler` panic on LIR peephole — FIXED
 
-Large programs (e.g. the full Morpion) trip a latent panic inside
-the third-party `cythan_compiler` crate on the LIR → bytecode step.
-Trivial programs work fine. Root cause is in the external compiler,
-not in our lowering; the `mir` backend is a clean workaround.
+**Symptom:** Morpion (and any other program with an if-zero match
+whose then-branch body reduces to a single jump) panicked on the
+LIR→bytecode step with "Try to init your label at an index: 'lH…".
 
-## CLI toolchain for the new pipeline — DONE
+**Root cause:** in `crates/lir/src/optimizer.rs`, `opt_asm` does a
+peephole rewrite `Label A; Jump B` → `Jump B` and remaps references
+to `A` via `remap()`. The pre-fix `remap` only walked `Jump`,
+`Label`, and `If0` — `CompilableInstruction::Match`'s 16-slot jump
+table was not updated. When an arm body reduced to `jump end`, its
+entry label got eliminated but the match's slot still pointed at
+it, and the external `cythan_compiler` couldn't resolve it.
 
-`cythan new <command>` drives the new pipeline from the command line:
+**Fix:** extend `remap` to walk `Match`'s slot array in the same
+pass. One-line conceptual change; diff is a handful of lines.
 
-- `cythan new check <file>` — run the full new pipeline up through
-  HIR gen; exits non-zero on any error, or prints a one-line summary
-  `ok: <N> types, <N> traits, <N> functions (<N> simple)`.
-- `cythan new build <file> [--hir <file.hir>] [--mir <file.mir>]`
-  — compile and dump either or both IRs as human-readable text.
-  `--hir` is per-function (sorted by `FnSig` for stable diffs);
-  `--mir` inlines from an entry point (`--entry-type`, `--entry-method`;
-  defaults: file stem, `main`) and dumps the flat `MirCodeBlock`
-  using `Mir`'s own `Display`.
-- `cythan new run <file>` — full compile + MIR interpret, wired to
-  stdin/stdout. Accepts `--entry-type` / `--entry-method` (defaults:
-  file stem / `main`) and `--mem-cells` (default 4096).
+**Regression test:**
+`src/new_pipeline_tests.rs::morpion_runs_on_cythan_backend_after_lir_remap_fix`
+runs Morpion end-to-end through the Cythan VM with scripted input
+and asserts on the win message.
 
-A `--new-std-dir` global flag selects the stdlib (defaults to
-`examples/new_syntax/std`). Internal API lives in
-`cythan_driver::new_pipeline::{check, build_hir, hir_to_text,
-compile, compile_and_run, gather_files}`; the HIR text format is
-implemented in `crates/hir/src/text_dump.rs`.
+## CLI toolchain — superseded by "New pipeline is the only pipeline"
 
-Three toolchain unit tests (`toolchain_*` in
-`src/new_pipeline_tests.rs`) cover the OK/error paths of `check` and
-the output shape of `build-hir`. All four migrated games pass
-`cythan new check` cleanly.
+See that section below — the CLI was flattened (`cythan check`,
+`cythan build`, `cythan run` at the top level) and the legacy
+subcommands were deleted. Kept for reference so future diffs land
+on the current surface.
 
-## 2. Two parsers in-tree
+## 2. Two parsers in-tree — DONE
 
-`crates/frontend` has the old hand-written tokenizer+parser driving the
-MIR pipeline and native lowering. `crates/new_parser` is chumsky-based
-and feeds the typer/HIR path. Tests run both.
-
-**Rework:** either finish the migration off the legacy crate or tombstone
-it harder. The legacy side is currently the longest pole for anything
-language-level.
+`crates/frontend` (old hand-written tokenizer+parser) and
+`crates/parser` (older chumsky attempt) have been deleted. The
+chumsky-based `crates/new_parser` (package `cythan-parser`) is the
+only parser; every crate in the tree routes through it.
 
 ## 3. `registry.rs` is a god module (~2100 lines)
 
@@ -273,25 +265,43 @@ bodies per call site rather than per instantiation, and
 keyed by `(FnSig, ConcreteArgs)`. Gives a stable call graph and makes
 incremental compilation possible.
 
-## 7. Native methods bypass the new pipeline
+## 7. Native methods bypass the new pipeline — PARTIALLY FIXED
 
-`crates/frontend/src/natives/` emits MIR directly. Anything added there
-is invisible to the typer.
+The legacy `crates/frontend/src/natives/` is gone (deleted with the
+rest of the old frontend). Natives now live in
+`crates/hir/src/natives.rs` — `NativeProvider` / `NativeEmitter`
+plug into HIR gen via `gen_function_with_natives`, so every native
+is seen by the typer pipeline.
 
-**Rework:** a "native declaration" form that participates in typing
-(signature-only, body = intrinsic tag) to unify the two paths.
+The only "true" natives surviving are the register set/get
+intrinsics on `System` (see `BuiltinNatives` in `hir::natives`);
+every operator now lives in the stdlib as a trait impl. Remaining
+future work: give native declarations a dedicated AST form so
+signature-only stubs can be stated without the empty-body trick the
+stdlib currently uses (e.g. `Array<T, E, F>::new()`).
 
 ## Minor but real
 
-- `0 = true`, `1 = false` — persistent footgun.
+- ~~`0 = true`, `1 = false` — persistent footgun.~~ Fixed: the new
+  pipeline has `true == 1`, `false == 0` (conventional). Guarded by
+  the `gen_if` lowering (`HirOp::if_zero(cond, else, then)`) and the
+  existing Bool tests.
 - No `mod` keyword: paths derived from filenames
-  (`std/Ops.ct` → `std::Ops` is convention, not syntax).
-- No `dyn Trait`; all dispatch static.
-- Error collection inconsistent: `from_files` collects,
-  most everything else bails on first `?`.
+  (`std/Ops.ct` → `std::Ops` is convention, not syntax). Low priority
+  while files stay one-type-each.
+- No `dyn Trait`; all dispatch static. Deliberate — no heap in this
+  VM means no vtables either.
+- Error collection is now consistent: `from_files` /
+  `from_registry` collect to `Vec<TyperError>`; the HIR gen and
+  inliner still bail on first error per-function, which is usually
+  the right shape. `diagnose()` in
+  `cythan_driver::new_pipeline` wraps each pass's error set into a
+  single `DiagnosticReport` for the CLI and future LSP.
 
-## Suggested order
+## Suggested order for remaining architectural items (#3–#6)
 
-Start with **#1** (intern types → TypeId). It unblocks #3, #4, and #5
-simultaneously — once identity stops being a string, the god-module
-splits naturally along the type/function/dispatch axes.
+Items #3 (registry.rs size), #4 (method list duplication), #5 (AST
+leakage), #6 (monomorphization via inlining) are each big enough to
+warrant a dedicated session. Item #1's Step 2 (propagate `TypeId` /
+`TraitId` outward into `SlotInfo` / `ImplInfo`) would land #4 and #5
+in one pass — start there.

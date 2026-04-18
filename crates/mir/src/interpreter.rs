@@ -9,7 +9,13 @@ pub struct StdIoContext;
 
 pub trait RunContext {
     fn input(&mut self) -> u8;
-    fn print(&mut self, i: char);
+    /// Consume one byte from the running program. Byte-based (not
+    /// `char`-based) on purpose: MIR WriteRegister(0, 1) emits raw
+    /// bytes, and casting to `char` would promote values ≥ 128 to
+    /// Latin-1 codepoints that UTF-8 re-encoding of `String::push`
+    /// would expand into two bytes — corrupting multi-byte input
+    /// like `é` (C3 A9) into `Ã©` (C3 83 C2 A9).
+    fn print(&mut self, byte: u8);
 }
 
 impl RunContext for StdIoContext {
@@ -19,8 +25,8 @@ impl RunContext for StdIoContext {
         string.bytes().next().unwrap()
     }
 
-    fn print(&mut self, i: char) {
-        print!("{}", i);
+    fn print(&mut self, byte: u8) {
+        std::io::stdout().write_all(&[byte]).unwrap();
         std::io::stdout().flush().unwrap();
     }
 }
@@ -143,8 +149,8 @@ impl MemoryState {
                     if p == 1 {
                         let a = self.registers[1];
                         let b = self.registers[2];
-                        let char = ((a % 16) * 16) + (b % 16);
-                        printer.print(char as char);
+                        let byte = ((a % 16) * 16) + (b % 16);
+                        printer.print(byte);
                     } else if p == 2 {
                         let o: u8 = printer.input();
                         let a = o % 16u8;

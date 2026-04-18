@@ -317,7 +317,7 @@ fn direct_write_register_prints_char() {
             .run(&typer::FnSig::new("Test", "print_a"), &[])
             .expect("interp");
     }
-    assert_eq!(io.stdout, "A");
+    assert_eq!(io.stdout_str(), "A");
 }
 
 #[test]

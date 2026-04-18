@@ -285,6 +285,47 @@ fn toolchain_build_cythan_bytecode_round_trips_to_text() {
     assert_eq!(parsed, bytecode);
 }
 
+/// Regression for the LIR-optimizer bug that crashed Morpion on
+/// the Cythan backend:
+///
+/// `opt_asm` collapses `Label A; Jump B` into `Jump B` and remaps
+/// references to `A` via `remap()`. The pre-fix `remap` only
+/// updated `Jump`, `Label`, and `If0` — `Match`'s 16-slot jump
+/// table was left stale, so any if-zero-shaped match whose
+/// then-branch body reduces to a single jump would point at a
+/// label the emitter never declared. Cythan_compiler then panicked
+/// with "Try to init your label at an index: 'lH…". The fix walks
+/// the `Match` slots in `remap` too.
+///
+/// This test runs Morpion end-to-end on the Cythan VM, which
+/// exercises many if-zero matches. A pass here proves the bug is
+/// dead.
+#[test]
+fn morpion_runs_on_cythan_backend_after_lir_remap_fix() {
+    let mut files = new_syntax_stdlib();
+    files.push((
+        "Morpion.ct",
+        std::fs::read_to_string("examples/new_syntax/Morpion.ct")
+            .expect("read Morpion")
+            .replace('\r', ""),
+    ));
+    let entry = typer::FnSig::new("Morpion", "main");
+    let mir = cythan_driver::new_pipeline::compile(&files, &entry).expect("compile");
+    let run = cythan_driver::new_pipeline::run_with_backend(
+        &mir,
+        cythan_driver::new_pipeline::Backend::Cythan,
+        "1234567",
+        4096,
+        0,
+    );
+    assert!(!run.aborted_by_limit);
+    assert!(
+        run.output.contains("O won!"),
+        "expected 'O won!' in output; got (tail):\n{}",
+        &run.output[run.output.len().saturating_sub(400)..]
+    );
+}
+
 #[test]
 fn run_with_cythan_backend_matches_mir_output() {
     // Trivial program — well within the cythan_compiler's comfort
@@ -406,12 +447,11 @@ fn harness_compile_and_run_are_composable() {
 fn pendu_wins_with_gramire() {
     // Letters 'g', 'r', 'a', 'm', 'i', 'r', 'e' reveal all chars.
     let result = run_program("Pendu.ct", "Pendu", "main", "gramire", 4096);
-    // ASCII-only substring: the new pipeline double-encodes non-ASCII
-    // bytes as chars via the MIR interpreter, so the French accent on
-    // "gagné" round-trips as `Ã©`. Testing the ASCII prefix avoids
-    // that re-encoding concern until string printing is settled.
+    // Full French win message — now exact: byte-based print
+    // (MIR `RunContext::print` takes `u8` instead of `char`) so the
+    // UTF-8 `é` (`C3 A9`) survives the capture intact.
     assert!(
-        result.output.contains("Vous avez gagn"),
+        result.output.contains("Vous avez gagné!"),
         "expected win message; got:\n{}",
         result.output
     );

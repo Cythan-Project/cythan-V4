@@ -4,71 +4,109 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Cythan V4 is an OOP-like compiler for the Cythan abstract machine. It compiles `.ct` source files (Java/Rust-like syntax) through multiple IR stages down to Cythan VM bytecode. The goal is to eventually reimplement the compiler using chumsky with a better-designed pipeline.
+Cythan V4 is a compiler for the Cythan abstract machine. It takes
+`.ct` source files (Rust-flavoured syntax: `struct` / `enum` / `trait`
+/ `extension` / `impl`) through a staged IR pipeline down to Cythan
+VM bytecode.
 
 ## Build & Run Commands
 
 ```bash
-cargo build                                    # Build everything
-cargo test                                     # Run all 20 tests
-cargo test test_val                            # Run a single test
-cargo run -- run <File>                        # Compile and run a .ct file
-cargo run -- run <File> -o                     # Run with MIR optimization
-cargo run -- build <File> -o out.cir           # Compile to binary
-cargo run -- build <File> -o out.cir -O        # Compile optimized
-cargo run -- build <File> -o out.cir --dump-mir out.mir --dump-lir out.lir --dump-asm out.v3
-cargo run -- inspect <in.cir> <out.txt>        # Decode bytecode
-cargo run -- exe <in.cir>                      # Execute binary
+cargo build                                 # Build everything
+cargo test                                  # Run the full workspace test suite
+cargo run -- check <file>                   # Type-check + HIR gen; prints rust-style errors
+cargo run -- build <file> --hir out.hir     # Dump per-function HIR
+cargo run -- build <file> --mir out.mir     # Dump inlined MIR
+cargo run -- build <file> --lir out.lir     # Dump LIR (post-opt)
+cargo run -- build <file> --cythan out.cy   # Dump raw Cythan bytecode
+cargo run -- run   <file>                   # Run on MIR interpreter (default)
+cargo run -- run   <file> --backend cythan  # Run on Cythan VM (full lowering)
 ```
 
-Source files must be in the `std/` directory. The filename is without extension (e.g., `cargo run -- run Morpion`).
+`--std-dir` (default `examples/new_syntax/std`) points at the stdlib.
+Every `build --*` flag is optional; at least one must be supplied.
+Entry point defaults to `<FileStem>::main` and can be overridden with
+`--entry-type` / `--entry-method`.
 
 ## Compilation Pipeline
 
 ```
-Source (.ct) --> Tokenizer --> Parser --> AST (Classes/Methods/Expressions)
-    --> Compiler (type checking + monomorphization) --> MIR
-    --> MIR Optimizer --> LIR (labels + jumps) --> Cythan V3 Bytecode
+Source (.ct)
+  → new_parser         (chumsky, → AST)
+  → typer              (TypeRegistry + FunctionDB, flat signatures, monomorph keys)
+  → hir                (per-function HIR: Set/Copy/Match/Loop/Call/...)
+  → inliner + monomorph (all Call ops resolved, generics instantiated)
+  → mir                (flat ops, slot-addressed)
+  → lir                (labelled asm, post-opt)
+  → bytecode           (Cythan V3 via cythan_compiler, run on InterruptedCythan)
 ```
+
+`HirOp::If0` was removed: zero-vs-nonzero branching lowers through a
+2-arm `Match` (`[0]` then `1..=15`). `HirOp::if_zero(slot, then, else)`
+builds that shape; the text dumper recognises and pretty-prints it as
+`if s == 0 { … } else { … }`.
 
 ## Workspace Crates
 
 ```
 crates/
-├── errors/      Error reporting (ariadne). Used by all crates.
-├── vm/          Cythan VM and bytecode format (package: cythan). Standalone.
+├── errors/      Structured `Diagnostic` + ariadne renderer. Shared by all.
+├── vm/          Cythan VM + bytecode format (package: cythan). Standalone.
 ├── lir/         Low-level IR: flat instructions (Copy, Jump, If0, Match, Stop).
 │                Compiles to V3 bytecode via cythan_compiler.
-├── mir/         Mid-level IR: structured ops (Set, Copy, If0, Loop, Match...).
-│                MIR optimizer + MIR interpreter. Depends on lir for to_asm().
-├── frontend/    Parser + compiler + natives (package: cythan-frontend).
-│                Tokenizes .ct source → AST → MIR. Depends on errors, mir.
-└── driver/      Orchestration (package: cythan-driver). Compile + run + test.
-                 Depends on frontend, mir, lir, cythan.
+├── mir/         Mid-level IR: Set/Copy/Inc/Dec/Match/Loop/... + interpreter.
+│                Interpreter gained a `step_limit` so tests fail loudly on
+│                runaway loops instead of hanging CI. Depends on lir.
+├── new_parser/  Chumsky parser (package: cythan-parser). Source → AST.
+├── typer/       Registry + FunctionDB + FlatSig. Resolves names via
+│                `TypeId`/`TraitId` handles; dense storage + side lookup
+│                maps. Carries decl_span/decl_file for rich diagnostics.
+├── hir/         HIR generator + interpreter + inliner + monomorphizer +
+│                text dumper. Unused-variable warnings fire during gen.
+└── driver/      Orchestration. `new_pipeline::{check, build_hir,
+                 compile, run_with_backend, diagnose, hir_to_text,
+                 mir_to_text, lir_to_text, bytecode_to_text}`.
 src/
-├── main.rs      Thin CLI binary (clap). Depends on driver, mir, lir, cythan.
-└── tests/       Integration tests (20 tests covering all language features).
-std/             Cythan standard library + test/game programs (.ct files).
+├── main.rs              Thin CLI (clap). Three subcommands: check, build, run.
+└── new_pipeline_tests.rs  Integration tests for the harness + games.
+examples/new_syntax/     Stdlib (std/*.ct) + games (Morpion, Pendu, Chess,
+                         Game2048) in the project's syntax.
 ```
 
 ## Key Architecture Details
 
-- **Monomorphization**: Each unique template instantiation generates separate code. Templates can be types or integer sizes.
-- **Memory model**: All variables are statically allocated to fixed memory slots (u32 addresses). No heap.
-- **Native methods**: `Val`, `System`, and `Array` have native implementations in `crates/frontend/src/natives/` that emit MIR directly.
-- **Standard library**: Written in Cythan itself under `std/`.
-- **IO model**: Register-based. `System.setRegister<N>(value)` / `System.getRegister<N>()` with registers 0-3.
-- **Bool semantics**: 0 is true, 1 is false (inverted from typical conventions).
-- **VM value encoding**: In the Cythan VM bytecode, value 0 is encoded as 16 (`base_as_pow`). The input handler in `crates/vm/src/implementations/interrupted.rs` converts 0-valued nibbles to 16 to match this convention.
+- **Monomorphization**: per `(FnSig, ConcreteArgs)`; templates can be
+  types or integer values.
+- **Memory model**: all bindings statically allocated to fixed slot
+  addresses. No heap.
+- **Native methods**: `System::setRegister<N>` / `System::getRegister<N>`
+  are the only true natives (`crates/hir/src/natives.rs`); operators
+  (`Add`, `Sub`, `Eq`, `Ord`) live in the stdlib as trait impls.
+- **Standard library**: written in Cythan itself under
+  `examples/new_syntax/std/`.
+- **IO model**: register-based. `setRegister<0>(1)` triggers a byte
+  print, `setRegister<0>(2)` pulls a byte from input. The MIR
+  interpreter's `RunContext::print` takes a `u8` so multi-byte UTF-8
+  sequences survive capture intact.
+- **Bool semantics**: `true` is `1`, `false` is `0`. `if cond { … }`
+  fires the `then` branch when `cond != 0`.
+- **Error reporting**: every diagnostic is an `errors::Diagnostic`
+  (severity + optional `DiagCode` like `E0001`/`W0001` + labels +
+  notes + helps). `cargo run -- check` renders with ariadne.
 
 ## Test Structure
 
-Tests are in `src/tests/mod.rs`. Each test compiles a `.ct` program via the MIR interpreter (not the bytecode VM), feeds mock input via `TestContext`, and asserts exact output. Test programs in `std/`: Morpion, Pendu, Game2048, Chess, plus 15 targeted feature tests (TestVal, TestBool, TestByte, etc.).
+Lib tests live in each crate's `tests/` module. Integration tests for
+the full pipeline (harness + games + toolchain) live in
+`src/new_pipeline_tests.rs`. Every test that drives a real compiled
+program uses `MemoryState::new_with_limit` or `Interpreter::step_limit`
+so a bad loop fails in bounded time.
 
 ## File Formats
 
-- `.ct` - Cythan source files (in `std/`)
-- `.cir` - Compiled binary (Cythan V3 bytecode, varint-encoded)
-- `.mir` - Human-readable MIR dump (opt-in via `--dump-mir`)
-- `.lir` - Human-readable LIR dump (opt-in via `--dump-lir`)
-- `.v3` - V3 assembly text (opt-in via `--dump-asm`)
+- `.ct`  — Cythan source.
+- `.hir` — per-function HIR text dump (from `build --hir`).
+- `.mir` — flat MIR text dump (from `build --mir`).
+- `.lir` — LIR text dump, post-`opt_asm` (from `build --lir`).
+- `.cy`  — raw Cythan bytecode as space-separated decimals
+           (from `build --cythan`).

@@ -47,11 +47,27 @@ pub fn opt_asm(input: Vec<CompilableInstruction>) -> Vec<CompilableInstruction> 
 
 fn remap(asm: &mut [CompilableInstruction], amap: &HashMap<Label, Label>) {
     asm.iter_mut().for_each(|i| {
-        if let CompilableInstruction::Jump(a)
-        | CompilableInstruction::Label(a)
-        | CompilableInstruction::If0(.., a) = i
-        {
-            *a = update(a, amap);
+        match i {
+            CompilableInstruction::Jump(a)
+            | CompilableInstruction::Label(a)
+            | CompilableInstruction::If0(.., a) => {
+                *a = update(a, amap);
+            }
+            // `Match` carries a 16-slot jump table of optional
+            // labels. Without updating those slots here, the
+            // peephole pass' "Label A then Jump B → Jump B"
+            // rewrite leaves the Match pointing at labels the
+            // text emitter never declares — exactly the shape
+            // that crashes `cythan_compiler` with "Try to init
+            // your label at an index: 'lH…" on programs with
+            // if-zero-shaped matches whose then-branch bodies
+            // reduce to a single jump.
+            CompilableInstruction::Match(_, slots) => {
+                for slot in slots.iter_mut().flatten() {
+                    *slot = update(slot, amap);
+                }
+            }
+            _ => {}
         }
     });
 }

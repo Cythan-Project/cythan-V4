@@ -1,12 +1,20 @@
 use std::io::{Read, Write};
 
-/// This Cythan implementation is optimized to take advantage of a fixed step of 2 and a base value of 0 to get very good performances!
-/// This implementation is the fastest on small codes but on larger codes the chunked implemenetation is faster
+/// Cythan VM with interrupt support for I/O. Optimized for the
+/// common base-16, step-2 configuration. `new_stdio` is the simple
+/// constructor; the full `new` takes custom print / input closures
+/// so callers can capture output (tests) or drive interactive I/O.
 ///
-/// ```rust
-/// use cythan::{Cythan,InterruptedCythan};
-/// // This function create a Cythan Machine with a step of 2 and a base value of 0
-/// let machine = InterruptedCythan::new(vec![12,23,45,20,0]);
+/// ```no_run
+/// use cythan::InterruptedCythan;
+/// let machine = InterruptedCythan::new(
+///     vec![12, 23, 45, 20, 0],
+///     4,
+///     35,
+///     |c: u8| print!("{}", c as char),
+///     || 0u8,
+/// );
+/// let _ = machine; // run with machine.next() / next_get_interupt()
 /// ```
 pub struct InterruptedCythan {
     pub cases: Vec<usize>,

@@ -271,7 +271,7 @@ fn end_to_end_simple_program_compiles_to_mir_and_runs() {
         fn input(&mut self) -> u8 {
             0
         }
-        fn print(&mut self, _: char) {}
+        fn print(&mut self, _: u8) {}
     }
     let mut state = mir::MemoryState::new_with_limit((inlined.slot_count as usize + 4).max(16), 4, 5_000_000);
     let mut ctx = Null;

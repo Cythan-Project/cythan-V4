@@ -72,7 +72,7 @@ fn run_program(extra: &str, entry: &typer::FnSig) -> Vec<u8> {
     struct Null;
     impl mir::RunContext for Null {
         fn input(&mut self) -> u8 { 0 }
-        fn print(&mut self, _: char) {}
+        fn print(&mut self, _: u8) {}
     }
     // Cap the interpreter so a bug in the compiled code fails the
     // test in bounded time instead of hanging.

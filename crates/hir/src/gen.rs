@@ -1707,30 +1707,13 @@ impl<'a> Generator<'a> {
         self.type_size(name).unwrap_or(1)
     }
 
-    fn lookup_return_size(&self, type_name: &str, method: &str) -> Option<u32> {
-        self.lookup_return_size_with_args(type_name, method, &[])
-    }
-
-    /// Determine the cell count of a method call's return value, given the
-    /// receiver's concrete template args. Substitutes template params in
-    /// the declared return type and then asks the typer for its size —
-    /// handles both plain template-param returns (`fn capacity(self):
-    /// Index`) and generic-instantiation returns (`fn get(self): T`
-    /// where T is itself a `ArrayList<…>`).
-    fn lookup_return_size_with_args(
-        &self,
-        type_name: &str,
-        method: &str,
-        recv_args: &[ConcreteTemplateArg],
-    ) -> Option<u32> {
-        self.lookup_return_size_full(type_name, method, recv_args, &[])
-    }
-
-    /// Same as `lookup_return_size_with_args` but also accepts the
-    /// method-level template args so return types like `fn id<T>(T): T`
-    /// can be sized. `recv_args` bind the enclosing type's templates (in
-    /// declaration order); `method_args` bind the method's own templates
-    /// (also in declaration order).
+    /// Determine the cell count of a method call's return value. Accepts
+    /// the receiver's concrete template args (binding the enclosing
+    /// type's templates in declaration order) and the method-level
+    /// template args (binding the method's own templates, also in
+    /// declaration order). Handles plain template-param returns
+    /// (`fn capacity(self): Index`) and generic-instantiation returns
+    /// (`fn get(self): T` where T is itself an `ArrayList<…>`).
     fn lookup_return_size_full(
         &self,
         type_name: &str,
@@ -1816,32 +1799,6 @@ impl<'a> Generator<'a> {
             }
         }
         None
-    }
-
-    /// If `raw_name` is a template param of `enclosing_type` and the
-    /// caller provided `recv_args`, substitute the corresponding concrete
-    /// type's bare name. Otherwise return `raw_name` unchanged.
-    fn subst_template_ref(
-        &self,
-        raw_name: &str,
-        enclosing_type: &str,
-        recv_args: &[ConcreteTemplateArg],
-    ) -> String {
-        let Some(info) = self.reg.get_type(enclosing_type) else {
-            return raw_name.to_string();
-        };
-        if info.templates.len() != recv_args.len() {
-            return raw_name.to_string();
-        }
-        for (i, t_name) in info.templates.iter().enumerate() {
-            if t_name == raw_name {
-                return match &recv_args[i] {
-                    ConcreteTemplateArg::Type(ct) => ct.name.clone(),
-                    _ => raw_name.to_string(),
-                };
-            }
-        }
-        raw_name.to_string()
     }
 
     /// Look up the return-type head name for a (type, method) pair,
@@ -2406,8 +2363,7 @@ impl<'a> Generator<'a> {
             // field's declared type is a generic like `Array<U4, 4, U4>`
             // and the value is a bare `Array::new()` call, substitute the
             // field's template args into the call's type.
-            let patched: Option<ast::Spanned<ast::Expr>>;
-            let value_ref = match &fval.0 {
+            let patched: Option<ast::Spanned<ast::Expr>> = match &fval.0 {
                 ast::Expr::StaticCall {
                     ty: call_ty,
                     name: call_name,
@@ -2419,7 +2375,7 @@ impl<'a> Generator<'a> {
                 {
                     let mut new_ty = call_ty.clone();
                     new_ty.0.templates = field.ast_type.templates.clone();
-                    patched = Some((
+                    Some((
                         ast::Expr::StaticCall {
                             ty: new_ty,
                             name: call_name.clone(),
@@ -2427,14 +2383,11 @@ impl<'a> Generator<'a> {
                             args: call_args.clone(),
                         },
                         fval.1.clone(),
-                    ));
-                    patched.as_ref().unwrap()
+                    ))
                 }
-                _ => {
-                    patched = None;
-                    fval
-                }
+                _ => None,
             };
+            let value_ref = patched.as_ref().unwrap_or(fval);
             self.gen_expr_into(&value_ref.0, &value_ref.1, Some(dst_slot), block)?;
         }
         Ok(())

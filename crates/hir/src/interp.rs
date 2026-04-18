@@ -20,29 +20,39 @@ use crate::ir::*;
 
 pub trait IoContext {
     fn input(&mut self) -> u8;
-    fn print(&mut self, c: char);
+    /// Byte-oriented (see `mir::RunContext::print` for rationale —
+    /// char-based printing corrupts bytes ≥ 128 via UTF-8 re-encoding).
+    fn print(&mut self, byte: u8);
 }
 
-/// Captures stdout into a string and reads stdin bytes from a queue.
-/// Ideal for tests.
+/// Captures stdout into a byte buffer and reads stdin bytes from a
+/// queue. Ideal for tests. The byte buffer preserves raw output
+/// bytes exactly; decode via `String::from_utf8_lossy` or the
+/// `stdout_str()` helper at assertion time.
 pub struct CapturedIo {
     pub stdin: VecDeque<u8>,
-    pub stdout: String,
+    pub stdout: Vec<u8>,
 }
 
 impl CapturedIo {
     pub fn new() -> Self {
         Self {
             stdin: VecDeque::new(),
-            stdout: String::new(),
+            stdout: Vec::new(),
         }
     }
 
     pub fn with_input(bytes: impl IntoIterator<Item = u8>) -> Self {
         Self {
             stdin: bytes.into_iter().collect(),
-            stdout: String::new(),
+            stdout: Vec::new(),
         }
+    }
+
+    /// Lossy UTF-8 view — safe for assertions on ASCII-only
+    /// transcripts; multi-byte sequences decode normally.
+    pub fn stdout_str(&self) -> std::borrow::Cow<'_, str> {
+        String::from_utf8_lossy(&self.stdout)
     }
 }
 
@@ -57,8 +67,8 @@ impl IoContext for CapturedIo {
         self.stdin.pop_front().unwrap_or(0)
     }
 
-    fn print(&mut self, c: char) {
-        self.stdout.push(c);
+    fn print(&mut self, byte: u8) {
+        self.stdout.push(byte);
     }
 }
 
@@ -232,7 +242,7 @@ impl<'a, C: IoContext> Interpreter<'a, C> {
                         let high = self.registers[1];
                         let low = self.registers[2];
                         let byte = (high % 16) * 16 + (low % 16);
-                        self.ctx.print(byte as char);
+                        self.ctx.print(byte);
                     } else if v == 2 {
                         let byte = self.ctx.input();
                         self.registers[1] = byte / 16;

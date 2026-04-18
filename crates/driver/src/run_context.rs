@@ -59,7 +59,7 @@ pub fn run_bin_with_limit<T: RunContext + 'static>(
         4,
         2 * 2_usize.pow(4 /* base */) + 3,
         move |a| {
-            car.lock().unwrap().print(a as char);
+            car.lock().unwrap().print(a);
         },
         move || car1.lock().unwrap().input(),
     );

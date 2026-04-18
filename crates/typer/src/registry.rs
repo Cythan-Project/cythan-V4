@@ -2298,12 +2298,10 @@ fn translate_tv(
     }
 }
 
-// Unification / structural-eq helpers live in `typer::resolution`. We
-// re-export the names we use here as shorthand aliases so call sites
-// read the same way as before.
-use crate::resolution::{unify_args, tv_structural_eq};
-#[allow(unused_imports)]
-use crate::resolution::{unify_tv, ty_structural_eq};
+// Unification / structural-eq helpers live in `typer::resolution`
+// and are imported there at their call sites (satisfy_bounds etc.).
+// No top-level re-exports — keeping the use lines local makes it
+// obvious which helper each function reaches for.
 
 /// Substitute template parameter references in an AST type with concrete
 /// bindings. Used by `resolve_struct_layout` to specialize a generic

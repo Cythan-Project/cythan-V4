@@ -364,7 +364,7 @@ fn run_bytecode_with_input(
         Ok((steps, ctx_mutex)) => {
             let ctx = ctx_mutex.lock().unwrap();
             CapturedRun {
-                output: ctx.print.clone(),
+                output: ctx.as_str().into_owned(),
                 remaining_input: ctx.inputs.iter().map(|b| *b as char).collect(),
                 instr_count: steps,
                 aborted_by_limit: false,
@@ -437,7 +437,7 @@ pub fn run_mir_with_input_limited(
     let mut state = MemoryState::new_with_limit(mem_cells, 8, step_limit);
     state.execute_block(mir, &mut ctx);
     CapturedRun {
-        output: ctx.print,
+        output: ctx.as_str().into_owned(),
         remaining_input: ctx.inputs.iter().map(|b| *b as char).collect(),
         instr_count: state.instr_count,
         aborted_by_limit: state.aborted_by_limit,
