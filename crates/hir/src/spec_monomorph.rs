@@ -49,8 +49,9 @@ use std::collections::{HashMap, HashSet};
 
 use either::Either;
 
+use crate::exit_domains::FnExitDomains;
 use crate::ir::{FnRef, HirBlock, HirFunction, HirOp, SlotId};
-use crate::specialize::{specialize_to_fixpoint_with_domains, Domain};
+use crate::specialize::{specialize_to_fixpoint_full, Domain};
 
 /// Domain per input cell. `arg_domains[i]` is the domain of the
 /// callee's input slot `i` (which corresponds to `Call.args[i]`
@@ -77,8 +78,20 @@ pub struct SpecResult {
 /// `Call` ops to target specialized variants where at least one
 /// argument is narrower than ALL.
 pub fn run(
+    fns: HashMap<typer::FnSig, HirFunction>,
+    entry: &typer::FnSig,
+) -> SpecResult {
+    run_with_summaries(fns, entry, None)
+}
+
+/// Like [`run`] but threads exit-domain summaries through the
+/// variant-fold step so the folder propagates guaranteed
+/// mutations into the caller ctx at `Call` ops instead of
+/// forgetting them.
+pub fn run_with_summaries(
     mut fns: HashMap<typer::FnSig, HirFunction>,
     entry: &typer::FnSig,
+    summaries: Option<&HashMap<typer::FnSig, FnExitDomains>>,
 ) -> SpecResult {
     // Work-list items come in two shapes:
     //   * `(base_sig, None)` — walk the original function body
@@ -153,9 +166,10 @@ pub fn run(
                     continue;
                 };
                 specialized_count += 1;
-                let folded_body = specialize_to_fixpoint_with_domains(
+                let folded_body = specialize_to_fixpoint_full(
                     base_fn.body.clone(),
                     &variant_domains,
+                    summaries,
                 );
                 let variant = HirFunction {
                     body: folded_body,

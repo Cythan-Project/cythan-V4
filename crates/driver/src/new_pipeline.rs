@@ -13,11 +13,11 @@ use std::path::{Path, PathBuf};
 
 use hir::natives::NativeProvider;
 use hir::{
-    elide_redundant_mut, elide_redundant_mut_with_stats, elide_unused_args,
+    compute_exit_domains, elide_redundant_mut, elide_redundant_mut_with_stats, elide_unused_args,
     elide_unused_args_with_stats, eliminate_dead_writes, gen_function_with_natives, hir_to_mir,
-    inline_program_full, optimize_block, specialize_monomorph, specialize_to_fixpoint, text_dump,
-    unroll_loops, unroll_loops_with_stats, BuiltinNatives, HirFunction, SlotId,
-    DEFAULT_UNROLL_FACTOR,
+    inline_program_full, optimize_block, specialize_monomorph_with_summaries,
+    specialize_to_fixpoint, text_dump, unroll_loops_with_stats, BuiltinNatives, HirFunction,
+    SlotId, DEFAULT_UNROLL_FACTOR,
 };
 use lir::CompilableInstruction;
 use mir::{MemoryState, MirCodeBlock, MirState};
@@ -375,7 +375,18 @@ pub fn compile_with_stats(
         .sum();
     let BuiltHir { reg, db, hir } = built;
 
-    let spec = specialize_monomorph(hir, entry);
+    // Per-function exit-Domain summaries feed both the variant
+    // folder (below) and the speculative unroller, so calls
+    // propagate guaranteed Domains instead of forgetting mutated
+    // slots. Computed once on the initial HIR — the resulting
+    // summaries are sound upper bounds for all variants that
+    // spec-mono may later mint from this base.
+    let natives_for_summary = BuiltinNatives::new();
+    let summaries = compute_exit_domains(&hir, |sig| {
+        is_target_known_non_mutating(sig, &natives_for_summary, &db)
+    });
+
+    let spec = specialize_monomorph_with_summaries(hir, entry, Some(&summaries));
     let specialized_variants = spec.specialized_count;
     let hir_ops_post_spec_mono: usize = spec
         .functions
@@ -405,9 +416,10 @@ pub fn compile_with_stats(
     // Unroll innermost loops before the cleanup passes so that
     // domain-based specialization + constant folding + LVA all
     // get to see + fold across the duplicated bodies (see
-    // `crates/hir/src/unroll.rs`).
+    // `crates/hir/src/unroll.rs`). Post-inline body has no
+    // `Call` ops left, so no exit summaries are threaded.
     let (unrolled_body, unroll_stats) =
-        unroll_loops_with_stats(inlined.body.clone(), DEFAULT_UNROLL_FACTOR);
+        unroll_loops_with_stats(inlined.body.clone(), DEFAULT_UNROLL_FACTOR, None);
     let specialized_body = specialize_to_fixpoint(unrolled_body);
     let cleaned_body = optimize_block(specialized_body);
     let live_at_exit = output_slots_of(&inlined.sig);
@@ -593,7 +605,15 @@ pub fn compile(
     // (base_sig, arg_domains). The fns map grows; the inliner
     // picks the tighter body at each call site.
     let BuiltHir { reg, db, hir } = built;
-    let spec = specialize_monomorph(hir, entry);
+    // Precompute per-function exit-domain summaries so the
+    // variant folder in `spec_monomorph` can propagate callee
+    // mutations into caller ctx at `Call` ops instead of
+    // forgetting them.
+    let natives_for_summary = BuiltinNatives::new();
+    let summaries = compute_exit_domains(&hir, |sig| {
+        is_target_known_non_mutating(sig, &natives_for_summary, &db)
+    });
+    let spec = specialize_monomorph_with_summaries(hir, entry, Some(&summaries));
     // Downgrade `mut` params that aren't effectively mutated
     // anywhere in the program (see `crates/hir/src/mut_elide.rs`).
     // Run before arg-elide so newly-immutable-and-untouched
@@ -609,12 +629,11 @@ pub fn compile(
     let trimmed = elide_unused_args(demut, entry);
     let inlined = inline_program_full(&trimmed, entry, Some(&reg), Some(&db))
         .map_err(|e| format!("inline: {}", e))?;
-    // Post-inline sweep: loop unrolling, flow-sensitive const
-    // propagation + match folding, dead-store elimination
-    // (overwrite-based), and liveness-based dead-write
-    // elimination. Unroll goes first so specialize + LVA see
-    // the duplicated bodies and can fold + clean across copies.
-    let unrolled = unroll_loops(inlined.body, DEFAULT_UNROLL_FACTOR);
+    // Post-inline sweep. Note: after inline the program is one
+    // flat body with no Call ops, so exit summaries aren't
+    // useful here — pass `None`.
+    let (unrolled, _) =
+        unroll_loops_with_stats(inlined.body, DEFAULT_UNROLL_FACTOR, None);
     let specialized = specialize_to_fixpoint(unrolled);
     let cleaned = optimize_block(specialized);
     let live_at_exit = output_slots_of(&inlined.sig);

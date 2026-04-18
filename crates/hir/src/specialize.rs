@@ -42,7 +42,8 @@ use std::collections::HashMap;
 
 use either::Either;
 
-use crate::ir::{HirBlock, HirOp, SlotId};
+use crate::exit_domains::FnExitDomains;
+use crate::ir::{FnRef, HirBlock, HirOp, SlotId};
 
 /// Bitmask over the 16 possible u4 values. Bit `i` set iff value
 /// `i` is possible at this program point.
@@ -141,7 +142,7 @@ impl Ctx {
 /// knowledge — equivalent to `specialize_to_fixpoint_with_domains`
 /// with an empty seed.
 pub fn specialize_to_fixpoint(block: HirBlock) -> HirBlock {
-    specialize_to_fixpoint_with_domains(block, &[])
+    specialize_to_fixpoint_full(block, &[], None)
 }
 
 /// Run the pass to a fixpoint, seeding the initial context with
@@ -149,8 +150,20 @@ pub fn specialize_to_fixpoint(block: HirBlock) -> HirBlock {
 /// freshly-minted specialized variants *before* the inliner splices
 /// them in, so the inlined HIR post-inline is strictly smaller.
 pub fn specialize_to_fixpoint_with_domains(
+    block: HirBlock,
+    arg_domains: &[Domain],
+) -> HirBlock {
+    specialize_to_fixpoint_full(block, arg_domains, None)
+}
+
+/// Full-featured entry point. Like `specialize_to_fixpoint_with_domains`
+/// but also threads a map of per-function exit-domain summaries so
+/// Call ops can propagate the callee's post-call Domain into the
+/// caller's ctx instead of forgetting mutated slots.
+pub fn specialize_to_fixpoint_full(
     mut block: HirBlock,
     arg_domains: &[Domain],
+    summaries: Option<&HashMap<typer::FnSig, FnExitDomains>>,
 ) -> HirBlock {
     for _ in 0..8 {
         let before = block.clone();
@@ -158,7 +171,7 @@ pub fn specialize_to_fixpoint_with_domains(
         for (i, d) in arg_domains.iter().enumerate() {
             ctx.put(SlotId(i as u32), *d);
         }
-        let (new_block, _final_ctx) = specialize_block(block, &ctx);
+        let (new_block, _final_ctx) = specialize_block(block, &ctx, summaries);
         block = new_block;
         if block == before {
             break;
@@ -167,11 +180,15 @@ pub fn specialize_to_fixpoint_with_domains(
     block
 }
 
-fn specialize_block(block: HirBlock, inbound: &Ctx) -> (HirBlock, Ctx) {
+fn specialize_block(
+    block: HirBlock,
+    inbound: &Ctx,
+    summaries: Option<&HashMap<typer::FnSig, FnExitDomains>>,
+) -> (HirBlock, Ctx) {
     let mut ctx = inbound.clone();
     let mut out: Vec<HirOp> = Vec::with_capacity(block.ops.len());
     for op in block.ops {
-        specialize_op(op, &mut ctx, &mut out);
+        specialize_op(op, &mut ctx, &mut out, summaries);
     }
     (
         HirBlock {
@@ -182,7 +199,12 @@ fn specialize_block(block: HirBlock, inbound: &Ctx) -> (HirBlock, Ctx) {
     )
 }
 
-fn specialize_op(op: HirOp, ctx: &mut Ctx, out: &mut Vec<HirOp>) {
+fn specialize_op(
+    op: HirOp,
+    ctx: &mut Ctx,
+    out: &mut Vec<HirOp>,
+    summaries: Option<&HashMap<typer::FnSig, FnExitDomains>>,
+) {
     match op {
         HirOp::Set(slot, v) => {
             ctx.put(slot, Domain::singleton(v));
@@ -223,7 +245,7 @@ fn specialize_op(op: HirOp, ctx: &mut Ctx, out: &mut Vec<HirOp>) {
                 let arm_dom = Domain::from_values(values);
                 if scrut_dom.is_subset_of(arm_dom) {
                     let (specialized, arm_final_ctx) =
-                        specialize_block(body.clone(), ctx);
+                        specialize_block(body.clone(), ctx, summaries);
                     out.extend(specialized.ops);
                     *ctx = arm_final_ctx;
                     return;
@@ -246,7 +268,7 @@ fn specialize_op(op: HirOp, ctx: &mut Ctx, out: &mut Vec<HirOp>) {
                 let mut arm_ctx = ctx.clone();
                 arm_ctx.narrow(scrutinee, arm_dom);
                 let (specialized_body, arm_final) =
-                    specialize_block(body, &arm_ctx);
+                    specialize_block(body, &arm_ctx, summaries);
                 for s in slots_mutated(&specialized_body) {
                     touched_by_any_arm.insert(s);
                 }
@@ -303,7 +325,7 @@ fn specialize_op(op: HirOp, ctx: &mut Ctx, out: &mut Vec<HirOp>) {
             for s in &mutated {
                 loop_ctx.forget(*s);
             }
-            let (specialized, _final) = specialize_block(body, &loop_ctx);
+            let (specialized, _final) = specialize_block(body, &loop_ctx, summaries);
             out.push(HirOp::Loop(specialized));
             for s in mutated {
                 ctx.forget(s);
@@ -314,7 +336,7 @@ fn specialize_op(op: HirOp, ctx: &mut Ctx, out: &mut Vec<HirOp>) {
             // can't tell without control-flow analysis whether
             // that happens, so: use the pre-block ctx with any
             // mutated slot forgotten — safe over-approximation.
-            let (specialized, _final) = specialize_block(body, ctx);
+            let (specialized, _final) = specialize_block(body, ctx, summaries);
             for s in slots_mutated(&specialized) {
                 ctx.forget(s);
             }
@@ -341,11 +363,58 @@ fn specialize_op(op: HirOp, ctx: &mut Ctx, out: &mut Vec<HirOp>) {
             }
         },
         HirOp::Call { target, args, ret } => {
-            for r in &ret {
-                ctx.forget(*r);
+            // When we have exit-domain summaries for the callee,
+            // propagate guaranteed mutations to the caller's ctx:
+            // mut arg cells pick up the callee's input_exit,
+            // ret cells pick up the callee's output_exit. Without
+            // summaries, fall back to the conservative "forget
+            // ret + forget args that might be mut" behaviour.
+            let target_sig = fn_ref_to_sig_local(&target);
+            match summaries.and_then(|m| m.get(&target_sig)) {
+                Some(summary) => {
+                    for (i, arg_slot) in args.iter().enumerate() {
+                        if i < summary.input_mut.len() && summary.input_mut[i] {
+                            let d = summary
+                                .input_exit
+                                .get(i)
+                                .copied()
+                                .unwrap_or(Domain::ALL);
+                            ctx.put(*arg_slot, d);
+                        }
+                    }
+                    for (j, ret_slot) in ret.iter().enumerate() {
+                        let d = summary
+                            .output_exit
+                            .get(j)
+                            .copied()
+                            .unwrap_or(Domain::ALL);
+                        ctx.put(*ret_slot, d);
+                    }
+                }
+                None => {
+                    // No summary — the safe assumption is that any
+                    // arg cell might be a mut param getting written.
+                    for a in &args {
+                        ctx.forget(*a);
+                    }
+                    for r in &ret {
+                        ctx.forget(*r);
+                    }
+                }
             }
             out.push(HirOp::Call { target, args, ret });
         }
+    }
+}
+
+fn fn_ref_to_sig_local(r: &FnRef) -> typer::FnSig {
+    match &r.trait_name {
+        None => typer::FnSig::new(r.type_name.clone(), r.method_name.clone()),
+        Some(t) => typer::FnSig::new_trait(
+            r.type_name.clone(),
+            r.method_name.clone(),
+            t.clone(),
+        ),
     }
 }
 

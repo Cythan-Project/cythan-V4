@@ -2,6 +2,7 @@ pub mod arg_elide;
 pub mod array_synth;
 pub mod call_graph;
 pub mod error;
+pub mod exit_domains;
 pub mod gen;
 pub mod inline;
 pub mod interp;
@@ -26,6 +27,7 @@ pub use mut_elide::{
     compute_effective_mutation, elide_redundant_mut, elide_redundant_mut_with_stats,
     summarize_mutation, FnMutationSummary, MutationElideStats,
 };
+pub use exit_domains::{compute_exit_domains, FnExitDomains};
 pub use unroll::{unroll_loops, unroll_loops_with_stats, UnrollStats, DEFAULT_UNROLL_FACTOR};
 pub use array_synth::{ArrayMonomorphCache, ArraySpec};
 pub use call_graph::{build_call_graph, CallGraph};
@@ -38,7 +40,10 @@ pub use monomorph::{monomorphize, MonomorphKey};
 pub use natives::{BuiltinNatives, NativeCall, NativeEmitter, NativeProvider};
 pub use opt::{eliminate_dead_writes, optimize_block, optimize_function};
 pub use specialize::{specialize_to_fixpoint, specialize_to_fixpoint_with_domains};
-pub use spec_monomorph::{run as specialize_monomorph, SpecResult};
+pub use spec_monomorph::{
+    run as specialize_monomorph, run_with_summaries as specialize_monomorph_with_summaries,
+    SpecResult,
+};
 
 /// Alias used by the interpreter and inliner for dispatch keys.
 pub type FnSigKey = typer::FnSig;
