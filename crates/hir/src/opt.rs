@@ -181,6 +181,259 @@ fn eliminate_dead_stores_block(block: HirBlock) -> HirBlock {
     }
 }
 
+/// Live-variable-based dead-write elimination. A write (`Set`,
+/// `Copy`, `Inc`, `Dec`, `ReadRegister`) whose target isn't read on
+/// any path from the op to the block's end (given some live-at-exit
+/// set) is removed.
+///
+/// Unlike `eliminate_dead_stores_block`, this catches writes that
+/// are never read at all — not just the ones immediately overwritten.
+///
+/// `live_at_exit` is the set of slots the caller considers
+/// observable after this block. At the top-level program body,
+/// that's the output slots (cells written to by `_ret` params).
+pub fn eliminate_dead_writes(block: HirBlock, live_at_exit: &HashSet<SlotId>) -> HirBlock {
+    let ctx = ExitCtx::default();
+    let ops = ldve_ops(block.ops, live_at_exit, &ctx);
+    HirBlock {
+        ops,
+        result_slot: block.result_slot,
+    }
+}
+
+/// Liveness at the various non-fall-through exits available at the
+/// current nesting level. Each is the live-at point reached when
+/// the corresponding control-flow op is executed.
+///
+/// `None` means "no enclosing construct of this kind" — executing
+/// the op would be ill-formed at this position. We treat such cases
+/// as `{}` (nothing live).
+#[derive(Default, Clone)]
+struct ExitCtx {
+    /// Live at the program-end (Stop). Always `{}`.
+    /// (Held implicitly — Stop just resets to empty.)
+    /// Live just past the nearest enclosing `Loop` (where `Break` jumps to).
+    break_to: Option<HashSet<SlotId>>,
+    /// Live at the start of the nearest enclosing `Loop` body
+    /// (where `Continue` jumps to). Conservatively the body's
+    /// live-at-exit (which includes everything the body reads).
+    continue_to: Option<HashSet<SlotId>>,
+    /// Live just past the nearest enclosing `Block` (where `Skip` jumps to).
+    skip_to: Option<HashSet<SlotId>>,
+}
+
+fn ldve_ops(
+    ops: Vec<HirOp>,
+    live_at_exit: &HashSet<SlotId>,
+    ctx: &ExitCtx,
+) -> Vec<HirOp> {
+    // Walk backward. `live` is the liveness at the *current* point
+    // (just before the next op walked but after all ops already
+    // walked). Control-flow exits (Break/Continue/Stop/Skip) RESET
+    // `live` to the appropriate exit-point liveness, since code
+    // after them is unreachable.
+    let mut live: HashSet<SlotId> = live_at_exit.clone();
+    let mut rev_kept: Vec<Option<HirOp>> = Vec::with_capacity(ops.len());
+    for op in ops.into_iter().rev() {
+        rev_kept.push(process_op_backward(op, &mut live, ctx));
+    }
+    rev_kept.into_iter().rev().flatten().collect()
+}
+
+fn process_op_backward(
+    op: HirOp,
+    live: &mut HashSet<SlotId>,
+    ctx: &ExitCtx,
+) -> Option<HirOp> {
+    match op {
+        HirOp::Set(s, v) => {
+            if !live.contains(&s) {
+                None
+            } else {
+                live.remove(&s);
+                Some(HirOp::Set(s, v))
+            }
+        }
+        HirOp::Copy(dst, src) => {
+            if !live.contains(&dst) {
+                None
+            } else {
+                live.remove(&dst);
+                live.insert(src);
+                Some(HirOp::Copy(dst, src))
+            }
+        }
+        HirOp::Inc(s) => {
+            if !live.contains(&s) {
+                None
+            } else {
+                // Read-modify-write — slot stays live.
+                Some(HirOp::Inc(s))
+            }
+        }
+        HirOp::Dec(s) => {
+            if !live.contains(&s) {
+                None
+            } else {
+                Some(HirOp::Dec(s))
+            }
+        }
+        HirOp::ReadRegister(dst, r) => {
+            if !live.contains(&dst) {
+                None
+            } else {
+                live.remove(&dst);
+                Some(HirOp::ReadRegister(dst, r))
+            }
+        }
+        HirOp::WriteRegister(r, src) => {
+            // Side effect (print / input trigger) — always keep.
+            if let Either::Right(s) = &src {
+                live.insert(*s);
+            }
+            Some(HirOp::WriteRegister(r, src))
+        }
+        HirOp::Match(s, arms) => {
+            // Each arm's fall-through live_at_exit = current `live`.
+            // Arms with internal Break/Continue/Stop/Skip will
+            // reset their walking-live as they go, so passing the
+            // fall-through value is correct for arms that *do*
+            // fall through and harmless for ones that don't.
+            let arms_new: Vec<(HirBlock, Vec<u8>)> = arms
+                .into_iter()
+                .map(|(b, vs)| {
+                    let new_b = HirBlock {
+                        ops: ldve_ops(b.ops, live, ctx),
+                        result_slot: b.result_slot,
+                    };
+                    (new_b, vs)
+                })
+                .collect();
+            // Post-walk: the scrutinee is read; we conservatively
+            // treat anything still read in any arm as live before
+            // the match (some of those reads may be unreachable in
+            // a given arm, but this is sound and cheap).
+            for (b, _) in &arms_new {
+                for s2 in slots_read_recursive(b) {
+                    live.insert(s2);
+                }
+            }
+            live.insert(s);
+            Some(HirOp::Match(s, arms_new))
+        }
+        HirOp::Loop(body) => {
+            // Body's fall-through is unreachable (loops only exit
+            // via Break/Continue/Stop). Set live_at_exit_of_body
+            // to a conservative superset that's also valid as
+            // continue_to (loop-start liveness): the *outer*
+            // live (where a Break would jump) ∪ everything the
+            // body reads. That guarantees writes feeding next-
+            // iteration reads are preserved.
+            let mut body_live = live.clone();
+            for s2 in slots_read_recursive(&body) {
+                body_live.insert(s2);
+            }
+            let body_ctx = ExitCtx {
+                break_to: Some(live.clone()),
+                continue_to: Some(body_live.clone()),
+                skip_to: ctx.skip_to.clone(),
+            };
+            let body_new = HirBlock {
+                ops: ldve_ops(body.ops, &body_live, &body_ctx),
+                result_slot: body.result_slot,
+            };
+            for s2 in slots_read_recursive(&body_new) {
+                live.insert(s2);
+            }
+            Some(HirOp::Loop(body_new))
+        }
+        HirOp::Block(body) => {
+            // Block falls through normally; Skip jumps past it.
+            // Both land at the post-Block live = current `live`.
+            let body_ctx = ExitCtx {
+                break_to: ctx.break_to.clone(),
+                continue_to: ctx.continue_to.clone(),
+                skip_to: Some(live.clone()),
+            };
+            let body_new = HirBlock {
+                ops: ldve_ops(body.ops, live, &body_ctx),
+                result_slot: body.result_slot,
+            };
+            for s2 in slots_read_recursive(&body_new) {
+                live.insert(s2);
+            }
+            Some(HirOp::Block(body_new))
+        }
+        HirOp::Break => {
+            *live = ctx.break_to.clone().unwrap_or_default();
+            Some(HirOp::Break)
+        }
+        HirOp::Continue => {
+            *live = ctx.continue_to.clone().unwrap_or_default();
+            Some(HirOp::Continue)
+        }
+        HirOp::Stop => {
+            live.clear();
+            Some(HirOp::Stop)
+        }
+        HirOp::Skip => {
+            *live = ctx.skip_to.clone().unwrap_or_default();
+            Some(HirOp::Skip)
+        }
+        HirOp::Call { args, ret, target } => {
+            for r in &ret {
+                live.remove(r);
+            }
+            for a in &args {
+                live.insert(*a);
+            }
+            Some(HirOp::Call { args, ret, target })
+        }
+    }
+}
+
+/// Recursively collect every slot any op in `block` reads.
+fn slots_read_recursive(block: &HirBlock) -> HashSet<SlotId> {
+    let mut out = HashSet::new();
+    for op in &block.ops {
+        collect_read(op, &mut out);
+    }
+    out
+}
+
+fn collect_read(op: &HirOp, out: &mut HashSet<SlotId>) {
+    match op {
+        HirOp::Copy(_, src) => {
+            out.insert(*src);
+        }
+        HirOp::Inc(s) | HirOp::Dec(s) => {
+            out.insert(*s);
+        }
+        HirOp::Match(s, arms) => {
+            out.insert(*s);
+            for (b, _) in arms {
+                for o in &b.ops {
+                    collect_read(o, out);
+                }
+            }
+        }
+        HirOp::Loop(b) | HirOp::Block(b) => {
+            for o in &b.ops {
+                collect_read(o, out);
+            }
+        }
+        HirOp::Call { args, .. } => {
+            for a in args {
+                out.insert(*a);
+            }
+        }
+        HirOp::WriteRegister(_, Either::Right(s)) => {
+            out.insert(*s);
+        }
+        _ => {}
+    }
+}
+
 fn eliminate_dead_stores_ops(mut ops: Vec<HirOp>) -> Vec<HirOp> {
     // First: recurse into nested blocks.
     ops = ops.into_iter().map(recurse_dead).collect();
@@ -233,21 +486,45 @@ fn recurse_dead(op: HirOp) -> HirOp {
     }
 }
 
+/// Does `op` or anything nested inside it read `slot`? Used by DSE
+/// to decide whether a `Set(slot, _)` is still live past this op.
+///
+/// `Break` / `Continue` / `Stop` / `Skip` don't read or write the
+/// slot but they **exit the enclosing block**, which means any
+/// straight-line write after them is unreachable — those are still
+/// "barriers" for the DSE's unconditional-write search.
 fn op_reads_or_barrier(op: &HirOp, slot: SlotId) -> bool {
     match op {
         HirOp::Set(_, _) => false,
-        HirOp::Copy(dst, src) => *src == slot || *dst == slot_next_to(slot, dst), // src read
-        HirOp::Inc(s) | HirOp::Dec(s) => *s == slot, // read-modify-write
-        HirOp::Match(s, _) => *s == slot,
+        HirOp::Copy(dst, src) => *src == slot || *dst == slot_next_to(slot, dst),
+        HirOp::Inc(s) | HirOp::Dec(s) => *s == slot,
+        // Recurse into arms: Match is only a barrier if the slot
+        // is actually read (as scrutinee or inside any arm body).
+        HirOp::Match(s, arms) => {
+            *s == slot
+                || arms
+                    .iter()
+                    .any(|(b, _)| block_reads_or_exits(b, slot))
+        }
         HirOp::ReadRegister(_, _) => false,
         HirOp::WriteRegister(_, Either::Right(s)) => *s == slot,
         HirOp::WriteRegister(_, Either::Left(_)) => false,
         HirOp::Call { args, ret, .. } => args.contains(&slot) || ret.contains(&slot),
-        // Any control-flow construct is a barrier: we can't reason about
-        // what happens inside without deeper analysis.
-        HirOp::Loop(_) | HirOp::Block(_) => true,
+        // Loop / Block: recurse. A Loop that doesn't touch `slot`
+        // is transparent to DSE of `slot`; one that reads or
+        // exits must be a barrier.
+        HirOp::Loop(b) | HirOp::Block(b) => block_reads_or_exits(b, slot),
         HirOp::Break | HirOp::Continue | HirOp::Stop | HirOp::Skip => true,
     }
+}
+
+/// Recursively: does `block` read `slot` anywhere, or contain an
+/// unconditional early exit (Break/Continue/Stop/Skip)?
+fn block_reads_or_exits(block: &HirBlock, slot: SlotId) -> bool {
+    block
+        .ops
+        .iter()
+        .any(|op| op_reads_or_barrier(op, slot))
 }
 
 // Tiny helper to keep the `Copy(dst, src)` check from accidentally matching

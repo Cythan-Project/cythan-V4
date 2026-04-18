@@ -12,8 +12,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use hir::{
-    gen_function_with_natives, hir_to_mir, inline_program_full, specialize_monomorph,
-    specialize_to_fixpoint, text_dump, BuiltinNatives, HirFunction,
+    eliminate_dead_writes, gen_function_with_natives, hir_to_mir, inline_program_full,
+    optimize_block, specialize_monomorph, specialize_to_fixpoint, text_dump, BuiltinNatives,
+    HirFunction, SlotId,
 };
 use lir::CompilableInstruction;
 use mir::{MemoryState, MirCodeBlock, MirState};
@@ -358,10 +359,14 @@ pub fn compile_with_stats(
         .map_err(|e| format!("inline: {}", e))?;
     let hir_ops_post_inline = hir::count_ops(&inlined.body);
 
-    let specialized_body = specialize_to_fixpoint(inlined.body);
-    let hir_ops_post_specialize = hir::count_ops(&specialized_body);
+    let specialized_body = specialize_to_fixpoint(inlined.body.clone());
+    let cleaned_body = optimize_block(specialized_body);
+    let live_at_exit = output_slots_of(&inlined.sig);
+    let lva_body = eliminate_dead_writes(cleaned_body, &live_at_exit);
+    let final_body = optimize_block(lva_body);
+    let hir_ops_post_specialize = hir::count_ops(&final_body);
 
-    let mir = hir_to_mir(&specialized_body).map_err(|e| format!("mir: {}", e))?;
+    let mir = hir_to_mir(&final_body).map_err(|e| format!("mir: {}", e))?;
     let mir_ops = mir.instr_count();
 
     let lir_pre = mir_to_lir_raw(&mir);
@@ -537,10 +542,27 @@ pub fn compile(
     let inlined = inline_program_full(&spec.functions, entry, Some(&built.reg), Some(&built.db))
         .map_err(|e| format!("inline: {}", e))?;
     // Post-inline sweep: flow-sensitive const propagation + match
-    // folding that can only see across the freshly spliced-in
-    // bodies.
+    // folding, followed by dead-store elimination (overwrite-based)
+    // and liveness-based dead-write elimination. LVA catches
+    // writes that are never read at all — not just ones
+    // immediately overwritten.
     let specialized = specialize_to_fixpoint(inlined.body);
-    hir_to_mir(&specialized).map_err(|e| format!("mir: {}", e))
+    let cleaned = optimize_block(specialized);
+    let live_at_exit = output_slots_of(&inlined.sig);
+    let lva_cleaned = eliminate_dead_writes(cleaned, &live_at_exit);
+    let final_block = optimize_block(lva_cleaned);
+    hir_to_mir(&final_block).map_err(|e| format!("mir: {}", e))
+}
+
+/// Output slots of a function's flat signature: the cells reserved
+/// for the `_ret` param, which the caller (or the top-level runner)
+/// reads after the function returns.
+fn output_slots_of(sig: &typer::FlatSig) -> std::collections::HashSet<SlotId> {
+    let mut out = std::collections::HashSet::new();
+    for i in 0..sig.output_count {
+        out.insert(SlotId(sig.input_count + i));
+    }
+    out
 }
 
 /// Default MIR-step ceiling for test harnesses. Every interaction

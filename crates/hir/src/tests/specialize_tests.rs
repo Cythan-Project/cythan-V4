@@ -185,6 +185,104 @@ fn readonly_slot_keeps_domain_inside_loop() {
 }
 
 #[test]
+fn dse_sees_through_match_that_doesnt_read_slot() {
+    // Set(v0, 1); Match(cond, [... none read v0 ...]); Copy(v0, v1)
+    // Previously the Match was an opaque barrier; the recursive
+    // reader-check lets DSE look inside each arm and confirm v0
+    // is untouched, so the initial Set is still dead.
+    use crate::opt::optimize_block;
+    let input = blk(vec![
+        HirOp::Set(sid(0), 1), // dead: v0 never read before Copy below
+        HirOp::Match(
+            sid(2),
+            vec![
+                (blk(vec![HirOp::Set(sid(3), 0)]), vec![0]),
+                (blk(vec![HirOp::Inc(sid(3))]), (1..=15).collect()),
+            ],
+        ),
+        HirOp::Copy(sid(0), sid(1)),
+    ]);
+    let out = optimize_block(input);
+    assert!(
+        !out.ops.iter().any(|op| matches!(op, HirOp::Set(SlotId(0), 1))),
+        "DSE should have killed the dead Set through the transparent Match: {:#?}",
+        out.ops
+    );
+}
+
+#[test]
+fn dse_preserves_set_read_inside_match_arm() {
+    // Same shape but an arm reads v0 — Set must survive.
+    use crate::opt::optimize_block;
+    let input = blk(vec![
+        HirOp::Set(sid(0), 1),
+        HirOp::Match(
+            sid(2),
+            vec![
+                (blk(vec![HirOp::Copy(sid(3), sid(0))]), vec![0]), // reads v0
+                (blk(vec![HirOp::Inc(sid(3))]), (1..=15).collect()),
+            ],
+        ),
+        HirOp::Copy(sid(0), sid(1)),
+    ]);
+    let out = optimize_block(input);
+    assert!(
+        out.ops.iter().any(|op| matches!(op, HirOp::Set(SlotId(0), 1))),
+        "DSE must NOT kill Set(v0, 1) — it's read inside the arm: {:#?}",
+        out.ops
+    );
+}
+
+#[test]
+fn identity_copy_is_removed() {
+    // Copy(x, x) is a no-op; the pass should drop it.
+    let input = blk(vec![
+        HirOp::Set(sid(0), 3),
+        HirOp::Copy(sid(0), sid(0)),
+        HirOp::Inc(sid(0)),
+    ]);
+    let out = specialize_to_fixpoint(input);
+    assert!(
+        !out.ops.iter().any(|op| matches!(op, HirOp::Copy(s, t) if s == t)),
+        "identity Copy(x, x) should be gone: {:#?}",
+        out.ops
+    );
+    assert_eq!(
+        out.ops.len(),
+        2,
+        "expected exactly Set + Inc after removing the no-op Copy"
+    );
+}
+
+#[test]
+fn dse_removes_set_killed_by_later_copy() {
+    // The user's example: Set(v0, 1); <code without v0>; Copy(v0, v1).
+    // The trailing Copy writes v0 without anyone having read it in
+    // between — the initial Set is dead and should go away.
+    //
+    // Note: this exercises `hir::opt::optimize_block`'s DSE, which
+    // `new_pipeline::compile` runs after the specialize pass.
+    // Keeps the test in the specialize suite so the DSE contract
+    // stays visible next to the pass it backs up.
+    use crate::opt::optimize_block;
+    let input = blk(vec![
+        HirOp::Set(sid(0), 1),
+        HirOp::Set(sid(2), 5),  // arbitrary filler that doesn't touch v0
+        HirOp::Copy(sid(0), sid(1)),
+    ]);
+    let out = optimize_block(input);
+    assert!(
+        !out.ops.iter().any(|op| matches!(op, HirOp::Set(SlotId(0), 1))),
+        "dead Set(v0, 1) should have been eliminated: {:#?}",
+        out.ops
+    );
+    assert!(
+        out.ops.iter().any(|op| matches!(op, HirOp::Copy(SlotId(0), SlotId(1)))),
+        "the killing Copy must survive"
+    );
+}
+
+#[test]
 fn readonly_slot_keeps_domain_across_loop_exit() {
     // Set(s0, 7); Loop { Inc(s1); Break }; Copy(s2, s0)
     //   s0 read-only inside the loop, so its domain {7} survives

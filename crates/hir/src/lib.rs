@@ -24,7 +24,7 @@ pub use interp::{CapturedIo, InterpError, Interpreter, IoContext};
 pub use ir::{count_ops, ConcreteTemplateArg, ConcreteType, FnRef, HirBlock, HirFunction, HirOp, SlotId};
 pub use monomorph::{monomorphize, MonomorphKey};
 pub use natives::{BuiltinNatives, NativeCall, NativeEmitter, NativeProvider};
-pub use opt::{optimize_block, optimize_function};
+pub use opt::{eliminate_dead_writes, optimize_block, optimize_function};
 pub use specialize::{specialize_to_fixpoint, specialize_to_fixpoint_with_domains};
 pub use spec_monomorph::{run as specialize_monomorph, SpecResult};
 

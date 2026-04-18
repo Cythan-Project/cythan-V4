@@ -158,7 +158,8 @@ pub fn specialize_to_fixpoint_with_domains(
         for (i, d) in arg_domains.iter().enumerate() {
             ctx.put(SlotId(i as u32), *d);
         }
-        block = specialize_block(block, &ctx);
+        let (new_block, _final_ctx) = specialize_block(block, &ctx);
+        block = new_block;
         if block == before {
             break;
         }
@@ -166,16 +167,19 @@ pub fn specialize_to_fixpoint_with_domains(
     block
 }
 
-fn specialize_block(block: HirBlock, inbound: &Ctx) -> HirBlock {
+fn specialize_block(block: HirBlock, inbound: &Ctx) -> (HirBlock, Ctx) {
     let mut ctx = inbound.clone();
     let mut out: Vec<HirOp> = Vec::with_capacity(block.ops.len());
     for op in block.ops {
         specialize_op(op, &mut ctx, &mut out);
     }
-    HirBlock {
-        ops: out,
-        result_slot: block.result_slot,
-    }
+    (
+        HirBlock {
+            ops: out,
+            result_slot: block.result_slot,
+        },
+        ctx,
+    )
 }
 
 fn specialize_op(op: HirOp, ctx: &mut Ctx, out: &mut Vec<HirOp>) {
@@ -185,6 +189,10 @@ fn specialize_op(op: HirOp, ctx: &mut Ctx, out: &mut Vec<HirOp>) {
             out.push(HirOp::Set(slot, v));
         }
         HirOp::Copy(dst, src) => {
+            // Identity copy: `Copy(x, x)` is a no-op. Drop it.
+            if dst == src {
+                return;
+            }
             let src_dom = ctx.get(src);
             if let Some(v) = src_dom.as_singleton() {
                 // Source is a known constant — collapse to Set.
@@ -210,26 +218,26 @@ fn specialize_op(op: HirOp, ctx: &mut Ctx, out: &mut Vec<HirOp>) {
 
             // Fast path: the scrutinee domain is fully contained in
             // one arm's value list — that arm always fires. Splice
-            // its body in place.
+            // its body in place, inherit its final ctx.
             for (body, values) in &arms {
                 let arm_dom = Domain::from_values(values);
                 if scrut_dom.is_subset_of(arm_dom) {
-                    let specialized = specialize_block(body.clone(), ctx);
-                    let mutated = slots_mutated(&specialized);
+                    let (specialized, arm_final_ctx) =
+                        specialize_block(body.clone(), ctx);
                     out.extend(specialized.ops);
-                    for s in mutated {
-                        ctx.forget(s);
-                    }
+                    *ctx = arm_final_ctx;
                     return;
                 }
             }
 
             // General case: prune dead arms and recurse into the
             // survivors with the scrutinee narrowed to that arm's
-            // values. Drop arms whose values don't overlap the
-            // current scrutinee domain.
+            // values. After the match, join domains across arms
+            // that FALL THROUGH (don't break/continue/stop).
             let mut specialized_arms: Vec<(HirBlock, Vec<u8>)> = Vec::new();
-            let mut mutated_across_arms = std::collections::HashSet::new();
+            let mut falling_through_ctxs: Vec<Ctx> = Vec::new();
+            let mut touched_by_any_arm: std::collections::HashSet<SlotId> =
+                std::collections::HashSet::new();
             for (body, values) in arms {
                 let arm_dom = Domain::from_values(&values);
                 if scrut_dom.intersect(arm_dom).is_empty() {
@@ -237,17 +245,50 @@ fn specialize_op(op: HirOp, ctx: &mut Ctx, out: &mut Vec<HirOp>) {
                 }
                 let mut arm_ctx = ctx.clone();
                 arm_ctx.narrow(scrutinee, arm_dom);
-                let specialized_body = specialize_block(body, &arm_ctx);
+                let (specialized_body, arm_final) =
+                    specialize_block(body, &arm_ctx);
                 for s in slots_mutated(&specialized_body) {
-                    mutated_across_arms.insert(s);
+                    touched_by_any_arm.insert(s);
+                }
+                // Arms that break out (loop exit) or continue
+                // don't contribute to the join — their final ctx
+                // is for a path that never reaches the post-match
+                // code.
+                if !arm_exits_enclosing(&specialized_body) {
+                    falling_through_ctxs.push(arm_final);
                 }
                 specialized_arms.push((specialized_body, values));
             }
-            // Arms may have mutated the scrutinee; post-match we
-            // can't keep the old domain. The mutated set covers
-            // this for free (the scrutinee is just another slot).
-            for s in mutated_across_arms {
-                ctx.forget(s);
+
+            // Cross-arm join over arms that fall through. If no
+            // arm falls through (all break/continue) then
+            // post-match code is unreachable in theory; we still
+            // keep the outer ctx (safe, nothing added).
+            if !falling_through_ctxs.is_empty() {
+                let mut touched_slots: std::collections::HashSet<SlotId> =
+                    std::collections::HashSet::new();
+                for c in &falling_through_ctxs {
+                    for s in c.known.keys() {
+                        touched_slots.insert(*s);
+                    }
+                }
+                for s in ctx.known.keys().copied().collect::<Vec<_>>() {
+                    touched_slots.insert(s);
+                }
+                for s in touched_slots {
+                    let joined = falling_through_ctxs
+                        .iter()
+                        .map(|c| c.get(s))
+                        .fold(Domain::EMPTY, |acc, d| acc.union(d));
+                    ctx.put(s, joined);
+                }
+            } else {
+                // At least forget slots we know were mutated —
+                // we can't prove anything about their post-match
+                // domain without a fall-through arm.
+                for s in touched_by_any_arm {
+                    ctx.forget(s);
+                }
             }
             out.push(HirOp::Match(scrutinee, specialized_arms));
         }
@@ -262,14 +303,18 @@ fn specialize_op(op: HirOp, ctx: &mut Ctx, out: &mut Vec<HirOp>) {
             for s in &mutated {
                 loop_ctx.forget(*s);
             }
-            let specialized = specialize_block(body, &loop_ctx);
+            let (specialized, _final) = specialize_block(body, &loop_ctx);
             out.push(HirOp::Loop(specialized));
             for s in mutated {
                 ctx.forget(s);
             }
         }
         HirOp::Block(body) => {
-            let specialized = specialize_block(body, ctx);
+            // Block bodies can `Skip` mid-way to exit early. We
+            // can't tell without control-flow analysis whether
+            // that happens, so: use the pre-block ctx with any
+            // mutated slot forgotten — safe over-approximation.
+            let (specialized, _final) = specialize_block(body, ctx);
             for s in slots_mutated(&specialized) {
                 ctx.forget(s);
             }
@@ -302,6 +347,40 @@ fn specialize_op(op: HirOp, ctx: &mut Ctx, out: &mut Vec<HirOp>) {
             out.push(HirOp::Call { target, args, ret });
         }
     }
+}
+
+/// Does this arm always exit its enclosing control-flow (break,
+/// continue, stop, or skip) regardless of which path it takes?
+///
+/// Conservative syntactic check: `true` iff any **top-level** op in
+/// the block is `Break` / `Continue` / `Stop` / `Skip`, OR the last
+/// op itself is a Match/Block whose every arm/body unconditionally
+/// exits. Loops are NOT considered exiting (they may iterate 0
+/// times and fall through).
+///
+/// Used by the cross-arm domain join: arms that exit don't
+/// contribute to the post-match context because control never
+/// reaches the post-match code via them.
+fn arm_exits_enclosing(block: &HirBlock) -> bool {
+    for op in &block.ops {
+        match op {
+            HirOp::Break | HirOp::Continue | HirOp::Stop | HirOp::Skip => return true,
+            _ => {}
+        }
+    }
+    // Also: if the final op is a Match whose every arm exits, or
+    // a Block that exits, the whole arm exits. Pragmatic check:
+    // only the immediate final op.
+    if let Some(last) = block.ops.last() {
+        match last {
+            HirOp::Match(_, arms) if !arms.is_empty() => {
+                return arms.iter().all(|(b, _)| arm_exits_enclosing(b));
+            }
+            HirOp::Block(b) => return arm_exits_enclosing(b),
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Set of slots that some op in `block` writes to, recursively.
