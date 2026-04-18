@@ -7,6 +7,7 @@ pub mod inline;
 pub mod interp;
 pub mod ir;
 pub mod monomorph;
+pub mod mut_elide;
 pub mod natives;
 pub mod opt;
 pub mod spec_monomorph;
@@ -19,6 +20,10 @@ mod tests;
 pub use arg_elide::{
     elide_unused_args, elide_unused_args_with_stats, summarize as summarize_arg_usage, ElideStats,
     FnSummary,
+};
+pub use mut_elide::{
+    compute_effective_mutation, elide_redundant_mut, elide_redundant_mut_with_stats,
+    summarize_mutation, FnMutationSummary, MutationElideStats,
 };
 pub use array_synth::{ArrayMonomorphCache, ArraySpec};
 pub use call_graph::{build_call_graph, CallGraph};

@@ -11,10 +11,12 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use hir::natives::NativeProvider;
 use hir::{
-    elide_unused_args, elide_unused_args_with_stats, eliminate_dead_writes,
-    gen_function_with_natives, hir_to_mir, inline_program_full, optimize_block,
-    specialize_monomorph, specialize_to_fixpoint, text_dump, BuiltinNatives, HirFunction, SlotId,
+    elide_redundant_mut, elide_redundant_mut_with_stats, elide_unused_args,
+    elide_unused_args_with_stats, eliminate_dead_writes, gen_function_with_natives, hir_to_mir,
+    inline_program_full, optimize_block, specialize_monomorph, specialize_to_fixpoint, text_dump,
+    BuiltinNatives, HirFunction, SlotId,
 };
 use lir::CompilableInstruction;
 use mir::{MemoryState, MirCodeBlock, MirState};
@@ -285,6 +287,10 @@ pub struct PipelineStats {
     /// Sum of HIR ops across every function *after* the pre-inline
     /// specialization monomorphizer (grows with new variants).
     pub hir_ops_post_spec_mono: usize,
+    /// Number of param slots whose `mut` flag was flipped to
+    /// non-mut by the mutability-elision pass
+    /// (`crates/hir/src/mut_elide.rs`).
+    pub mut_elide_params_flipped: u32,
     /// Number of input cells dropped by the unused-arg elision
     /// pass (`crates/hir/src/arg_elide.rs`). Aggregated across
     /// every function trimmed over all fixpoint rounds.
@@ -313,12 +319,13 @@ impl std::fmt::Display for PipelineStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(
             f,
-            "HIR: {} fn — {} ops  →  spec-mono: +{} variant{}, {} ops  →  arg-elide: −{} cell{} ({} fn)  →  inlined: {} ops  →  cleanup: {} ops",
+            "HIR: {} fn — {} ops  →  spec-mono: +{} variant{}, {} ops  →  mut-elide: −{} mut  →  arg-elide: −{} cell{} ({} fn)  →  inlined: {} ops  →  cleanup: {} ops",
             self.hir_functions,
             self.hir_ops_pre_inline,
             self.specialized_variants,
             if self.specialized_variants == 1 { "" } else { "s" },
             self.hir_ops_post_spec_mono,
+            self.mut_elide_params_flipped,
             self.arg_elide_dropped_cells,
             if self.arg_elide_dropped_cells == 1 { "" } else { "s" },
             self.arg_elide_functions_trimmed,
@@ -357,8 +364,9 @@ pub fn compile_with_stats(
         .values()
         .map(|f| hir::count_ops(&f.body))
         .sum();
+    let BuiltHir { reg, db, hir } = built;
 
-    let spec = specialize_monomorph(built.hir, entry);
+    let spec = specialize_monomorph(hir, entry);
     let specialized_variants = spec.specialized_count;
     let hir_ops_post_spec_mono: usize = spec
         .functions
@@ -366,13 +374,22 @@ pub fn compile_with_stats(
         .map(|f| hir::count_ops(&f.body))
         .sum();
 
+    // Downgrade `mut` params that aren't effectively mutated
+    // anywhere (see `crates/hir/src/mut_elide.rs`). Run before
+    // arg-elide so newly-immutable-and-untouched params get
+    // dropped in the same round.
+    let natives = BuiltinNatives::new();
+    let (demut, mut_elide_stats) =
+        elide_redundant_mut_with_stats(spec.functions, |sig| {
+            is_target_known_non_mutating(sig, &natives, &db)
+        });
     // Drop unused function arguments across the program. Runs
     // after spec-monomorph so per-variant usage info (post
     // domain-propagation) drives elision. See
     // `crates/hir/src/arg_elide.rs`.
-    let (trimmed, elide_stats) = elide_unused_args_with_stats(spec.functions, entry);
+    let (trimmed, elide_stats) = elide_unused_args_with_stats(demut, entry);
 
-    let inlined = inline_program_full(&trimmed, entry, Some(&built.reg), Some(&built.db))
+    let inlined = inline_program_full(&trimmed, entry, Some(&reg), Some(&db))
         .map_err(|e| format!("inline: {}", e))?;
     let hir_ops_post_inline = hir::count_ops(&inlined.body);
 
@@ -396,6 +413,7 @@ pub fn compile_with_stats(
         specialized_variants,
         hir_ops_pre_inline,
         hir_ops_post_spec_mono,
+        mut_elide_params_flipped: mut_elide_stats.params_flipped,
         arg_elide_dropped_cells: elide_stats.dropped_cells,
         arg_elide_functions_trimmed: elide_stats.functions_trimmed,
         hir_ops_post_inline,
@@ -557,13 +575,22 @@ pub fn compile(
     // Pre-inline specialization: emits named variants per
     // (base_sig, arg_domains). The fns map grows; the inliner
     // picks the tighter body at each call site.
-    let spec = specialize_monomorph(built.hir, entry);
+    let BuiltHir { reg, db, hir } = built;
+    let spec = specialize_monomorph(hir, entry);
+    // Downgrade `mut` params that aren't effectively mutated
+    // anywhere in the program (see `crates/hir/src/mut_elide.rs`).
+    // Run before arg-elide so newly-immutable-and-untouched
+    // params get picked up there.
+    let natives = BuiltinNatives::new();
+    let demut = elide_redundant_mut(spec.functions, |sig| {
+        is_target_known_non_mutating(sig, &natives, &db)
+    });
     // Drop unused function arguments across the program (see
     // `crates/hir/src/arg_elide.rs`). Runs post-spec so
     // domain-propagation-driven constant folding has already had
     // its chance to reveal newly-unused params.
-    let trimmed = elide_unused_args(spec.functions, entry);
-    let inlined = inline_program_full(&trimmed, entry, Some(&built.reg), Some(&built.db))
+    let trimmed = elide_unused_args(demut, entry);
+    let inlined = inline_program_full(&trimmed, entry, Some(&reg), Some(&db))
         .map_err(|e| format!("inline: {}", e))?;
     // Post-inline sweep: flow-sensitive const propagation + match
     // folding, followed by dead-store elimination (overwrite-based)
@@ -581,6 +608,33 @@ pub fn compile(
 /// Output slots of a function's flat signature: the cells reserved
 /// for the `_ret` param, which the caller (or the top-level runner)
 /// reads after the function returns.
+/// Predicate for `mut_elide`: does this call target clearly not
+/// mutate any caller slot? True for
+///   * known natives (they only touch VM registers), and
+///   * any function in the `FunctionDB` (Simple or Templated)
+///     declared with zero `mut` params — the inliner's back-copy
+///     loop is gated on the callee's `SlotInfo.mutable`, so such
+///     a callee can't feed mutation back to the caller regardless
+///     of its body.
+///
+/// Returning `false` is always safe — it just keeps the caller's
+/// matching arg cell marked as mutated.
+fn is_target_known_non_mutating(
+    sig: &typer::FnSig,
+    natives: &BuiltinNatives,
+    db: &typer::FunctionDB,
+) -> bool {
+    if natives.has_method(&sig.type_name, &sig.method_name) {
+        return true;
+    }
+    let params = match db.get(sig) {
+        Some(typer::Fn::Simple(s)) => &s.body.sig.params,
+        Some(typer::Fn::Templated(t)) => &t.body.sig.params,
+        None => return false,
+    };
+    params.iter().all(|p| !p.mutable)
+}
+
 fn output_slots_of(sig: &typer::FlatSig) -> std::collections::HashSet<SlotId> {
     let mut out = std::collections::HashSet::new();
     for i in 0..sig.output_count {
