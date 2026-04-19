@@ -618,6 +618,38 @@ fn e0018_continue_outside_loop() {
 }
 
 // =========================================================================
+// E0010 — function return-type mismatch
+// =========================================================================
+#[test]
+fn e0010_return_type_mismatch_char_vs_u4() {
+    let src = r#"
+        struct Foo { U4 v, }
+        extension Foo {
+            fn go(self): U4 {
+                'c'
+            }
+        }
+    "#;
+    let diag = hir_diagnostic(src, "Foo", "go");
+    assert_diag(&diag, Severity::Error, codes::E_TYPE_MISMATCH);
+    assert!(
+        diag.message.contains("returns `U4`") && diag.message.contains("`U8`"),
+        "should name both types; got {:?}",
+        diag.message
+    );
+    assert!(
+        diag.notes.iter().any(|n| n.contains("declares")),
+        "expected an explanatory note; got {:?}",
+        diag.notes
+    );
+    assert!(
+        diag.helps.iter().any(|h| h.contains("change")),
+        "expected an actionable help; got {:?}",
+        diag.helps
+    );
+}
+
+// =========================================================================
 // E0015 — duplicate struct field declaration (not just in literal)
 // =========================================================================
 #[test]

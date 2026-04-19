@@ -67,6 +67,13 @@ pub(crate) fn byte_range_to_lsp(text: &str, range: &std::ops::Range<usize>) -> R
     Range { start, end }
 }
 
+/// Public alias so callers outside this module can convert a
+/// char offset straight to an LSP `Position` without building
+/// a one-element range first.
+pub(crate) fn char_offset_to_lsp_position(text: &str, char_offset: usize) -> Position {
+    char_offset_to_position(text, char_offset)
+}
+
 fn char_offset_to_position(text: &str, char_offset: usize) -> Position {
     let mut line: u32 = 0;
     let mut character: u32 = 0;

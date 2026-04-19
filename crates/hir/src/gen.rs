@@ -46,6 +46,7 @@ pub fn gen_function_with_natives<P: NativeProvider>(
         None
     };
     let body = g.gen_block(&simple.body.body.0.stmts, result_slot)?;
+    g.check_return_type(simple)?;
     g.emit_unused_local_warnings();
 
     Ok(HirFunction {
@@ -673,7 +674,12 @@ impl<'a> Generator<'a> {
         field: &str,
         sp: &new_parser::Span,
     ) -> Result<String, HirError> {
-        let info = self.reg.get_type(type_name).unwrap();
+        let Some(info) = self.reg.get_type(type_name) else {
+            return Err(HirError::at(
+                format!("unknown type `{}` when resolving field `{}`", type_name, field),
+                sp.clone(),
+            ));
+        };
         // Re-read the struct's field layout; since layout only has names +
         // sizes, we reconstruct the AST type name by matching the cell size
         // to the primitive U4 / or a same-size struct. This is a pragmatic
@@ -939,6 +945,97 @@ impl<'a> Generator<'a> {
             .get(&self.simple.file_id)
             .cloned()
             .unwrap_or_default()
+    }
+
+    /// E0010 — last expression's type must match the declared
+    /// return type. Conservative: skips functions with no
+    /// return type, templated return types, and last
+    /// expressions that aren't a simple value (we can't type
+    /// `if`/`match`/`return` etc. without full flow analysis).
+    fn check_return_type(&self, simple: &typer::SimpleFn) -> Result<(), HirError> {
+        if simple.sig.output_count == 0 {
+            return Ok(());
+        }
+        let Some(ret_slot) = simple.sig.slots.iter().find(|s| s.name == "_ret") else {
+            return Ok(());
+        };
+        let declared = ret_slot.type_name.clone();
+        // Template param or `Self` — skip (we don't have the
+        // substitution context here).
+        if declared.is_empty() || declared == "Self" {
+            return Ok(());
+        }
+        let last = match simple.body.body.0.stmts.last() {
+            Some(e) => e,
+            None => return Ok(()),
+        };
+        // Skip complex control-flow shapes whose type is flow-
+        // sensitive.
+        match &last.0 {
+            ast::Expr::If { .. }
+            | ast::Expr::Match { .. }
+            | ast::Expr::Loop(_)
+            | ast::Expr::Return(_)
+            | ast::Expr::Block(_)
+            | ast::Expr::Break
+            | ast::Expr::Continue
+            | ast::Expr::Declaration { .. }
+            | ast::Expr::Assign { .. }
+            | ast::Expr::CompoundAssign { .. } => return Ok(()),
+            _ => {}
+        }
+        let actual_raw = match self.infer_expr_type(&last.0, &last.1) {
+            Ok(t) => t,
+            Err(_) => return Ok(()),
+        };
+        if actual_raw == "<?>" || actual_raw == "<str>" {
+            return Ok(());
+        }
+        let actual = self.resolve_ty_name(&actual_raw);
+        let declared_resolved = self.resolve_ty_name(&declared);
+        if actual == declared_resolved {
+            return Ok(());
+        }
+        // Numeric-literal coercion: `Number(_)` → "U4" per
+        // `infer_expr_type`. The literal-range check in
+        // `check_one_arg_type` handles overflow; don't
+        // double-fire here when the declared type is the other
+        // numeric cell.
+        if matches!(&last.0, ast::Expr::Number(_))
+            && matches!(declared_resolved.as_str(), "U4" | "U8")
+        {
+            return Ok(());
+        }
+        // If the inferred type isn't a registered concrete
+        // type (e.g. an associated-type projection like
+        // `Output`, or a template param name leaking through)
+        // and isn't one of the always-known cell types, skip —
+        // we'd produce a false positive against a name that
+        // stands in for an unknown concrete.
+        let is_builtin = matches!(actual.as_str(), "U4" | "U8" | "Bool");
+        if !is_builtin && self.reg.get_type(&actual).is_none() {
+            return Ok(());
+        }
+        let file = self.cur_file_name();
+        let diag = errors::Diagnostic::error(format!(
+            "function returns `{}` but the last expression has type `{}`",
+            declared_resolved, actual
+        ))
+        .with_code(errors::codes::E_TYPE_MISMATCH)
+        .with_primary(
+            errors::FileSpan::new(&file, last.1.clone()),
+            format!("expected `{}`, found `{}`", declared_resolved, actual),
+        )
+        .with_note(format!(
+            "`fn {}::{}` declares its return type as `{}`",
+            simple.type_name, simple.body.sig.name.0, declared_resolved
+        ))
+        .with_help(format!(
+            "change the return expression to something of type `{}`, \
+             or change the declared return type to `{}`",
+            declared_resolved, actual
+        ));
+        Err(HirError::from_diagnostic(diag))
     }
 
     /// E0018 — `break` / `continue` outside any enclosing loop.

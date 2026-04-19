@@ -45,6 +45,12 @@ pub(crate) fn resolve_code_actions(
         for action in actions_for_import(state, &uri, d) {
             out.push(CodeActionOrCommand::CodeAction(action));
         }
+        // Missing-struct-field fix (E0015 only) — parse the
+        // field names out of the help and splice placeholder
+        // assignments in before the literal's closing `}`.
+        for action in actions_for_missing_fields(state, &uri, d) {
+            out.push(CodeActionOrCommand::CodeAction(action));
+        }
     }
     out
 }
@@ -141,6 +147,134 @@ fn extract_cast_type(help: &str) -> Option<String> {
     let rest = help.strip_prefix(p)?;
     let end = rest.find('`')?;
     Some(rest[..end].to_string())
+}
+
+/// Quick fix for E0015 missing-fields-in-struct-literal:
+/// insert placeholder `field: 0` assignments before the
+/// literal's closing `}`. The help text emitted by the HIR
+/// generator lists the field names in backticks; we pull them
+/// out and reconstruct the snippet.
+fn actions_for_missing_fields(
+    state: &State,
+    uri: &Url,
+    diag: &Diagnostic,
+) -> Vec<CodeAction> {
+    let Some(NumberOrString::String(code)) = &diag.code else {
+        return vec![];
+    };
+    if code != "E0015" {
+        return vec![];
+    }
+    // The `add `b: …`, `c: …` to this literal` help is the
+    // only missing-fields shape we emit. Other E0015 shapes
+    // (unknown field, duplicate) are handled by the rename /
+    // dedup actions elsewhere.
+    let helps = extract_helps(&diag.message);
+    let Some(help) = helps.iter().find(|h| h.starts_with("add `")) else {
+        return vec![];
+    };
+    let names = extract_field_names(help);
+    if names.is_empty() {
+        return vec![];
+    }
+    // Find the closing `}` of the struct literal by scanning
+    // the source backwards from the diagnostic's primary range
+    // end. The range includes the whole literal, so the last
+    // non-whitespace char should be `}`.
+    let Some(text) = state.docs.get(uri) else {
+        return vec![];
+    };
+    let chars: Vec<char> = text.chars().collect();
+    let end_off = crate::text::position_to_char_offset(text, diag.range.end)
+        .unwrap_or(chars.len());
+    // Scan back for the `}`.
+    let mut brace_idx = None;
+    for i in (0..end_off.min(chars.len())).rev() {
+        if chars[i] == '}' {
+            brace_idx = Some(i);
+            break;
+        }
+    }
+    let Some(brace) = brace_idx else {
+        return vec![];
+    };
+    // Compute insert text. Figure out if the literal already
+    // has any fields so we know whether to prepend a `,`.
+    let between: String = chars[diag.range.start.line as usize..brace]
+        .iter()
+        .collect::<String>();
+    let _ = between; // unused; simpler heuristic below.
+    // Look for any comma or field before the `}` in the same
+    // literal; if the char immediately before the brace
+    // (skipping whitespace) is `{`, the literal is empty.
+    let mut i = brace;
+    while i > 0 && chars[i - 1].is_whitespace() {
+        i -= 1;
+    }
+    let literal_is_empty = i > 0 && chars[i - 1] == '{';
+    let trailing_comma = i > 0 && chars[i - 1] == ',';
+    let sep = if literal_is_empty || trailing_comma { "" } else { ", " };
+    let body = names
+        .iter()
+        .map(|n| format!("{}: 0", n))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let insert = format!("{}{}", sep, body);
+
+    let insert_pos = crate::text::char_offset_to_lsp_position(text, brace);
+    let range = Range {
+        start: insert_pos,
+        end: insert_pos,
+    };
+    vec![edit_action(
+        uri,
+        diag,
+        format!(
+            "Add missing field{} ({})",
+            if names.len() == 1 { "" } else { "s" },
+            names
+                .iter()
+                .map(|n| format!("`{}`", n))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        range,
+        insert,
+        /*preferred=*/ true,
+    )]
+}
+
+/// Extract every backticked identifier from a "add `a: …`, `b:
+/// …` …" help.
+fn extract_field_names(help: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let bytes = help.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'`' {
+            let start = i + 1;
+            let mut j = start;
+            while j < bytes.len() && bytes[j] != b'`' {
+                j += 1;
+            }
+            if j > start && j < bytes.len() {
+                let s = &help[start..j];
+                // Accept only `name: …` shapes.
+                if let Some(colon) = s.find(':') {
+                    let name = s[..colon].trim();
+                    if !name.is_empty()
+                        && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+                    {
+                        out.push(name.to_string());
+                    }
+                }
+            }
+            i = j + 1;
+        } else {
+            i += 1;
+        }
+    }
+    out
 }
 
 /// When an E0001/E0002 diagnostic names a symbol that IS known
