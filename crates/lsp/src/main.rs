@@ -55,6 +55,13 @@ struct State {
     /// Last symbol index, refreshed on every diagnose call.
     /// Drives go-to-definition.
     symbols: SymbolIndex,
+    /// Parsed AST per open document. Used by goto-definition to
+    /// infer the type of a method-call receiver from local
+    /// declarations / params / `self`.
+    asts: HashMap<Url, Vec<new_parser::ast::Spanned<new_parser::ast::Item>>>,
+    /// Last-built type registry. Required by receiver-type
+    /// inference to look up struct fields and method return types.
+    registry: Option<typer::TypeRegistry>,
 }
 
 /// Cross-file symbol index for go-to-definition. Stores the
@@ -107,6 +114,8 @@ impl State {
             docs: HashMap::new(),
             std_dir,
             symbols: SymbolIndex::default(),
+            asts: HashMap::new(),
+            registry: None,
         }
     }
 }
@@ -184,56 +193,90 @@ fn handle_request(connection: &Connection, state: &State, req: lsp_server::Reque
 /// Resolve a `textDocument/definition` request: find the
 /// identifier under the cursor in the open document, then look
 /// it up in the symbol index. Tries (in order):
-///   1. As a method when the identifier is preceded by `.` or
-///      `::` — falls back to "any type's method with this name"
-///      when the receiver type isn't statically obvious.
-///   2. As a type name.
-///   3. As a trait name.
+///   1. `Type::method` — exact `(Type, method)` lookup.
+///   2. `recv.method` — infer `recv`'s type from the enclosing
+///      method's params / locals / `self`, then exact lookup.
+///      Falls back to "any method with this name" only when
+///      inference doesn't give a concrete type.
+///   3. Bare identifier — type, trait, then method-by-name.
 fn resolve_definition(state: &State, uri: &Url, pos: Position) -> Option<Location> {
     let text = state.docs.get(uri)?;
     let (word, prev_marker) = identifier_at(text, pos)?;
     if word.is_empty() {
         return None;
     }
-    if matches!(prev_marker, IdContext::AfterDot | IdContext::AfterColons) {
-        // Method reference: prefer an exact (Type, method) match
-        // when the receiver token before the `.` / `::` is a
-        // known type. Otherwise fall back to method-name search.
-        if let IdContext::AfterColons = prev_marker {
-            if let Some(receiver) = state.symbols.types.get(&word) {
-                // Pattern is `Type::word` — receiver token IS a
-                // type. Prefer the type itself if `word` is the
-                // type name, else prefer the method.
-                let _ = receiver;
+
+    if let IdContext::AfterColons = prev_marker {
+        if let Some(receiver_token) = receiver_before(text, pos) {
+            // Try exact `(Type, method)` match first.
+            if let Some(loc) = state
+                .symbols
+                .methods
+                .get(&(receiver_token.clone(), word.clone()))
+            {
+                return Some(loc.clone());
             }
-            // Pull the receiver token.
-            if let Some(receiver_ty) = receiver_before(text, pos) {
-                if let Some(loc) = state
-                    .symbols
-                    .methods
-                    .get(&(receiver_ty, word.clone()))
-                {
-                    return Some(loc.clone());
+            // `Self::method` when we know the enclosing extension's
+            // target type.
+            if receiver_token == "Self" {
+                let pos_off = position_to_char_offset(text, pos)?;
+                if let Some(items) = state.asts.get(uri) {
+                    if let Some(self_ty) = enclosing_self_type(items, pos_off) {
+                        if let Some(loc) = state
+                            .symbols
+                            .methods
+                            .get(&(self_ty, word.clone()))
+                        {
+                            return Some(loc.clone());
+                        }
+                    }
                 }
             }
         }
-        if let Some(matches) = state.symbols.methods_by_name.get(&word) {
-            if let Some(first) = matches.first() {
-                return Some(first.clone());
+    }
+
+    if let IdContext::AfterDot = prev_marker {
+        // Find the MethodCall AST node containing the cursor and
+        // infer the receiver expression's type. This handles
+        // chained shapes like `self.r0.get(col)` whose receiver
+        // is a Field, not a bare identifier.
+        let pos_off = position_to_char_offset(text, pos)?;
+        if let (Some(items), Some(reg)) =
+            (state.asts.get(uri), state.registry.as_ref())
+        {
+            if let Some((env, recv)) = method_call_at(items, pos_off, &word) {
+                if let Some(ty) = infer_expr_type(recv, &env, reg) {
+                    if let Some(loc) = state
+                        .symbols
+                        .methods
+                        .get(&(ty.clone(), word.clone()))
+                    {
+                        return Some(loc.clone());
+                    }
+                    eprintln!(
+                        "cythan-lsp: inferred recv type `{}` for `.{}` but \
+                         no method match",
+                        ty, word
+                    );
+                }
             }
         }
+        // Last resort — could not infer, fall back to any
+        // matching method name. Only when there's a single
+        // candidate, to avoid jumping to an arbitrary pick.
+        if let Some(matches) = state.symbols.methods_by_name.get(&word) {
+            if matches.len() == 1 {
+                return Some(matches[0].clone());
+            }
+            return None;
+        }
     }
+
     if let Some(loc) = state.symbols.types.get(&word) {
         return Some(loc.clone());
     }
     if let Some(loc) = state.symbols.traits.get(&word) {
         return Some(loc.clone());
-    }
-    // Fallback: even a bare identifier might be a method.
-    if let Some(matches) = state.symbols.methods_by_name.get(&word) {
-        if let Some(first) = matches.first() {
-            return Some(first.clone());
-        }
     }
     None
 }
@@ -287,6 +330,34 @@ fn identifier_at(text: &str, pos: Position) -> Option<(String, IdContext)> {
     Some((word, ctx))
 }
 
+/// Identifier (or `self`) immediately before a `.` at `pos`.
+/// Returns `None` if the receiver is a complex expression (we
+/// only handle the common single-identifier case).
+#[allow(dead_code)]
+fn receiver_name_before_dot(text: &str, pos: Position) -> Option<String> {
+    let offset = position_to_char_offset(text, pos)?;
+    let chars: Vec<char> = text.chars().collect();
+    let is_id = |c: char| c.is_alphanumeric() || c == '_';
+    // Walk back through the identifier under cursor.
+    let mut i = offset.min(chars.len());
+    while i > 0 && is_id(chars[i - 1]) {
+        i -= 1;
+    }
+    if i == 0 || chars[i - 1] != '.' {
+        return None;
+    }
+    let mut j = i - 1;
+    while j > 0 && is_id(chars[j - 1]) {
+        j -= 1;
+    }
+    let recv: String = chars[j..i - 1].iter().collect();
+    if recv.is_empty() {
+        None
+    } else {
+        Some(recv)
+    }
+}
+
 /// Snip out the receiver identifier directly before a `::` at
 /// `pos` (inclusive of `pos`'s token's start). Used to map
 /// `Type::method` to `methods[(Type, method)]`.
@@ -312,6 +383,309 @@ fn receiver_before(text: &str, pos: Position) -> Option<String> {
         None
     } else {
         Some(recv)
+    }
+}
+
+// ---- AST-driven receiver type inference ---------------------------------
+
+/// Snapshot of the receiver-name → type bindings visible at a
+/// particular cursor position. Built from the enclosing method's
+/// `self` parameter, regular parameters, and `Declaration`
+/// statements seen before the cursor.
+struct LocalEnv {
+    /// Type the enclosing method's `self` resolves to. `None` for
+    /// free functions (which the language doesn't have today).
+    self_ty: Option<String>,
+    /// `name` → declared type name, lowest in the file wins
+    /// (mirrors lexical scoping for shadowing).
+    bindings: HashMap<String, String>,
+}
+
+/// Find the `MethodCall` AST node whose `name` token sits at
+/// `pos_off` (matching `method_name`) and return its receiver
+/// expression along with the local environment in scope at that
+/// position. Returns `None` if the cursor isn't inside a method
+/// of an extension/impl, or no matching MethodCall exists there.
+fn method_call_at<'a>(
+    items: &'a [new_parser::ast::Spanned<new_parser::ast::Item>],
+    pos_off: usize,
+    method_name: &str,
+) -> Option<(LocalEnv, &'a new_parser::ast::Spanned<new_parser::ast::Expr>)> {
+    use new_parser::ast::*;
+    for item in items {
+        let (target_ty, methods) = match &item.0 {
+            Item::Extension(e) => (Some(&e.target.0), &e.methods),
+            Item::Impl(i) => (Some(&i.target.0), &i.methods),
+            _ => continue,
+        };
+        for m in methods {
+            let body_sp = &m.0.body.1;
+            if pos_off < body_sp.start || pos_off > body_sp.end {
+                continue;
+            }
+            // Collect bindings visible up to pos_off.
+            let mut env = LocalEnv {
+                self_ty: target_ty.map(|t| t.name.0.clone()),
+                bindings: HashMap::new(),
+            };
+            for p in &m.0.sig.params {
+                let pname = p.name.0.clone();
+                let pty = p
+                    .ty
+                    .as_ref()
+                    .map(|t| t.0.name.0.clone())
+                    .or_else(|| {
+                        if p.is_self {
+                            env.self_ty.clone()
+                        } else {
+                            None
+                        }
+                    });
+                if let Some(ty) = pty {
+                    env.bindings.insert(pname, ty);
+                }
+            }
+            walk_block(&m.0.body.0, &mut |sp| {
+                if let Expr::Declaration { name, ty, .. } = &sp.0 {
+                    if sp.1.start <= pos_off {
+                        env.bindings.insert(name.0.clone(), ty.0.name.0.clone());
+                    }
+                }
+            });
+
+            // Find the MethodCall expression whose .name token
+            // covers pos_off and whose name matches.
+            let mc = find_method_call(&m.0.body.0, pos_off, method_name)?;
+            if let Expr::MethodCall { receiver, .. } = &mc.0 {
+                return Some((env, receiver));
+            }
+            return None;
+        }
+    }
+    None
+}
+
+fn find_method_call<'a>(
+    block: &'a new_parser::ast::Block,
+    pos_off: usize,
+    method_name: &str,
+) -> Option<&'a new_parser::ast::Spanned<new_parser::ast::Expr>> {
+    for stmt in &block.stmts {
+        if let Some(found) = find_in_expr(stmt, pos_off, method_name) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn find_in_expr<'a>(
+    e: &'a new_parser::ast::Spanned<new_parser::ast::Expr>,
+    pos_off: usize,
+    method_name: &str,
+) -> Option<&'a new_parser::ast::Spanned<new_parser::ast::Expr>> {
+    use new_parser::ast::Expr;
+    if let Expr::MethodCall { name, .. } = &e.0 {
+        if name.0 == method_name
+            && pos_off >= name.1.start
+            && pos_off <= name.1.end
+        {
+            return Some(e);
+        }
+    }
+    match &e.0 {
+        Expr::Field(recv, _) => find_in_expr(recv, pos_off, method_name),
+        Expr::MethodCall { receiver, args, .. } => find_in_expr(receiver, pos_off, method_name)
+            .or_else(|| args.iter().find_map(|a| find_in_expr(a, pos_off, method_name))),
+        Expr::StaticCall { args, .. } => {
+            args.iter().find_map(|a| find_in_expr(a, pos_off, method_name))
+        }
+        Expr::StructLiteral { fields, .. } => fields
+            .iter()
+            .find_map(|(_, v)| find_in_expr(v, pos_off, method_name)),
+        Expr::EnumVariant { data: Some(d), .. } => find_in_expr(d, pos_off, method_name),
+        Expr::BinaryOp(_, l, r) => find_in_expr(l, pos_off, method_name)
+            .or_else(|| find_in_expr(r, pos_off, method_name)),
+        Expr::If { cond, then, else_ } => find_in_expr(cond, pos_off, method_name)
+            .or_else(|| find_method_call(&then.0, pos_off, method_name))
+            .or_else(|| {
+                else_
+                    .as_ref()
+                    .and_then(|e| find_in_expr(e, pos_off, method_name))
+            }),
+        Expr::Loop(b) | Expr::Block(b) => find_method_call(&b.0, pos_off, method_name),
+        Expr::Match { scrutinee, arms } => find_in_expr(scrutinee, pos_off, method_name)
+            .or_else(|| arms.iter().find_map(|a| find_in_expr(&a.body, pos_off, method_name))),
+        Expr::Return(Some(x)) => find_in_expr(x, pos_off, method_name),
+        Expr::Declaration { value, .. } => find_in_expr(value, pos_off, method_name),
+        Expr::Assign { target, value } => find_in_expr(target, pos_off, method_name)
+            .or_else(|| find_in_expr(value, pos_off, method_name)),
+        Expr::CompoundAssign { target, value, .. } => find_in_expr(target, pos_off, method_name)
+            .or_else(|| find_in_expr(value, pos_off, method_name)),
+        Expr::Cast { expr, .. } => find_in_expr(expr, pos_off, method_name),
+        _ => None,
+    }
+}
+
+/// Infer the bare type name of `expr`. Handles:
+///   * `self` / `Self` → enclosing target.
+///   * `Variable` → look up in env.
+///   * `Field(recv, name)` → recv's type, then field lookup in registry.
+///   * `MethodCall(recv, name, ...)` → recv's type, then method's
+///     declared return type from registry.
+///   * `StaticCall { ty, name }` → method's return type on `ty`.
+///   * `StructLiteral { ty, .. }` → ty's name.
+///   * `EnumVariant { ty, .. }` → ty's name.
+///   * `Cast { ty, .. }` → ty's name.
+fn infer_expr_type(
+    expr: &new_parser::ast::Spanned<new_parser::ast::Expr>,
+    env: &LocalEnv,
+    reg: &typer::TypeRegistry,
+) -> Option<String> {
+    use new_parser::ast::Expr;
+    match &expr.0 {
+        Expr::SelfValue => env.self_ty.clone(),
+        Expr::Variable(name) => env.bindings.get(name).cloned(),
+        Expr::Field(recv, field) => {
+            let recv_ty = infer_expr_type(recv, env, reg)?;
+            field_type(reg, &recv_ty, &field.0)
+        }
+        Expr::MethodCall { receiver, name, .. } => {
+            let recv_ty = infer_expr_type(receiver, env, reg)?;
+            method_return_type(reg, &recv_ty, &name.0)
+        }
+        Expr::StaticCall { ty, name, .. } => {
+            method_return_type(reg, &ty.0.name.0, &name.0)
+        }
+        Expr::StructLiteral { ty, .. } => Some(ty.0.name.0.clone()),
+        Expr::EnumVariant { ty, .. } => Some(ty.0.name.0.clone()),
+        Expr::Cast { ty, .. } => Some(ty.0.name.0.clone()),
+        _ => None,
+    }
+}
+
+fn field_type(reg: &typer::TypeRegistry, ty_name: &str, field_name: &str) -> Option<String> {
+    let info = reg.get_type(ty_name)?;
+    let typer::TypeKind::Struct(kind) = &info.kind else {
+        return None;
+    };
+    match kind {
+        typer::StructKind::Concrete(layout) => layout
+            .fields
+            .iter()
+            .find(|f| f.name == field_name)
+            .map(|f| f.ast_type.name.0.clone()),
+        typer::StructKind::Templated { fields } => fields
+            .iter()
+            .find(|(n, _)| n == field_name)
+            .map(|(_, t)| t.name.0.clone()),
+    }
+}
+
+fn method_return_type(
+    reg: &typer::TypeRegistry,
+    ty_name: &str,
+    method_name: &str,
+) -> Option<String> {
+    let info = reg.get_type(ty_name)?;
+    for m in &info.methods {
+        if m.function.sig.name.0 == method_name {
+            return m.function.sig.return_type.as_ref().map(|t| t.0.name.0.clone());
+        }
+    }
+    None
+}
+
+/// What is `Self` here? If the cursor is inside an extension or
+/// impl method, returns that extension/impl's target type name.
+fn enclosing_self_type(
+    items: &[new_parser::ast::Spanned<new_parser::ast::Item>],
+    pos_off: usize,
+) -> Option<String> {
+    use new_parser::ast::*;
+    for item in items {
+        let (target_ty, methods) = match &item.0 {
+            Item::Extension(e) => (Some(&e.target.0), &e.methods),
+            Item::Impl(i) => (Some(&i.target.0), &i.methods),
+            _ => continue,
+        };
+        for m in methods {
+            let body_sp = &m.0.body.1;
+            if pos_off >= body_sp.start && pos_off <= body_sp.end {
+                return target_ty.map(|t| t.name.0.clone());
+            }
+        }
+    }
+    None
+}
+
+/// Walk every expression in `block` (recursing into nested
+/// blocks / loops / matches / ifs) and call `f` on each
+/// `Spanned<Expr>` node.
+fn walk_block(
+    block: &new_parser::ast::Block,
+    f: &mut dyn FnMut(&new_parser::ast::Spanned<new_parser::ast::Expr>),
+) {
+    for stmt in &block.stmts {
+        walk_expr(stmt, f);
+    }
+}
+
+fn walk_expr(
+    e: &new_parser::ast::Spanned<new_parser::ast::Expr>,
+    f: &mut dyn FnMut(&new_parser::ast::Spanned<new_parser::ast::Expr>),
+) {
+    use new_parser::ast::Expr;
+    f(e);
+    match &e.0 {
+        Expr::Field(recv, _) => walk_expr(recv, f),
+        Expr::MethodCall { receiver, args, .. } => {
+            walk_expr(receiver, f);
+            for a in args {
+                walk_expr(a, f);
+            }
+        }
+        Expr::StaticCall { args, .. } => {
+            for a in args {
+                walk_expr(a, f);
+            }
+        }
+        Expr::StructLiteral { fields, .. } => {
+            for (_, v) in fields {
+                walk_expr(v, f);
+            }
+        }
+        Expr::EnumVariant { data: Some(d), .. } => walk_expr(d, f),
+        Expr::BinaryOp(_, l, r) => {
+            walk_expr(l, f);
+            walk_expr(r, f);
+        }
+        Expr::If { cond, then, else_ } => {
+            walk_expr(cond, f);
+            walk_block(&then.0, f);
+            if let Some(e) = else_ {
+                walk_expr(e, f);
+            }
+        }
+        Expr::Loop(b) => walk_block(&b.0, f),
+        Expr::Block(b) => walk_block(&b.0, f),
+        Expr::Match { scrutinee, arms } => {
+            walk_expr(scrutinee, f);
+            for arm in arms {
+                walk_expr(&arm.body, f);
+            }
+        }
+        Expr::Return(Some(x)) => walk_expr(x, f),
+        Expr::Declaration { value, .. } => walk_expr(value, f),
+        Expr::Assign { target, value } => {
+            walk_expr(target, f);
+            walk_expr(value, f);
+        }
+        Expr::CompoundAssign { target, value, .. } => {
+            walk_expr(target, f);
+            walk_expr(value, f);
+        }
+        Expr::Cast { expr, .. } => walk_expr(expr, f),
+        _ => {}
     }
 }
 
@@ -473,10 +847,21 @@ fn publish_for(connection: &Connection, state: &mut State, uri: &Url, text: &str
         .collect();
     let report = cythan_driver::new_pipeline::diagnose(&as_refs);
 
-    // Refresh the symbol index from the same file set. Best-effort:
-    // if parsing or registry building fails, the index is cleared
-    // and goto-definition returns nothing.
-    state.symbols = build_symbol_index(&files, &name_to_path);
+    // Refresh the symbol index + cached registry from the same
+    // file set. Best-effort: parse / build failures yield empty
+    // results without bringing the LSP down.
+    let (idx, reg) = build_symbol_index(&files, &name_to_path);
+    state.symbols = idx;
+    state.registry = reg;
+
+    // Cache the parsed AST of the open document so receiver-type
+    // inference (used by goto-definition for `recv.method`) has
+    // something to walk.
+    if let Ok(items) = new_parser::parse(text) {
+        state.asts.insert(uri.clone(), items);
+    } else {
+        state.asts.remove(uri);
+    }
 
     // Filter to diagnostics that point at the open file. Other-file
     // diagnostics don't have a useful URI to attach to in this
@@ -497,7 +882,7 @@ fn publish_for(connection: &Connection, state: &mut State, uri: &Url, text: &str
 fn build_symbol_index(
     files: &[(String, String)],
     name_to_path: &HashMap<String, PathBuf>,
-) -> SymbolIndex {
+) -> (SymbolIndex, Option<typer::TypeRegistry>) {
     let mut idx = SymbolIndex::default();
 
     // Parse each file. On a parse error, skip the file (the user
@@ -517,7 +902,7 @@ fn build_symbol_index(
 
     let reg = match typer::TypeRegistry::from_files(&as_refs) {
         Ok(r) => r,
-        Err(_) => return idx,
+        Err(_) => return (idx, None),
     };
 
     let location_for = |file: &Option<String>,
@@ -561,7 +946,7 @@ fn build_symbol_index(
         }
     }
 
-    idx
+    (idx, Some(reg))
 }
 
 fn send_diagnostics(connection: &Connection, uri: &Url, diagnostics: Vec<Diagnostic>) {
