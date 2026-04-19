@@ -762,6 +762,10 @@ impl TypeRegistry {
         let target_name = self
             .canonicalize_type_name(&raw, Some(file_id))
             .unwrap_or(raw);
+        // Snapshot file name before we grab the mutable borrow
+        // below — the duplicate-method diagnostic needs it and
+        // borrow-checker rules forbid a second borrow.
+        let file = self.file_names.get(&file_id).cloned().unwrap_or_default();
         let ty = self
             .get_type_mut(&target_name)
             .ok_or_else(|| TyperError::at(
@@ -776,17 +780,35 @@ impl TypeRegistry {
             // a real error. A trait impl providing the same name alongside
             // is fine (resolver picks the extension via the "inherent wins"
             // rule).
-            let collides_with_inherent = ty.methods.iter().any(|m| {
-                m.function.sig.name.0 == *method_name && m.from_trait.is_none()
-            });
+            let first = ty
+                .methods
+                .iter()
+                .find(|m| {
+                    m.function.sig.name.0 == *method_name && m.from_trait.is_none()
+                })
+                .map(|m| m.function.sig.name.1.clone());
+            let collides_with_inherent = first.is_some();
             if collides_with_inherent {
-                return Err(TyperError::at(
-                    format!(
-                        "duplicate method `{}::{}`",
-                        target_name, method_name
-                    ),
-                    method.sig.name.1.clone(),
+                let mut diag = errors::Diagnostic::error(format!(
+                    "duplicate method `{}::{}`",
+                    target_name, method_name
+                ))
+                .with_code(errors::codes::E_DUPLICATE_METHOD)
+                .with_primary(
+                    errors::FileSpan::new(&file, method.sig.name.1.clone()),
+                    format!("duplicate `{}` here", method_name),
+                )
+                .with_help(format!(
+                    "rename one of the two `{}` methods, or merge their bodies",
+                    method_name
                 ));
+                if let Some(first_span) = first {
+                    diag = diag.with_secondary(
+                        errors::FileSpan::new(&file, first_span),
+                        "first defined here".to_string(),
+                    );
+                }
+                return Err(TyperError::from_diagnostic(diag));
             }
             ty.methods.push(MethodInfo {
                 function: method.clone(),
@@ -945,30 +967,67 @@ impl TypeRegistry {
             }
         }
 
-        // Every trait method must be implemented.
-        for expected in &trait_info.methods {
-            let name = &expected.name.0;
-            if !def.methods.iter().any(|m| m.0.sig.name.0 == *name) {
-                return Err(TyperError::at(
-                    format!(
-                        "impl of trait `{}` for `{}` is missing method `{}`",
-                        trait_name, target_name, name
-                    ),
-                    def.trait_ty.1.clone(),
-                ));
-            }
+        // E0012: every trait method must be implemented. Batch
+        // missing methods into one diagnostic so the user sees
+        // the whole set at once instead of error-per-round-trip.
+        let missing: Vec<&str> = trait_info
+            .methods
+            .iter()
+            .filter(|e| !def.methods.iter().any(|m| m.0.sig.name.0 == e.name.0))
+            .map(|e| e.name.0.as_str())
+            .collect();
+        if !missing.is_empty() {
+            let file = self.file_names.get(&file_id).cloned().unwrap_or_default();
+            let list = missing
+                .iter()
+                .map(|n| format!("`{}`", n))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let stubs = missing
+                .iter()
+                .map(|n| format!("fn {}(...)  {{ ... }}", n))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let diag = errors::Diagnostic::error(format!(
+                "impl of trait `{}` for `{}` is missing method{}: {}",
+                trait_name,
+                target_name,
+                if missing.len() == 1 { "" } else { "s" },
+                list
+            ))
+            .with_code(errors::codes::E_MISSING_IMPL)
+            .with_primary(
+                errors::FileSpan::new(&file, def.trait_ty.1.clone()),
+                format!(
+                    "missing {} here",
+                    if missing.len() == 1 { "method" } else { "methods" }
+                ),
+            )
+            .with_help(format!(
+                "add {} to the impl body",
+                stubs
+            ));
+            return Err(TyperError::from_diagnostic(diag));
         }
         // No extra methods beyond the trait's methods (impls are not for
         // adding free methods — use an extension for that).
         for (m, _) in &def.methods {
             if !trait_info.methods.iter().any(|e| e.name.0 == m.sig.name.0) {
-                return Err(TyperError::at(
-                    format!(
-                        "impl of trait `{}` for `{}` has method `{}` not declared by the trait",
-                        trait_name, target_name, m.sig.name.0
-                    ),
-                    m.sig.name.1.clone(),
+                let file = self.file_names.get(&file_id).cloned().unwrap_or_default();
+                let diag = errors::Diagnostic::error(format!(
+                    "impl of trait `{}` for `{}` has method `{}` not declared by the trait",
+                    trait_name, target_name, m.sig.name.0
+                ))
+                .with_code(errors::codes::E_MISSING_IMPL)
+                .with_primary(
+                    errors::FileSpan::new(&file, m.sig.name.1.clone()),
+                    format!("method `{}` is not part of trait `{}`", m.sig.name.0, trait_name),
+                )
+                .with_help(format!(
+                    "move this method to an `extension {} {{ … }}` block, or add it to trait `{}`",
+                    target_name, trait_name
                 ));
+                return Err(TyperError::from_diagnostic(diag));
             }
         }
         // Signature arity check (full structural match is deferred; at this

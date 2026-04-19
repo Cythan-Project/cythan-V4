@@ -62,7 +62,8 @@ fn impl_missing_method_rejected() {
     );
     let err = TypeRegistry::from_items(&items).unwrap_err();
     assert!(
-        err.iter().any(|e| e.message.contains("missing method `eq`")),
+        err.iter()
+            .any(|e| e.message.contains("missing method") && e.message.contains("`eq`")),
         "expected missing-method error, got: {:?}",
         err
     );

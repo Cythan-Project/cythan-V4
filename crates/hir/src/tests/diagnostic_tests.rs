@@ -493,6 +493,80 @@ fn e0002_unknown_trait_in_impl() {
 }
 
 // =========================================================================
+// E0012 — impl of trait missing required method
+// =========================================================================
+#[test]
+fn e0012_impl_missing_method() {
+    let diag = typer_diagnostic(&[(
+        "a.ct",
+        "trait HasFoo { fn foo(self): U4; fn bar(self): U4; }\n\
+         struct Thing { U4 v, }\n\
+         impl HasFoo for Thing { fn foo(self): U4 { 0 } }\n",
+    )]);
+    assert_diag(&diag, Severity::Error, codes::E_MISSING_IMPL);
+    assert!(
+        diag.message.contains("`bar`"),
+        "should name the missing method; got {:?}",
+        diag.message
+    );
+    assert!(
+        diag.helps.iter().any(|h| h.contains("fn bar")),
+        "expected a stub-body help; got {:?}",
+        diag.helps
+    );
+}
+
+// =========================================================================
+// E0005 — duplicate inherent method
+// =========================================================================
+#[test]
+fn e0005_duplicate_method() {
+    let diag = typer_diagnostic(&[(
+        "a.ct",
+        "struct Foo { U4 v, }\n\
+         extension Foo {\n\
+             fn dup(self): U4 { 1 }\n\
+             fn dup(self): U4 { 2 }\n\
+         }\n",
+    )]);
+    assert_diag(&diag, Severity::Error, codes::E_DUPLICATE_METHOD);
+    assert!(
+        diag.message.contains("`Foo::dup`"),
+        "should name the method; got {:?}",
+        diag.message
+    );
+    assert_eq!(secondary_count(&diag), 1, "expected a first-defined-here label");
+    assert!(
+        diag.helps.iter().any(|h| h.contains("rename") || h.contains("merge")),
+        "expected a rename/merge help; got {:?}",
+        diag.helps
+    );
+}
+
+// =========================================================================
+// E0017 — unknown enum variant
+// =========================================================================
+#[test]
+fn e0017_unknown_variant_suggests_similar() {
+    let src = r#"
+        enum Color { Red, Green, Blue, }
+        extension Color {
+            fn go(self): U4 {
+                Color c = Color::Reed;
+                0
+            }
+        }
+    "#;
+    let diag = hir_diagnostic(src, "Color", "go");
+    assert_diag(&diag, Severity::Error, codes::E_UNKNOWN_VARIANT);
+    assert!(
+        diag.helps.iter().any(|h| h.contains("`Red`")),
+        "expected `did you mean Red?` help; got {:?}",
+        diag.helps
+    );
+}
+
+// =========================================================================
 // W0001 — unused variable warning (and its `_name` suppression)
 // =========================================================================
 fn compile_fn_warnings(src: &str, ty: &str, method: &str) -> Vec<Diagnostic> {

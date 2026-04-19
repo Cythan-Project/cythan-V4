@@ -1576,10 +1576,35 @@ impl<'a> Generator<'a> {
                         .iter()
                         .find(|v| v.name == variant.0)
                         .ok_or_else(|| {
-                            HirError::at(
-                                format!("variant `{}` not on enum `{}`", variant.0, resolved),
-                            arm.pattern.1.clone(),
-                            )
+                            let file = self.cur_file_name();
+                            let known: Vec<&str> =
+                                layout.variants.iter().map(|v| v.name.as_str()).collect();
+                            let mut diag = errors::Diagnostic::error(format!(
+                                "variant `{}` not on enum `{}`",
+                                variant.0, resolved
+                            ))
+                            .with_code(errors::codes::E_UNKNOWN_VARIANT)
+                            .with_primary(
+                                errors::FileSpan::new(&file, arm.pattern.1.clone()),
+                                format!("unknown variant `{}`", variant.0),
+                            );
+                            if let Some(sugg) =
+                                errors::suggest_name(&variant.0, known.iter().copied())
+                            {
+                                diag = diag
+                                    .with_help(format!("did you mean `{}`?", sugg));
+                            } else if !known.is_empty() {
+                                diag = diag.with_help(format!(
+                                    "`{}`'s variants: {}",
+                                    resolved,
+                                    known
+                                        .iter()
+                                        .map(|n| format!("`{}`", n))
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                ));
+                            }
+                            HirError::from_diagnostic(diag)
                         })?;
                     // Bindings: introduce a local for the data payload. For
                     // generic enums we know the payload's concrete AST type
@@ -3030,10 +3055,32 @@ impl<'a> Generator<'a> {
             .iter()
             .find(|v| v.name == variant.0)
             .ok_or_else(|| {
-                HirError::at(
-                    format!("variant `{}` not on `{}`", variant.0, resolved),
-                    variant.1.clone(),
-                )
+                let file = self.cur_file_name();
+                let known: Vec<&str> = layout.variants.iter().map(|v| v.name.as_str()).collect();
+                let mut diag = errors::Diagnostic::error(format!(
+                    "variant `{}` not on `{}`",
+                    variant.0, resolved
+                ))
+                .with_code(errors::codes::E_UNKNOWN_VARIANT)
+                .with_primary(
+                    errors::FileSpan::new(&file, variant.1.clone()),
+                    format!("unknown variant `{}`", variant.0),
+                );
+                if let Some(sugg) = errors::suggest_name(&variant.0, known.iter().copied())
+                {
+                    diag = diag.with_help(format!("did you mean `{}`?", sugg));
+                } else if !known.is_empty() {
+                    diag = diag.with_help(format!(
+                        "`{}`'s variants: {}",
+                        resolved,
+                        known
+                            .iter()
+                            .map(|n| format!("`{}`", n))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+                HirError::from_diagnostic(diag)
             })?;
 
         // Set discriminant cells. For a 1-cell discriminant, just Set dst.
