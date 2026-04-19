@@ -581,6 +581,41 @@ impl TypeRegistry {
         if self.has_type(storage_key) && name != U4_NAME {
             return Err(self.duplicate_type_diag(&name, &def.name.1, storage_key, file_id));
         }
+        // E0015: duplicate field name in the same struct.
+        let mut seen_fields: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for f in &def.fields {
+            if !seen_fields.insert(f.name.0.as_str()) {
+                let file = file_id
+                    .and_then(|f| self.file_names.get(&f).cloned())
+                    .unwrap_or_default();
+                let first_span = def
+                    .fields
+                    .iter()
+                    .find(|g| g.name.0 == f.name.0)
+                    .map(|g| g.name.1.clone());
+                let mut diag = errors::Diagnostic::error(format!(
+                    "duplicate field `{}` in struct `{}`",
+                    f.name.0, name
+                ))
+                .with_code(errors::codes::E_UNKNOWN_FIELD)
+                .with_primary(
+                    errors::FileSpan::new(&file, f.name.1.clone()),
+                    format!("duplicate `{}`", f.name.0),
+                )
+                .with_help(format!(
+                    "rename this field or remove the duplicate declaration"
+                ));
+                if let Some(sp) = first_span {
+                    if sp != f.name.1 {
+                        diag = diag.with_secondary(
+                            errors::FileSpan::new(&file, sp),
+                            "first declared here".to_string(),
+                        );
+                    }
+                }
+                return Err(TyperError::from_diagnostic(diag));
+            }
+        }
         let templates: Vec<String> = def.templates.iter().map(|t| t.0.clone()).collect();
 
         if name == U4_NAME {

@@ -102,6 +102,9 @@ struct Generator<'a> {
     /// Warnings accumulated during generation. Surface via the
     /// `HirFunction::warnings` field when gen succeeds.
     warnings: Vec<errors::Diagnostic>,
+    /// Nested `Loop` count at the cursor. `break` / `continue`
+    /// are only valid when this is positive.
+    loop_depth: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -154,6 +157,7 @@ impl<'a> Generator<'a> {
             declared_locals: Vec::new(),
             read_slots: std::collections::HashSet::new(),
             warnings: Vec::new(),
+            loop_depth: 0,
         };
 
         // Populate slots from FlatSig. Each FlatSig slot may span multiple
@@ -389,15 +393,23 @@ impl<'a> Generator<'a> {
                 self.gen_if(cond, then, else_.as_deref(), sp, dst, block)
             }
             ast::Expr::Loop(body) => {
-                let inner = self.gen_block(&body.0.stmts, None)?;
-                block.push(HirOp::Loop(inner));
+                self.loop_depth += 1;
+                let inner = self.gen_block(&body.0.stmts, None);
+                self.loop_depth -= 1;
+                block.push(HirOp::Loop(inner?));
                 Ok(())
             }
             ast::Expr::Break => {
+                if self.loop_depth == 0 {
+                    return Err(self.control_flow_error("break", sp));
+                }
                 block.push(HirOp::Break);
                 Ok(())
             }
             ast::Expr::Continue => {
+                if self.loop_depth == 0 {
+                    return Err(self.control_flow_error("continue", sp));
+                }
                 block.push(HirOp::Continue);
                 Ok(())
             }
@@ -927,6 +939,29 @@ impl<'a> Generator<'a> {
             .get(&self.simple.file_id)
             .cloned()
             .unwrap_or_default()
+    }
+
+    /// E0018 — `break` / `continue` outside any enclosing loop.
+    fn control_flow_error(&self, kw: &str, sp: &new_parser::Span) -> HirError {
+        let file = self.cur_file_name();
+        let diag = errors::Diagnostic::error(format!(
+            "`{}` used outside of a `loop`",
+            kw
+        ))
+        .with_code(errors::codes::E_CONTROL_FLOW)
+        .with_primary(
+            errors::FileSpan::new(&file, sp.clone()),
+            format!("`{}` is only valid inside a `loop {{ ... }}`", kw),
+        )
+        .with_help(format!(
+            "wrap the surrounding code in a `loop {{ ... }}`, or remove the `{}`",
+            kw
+        ))
+        .with_note(format!(
+            "`{}` exits / restarts the nearest enclosing `loop` — there is none here",
+            kw
+        ));
+        HirError::from_diagnostic(diag)
     }
 
     /// E0016 — unknown variable with a "did you mean?" suggestion

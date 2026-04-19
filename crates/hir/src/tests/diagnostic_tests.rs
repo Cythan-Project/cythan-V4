@@ -567,6 +567,79 @@ fn e0017_unknown_variant_suggests_similar() {
 }
 
 // =========================================================================
+// E0018 — `break` / `continue` outside any enclosing loop
+// =========================================================================
+#[test]
+fn e0018_break_outside_loop() {
+    let src = r#"
+        extension U4 {
+            fn go(): U4 {
+                break;
+                0
+            }
+        }
+    "#;
+    let diag = hir_diagnostic(src, "U4", "go");
+    assert_diag(&diag, Severity::Error, codes::E_CONTROL_FLOW);
+    assert!(
+        diag.message.contains("`break`"),
+        "should name the keyword; got {:?}",
+        diag.message
+    );
+    assert!(
+        diag.helps.iter().any(|h| h.contains("loop")),
+        "expected a loop help; got {:?}",
+        diag.helps
+    );
+    assert!(
+        diag.notes.iter().any(|n| n.contains("enclosing")),
+        "expected an explanatory note; got {:?}",
+        diag.notes
+    );
+}
+
+#[test]
+fn e0018_continue_outside_loop() {
+    let src = r#"
+        extension U4 {
+            fn go(): U4 {
+                continue;
+                0
+            }
+        }
+    "#;
+    let diag = hir_diagnostic(src, "U4", "go");
+    assert_diag(&diag, Severity::Error, codes::E_CONTROL_FLOW);
+    assert!(
+        diag.message.contains("`continue`"),
+        "should name the keyword; got {:?}",
+        diag.message
+    );
+}
+
+// =========================================================================
+// E0015 — duplicate struct field declaration (not just in literal)
+// =========================================================================
+#[test]
+fn e0015_duplicate_field_in_struct_def() {
+    let diag = typer_diagnostic(&[(
+        "a.ct",
+        "struct Foo { U4 v, U4 v, }\n",
+    )]);
+    assert_diag(&diag, Severity::Error, codes::E_UNKNOWN_FIELD);
+    assert!(
+        diag.message.contains("duplicate field `v`"),
+        "should name the field; got {:?}",
+        diag.message
+    );
+    assert_eq!(
+        secondary_count(&diag),
+        1,
+        "expected a first-declared-here label"
+    );
+}
+
+// =========================================================================
 // W0001 — unused variable warning (and its `_name` suppression)
 // =========================================================================
 fn compile_fn_warnings(src: &str, ty: &str, method: &str) -> Vec<Diagnostic> {
