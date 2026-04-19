@@ -834,6 +834,9 @@ impl<'a> Generator<'a> {
     ) -> Result<(), HirError> {
         let (dst_slot, dst_ty, size) =
             self.resolve_lvalue_base_sized(&target.0, &target.1)?;
+        // `x += y` reads `x`'s current value as part of the
+        // read-modify-write — the binding is "used".
+        self.mark_lvalue_read(&target.0);
         self.check_mutable_slot(dst_slot, sp)?;
         for i in 0..size {
             self.check_mutable_slot(SlotId(dst_slot.0 + i), sp)?;
@@ -1395,7 +1398,10 @@ impl<'a> Generator<'a> {
         // computed expression, falling through to alloc_temp preserves the
         // old behavior.)
         let recv_slot = match self.lvalue_slot(&receiver.0) {
-            Some(s) => s,
+            Some(s) => {
+                self.mark_lvalue_read(&receiver.0);
+                s
+            }
             None => {
                 let s = self.alloc_temp(&resolved_recv, recv_size);
                 self.gen_expr_into(&receiver.0, &receiver.1, Some(s), block)?;
@@ -1415,7 +1421,10 @@ impl<'a> Generator<'a> {
                 .receiver_cell_size(&a.0)
                 .unwrap_or_else(|| self.type_size_permissive(&resolved));
             let s = match self.lvalue_slot(&a.0) {
-                Some(slot) => slot,
+                Some(slot) => {
+                    self.mark_lvalue_read(&a.0);
+                    slot
+                }
                 None => {
                     let t = self.alloc_temp(&resolved, size);
                     self.gen_expr_into(&a.0, &a.1, Some(t), block)?;
@@ -2216,6 +2225,31 @@ impl<'a> Generator<'a> {
     /// route the receiver at the caller's existing storage rather than
     /// allocating a fresh temp — preserving "params are by reference"
     /// semantics for mutable receivers.
+    /// Mark the base variable / self of an l-value expression as
+    /// "read", so the unused-variable lint doesn't fire when a
+    /// binding is only ever consumed via a method call, compound
+    /// assignment, or l-value pass-through. The receiver of
+    /// `d.print()`, the target of `d += 1`, and the l-value arg
+    /// of `f(d)` all flow through `lvalue_slot` (which doesn't
+    /// take `&mut self`); call this helper at the call site so
+    /// the binding's slot lands in `read_slots`.
+    fn mark_lvalue_read(&mut self, expr: &ast::Expr) {
+        match expr {
+            ast::Expr::Variable(name) => {
+                if let Some(b) = self.lookup(name) {
+                    self.read_slots.insert(b.slot);
+                }
+            }
+            ast::Expr::SelfValue => {
+                if let Some(b) = self.lookup("self") {
+                    self.read_slots.insert(b.slot);
+                }
+            }
+            ast::Expr::Field(recv, _) => self.mark_lvalue_read(&recv.0),
+            _ => {}
+        }
+    }
+
     fn lvalue_slot(&self, expr: &ast::Expr) -> Option<SlotId> {
         match expr {
             ast::Expr::Variable(name) => self.lookup(name).map(|b| b.slot),

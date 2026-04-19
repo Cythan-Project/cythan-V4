@@ -32,6 +32,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send>> {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(
             TextDocumentSyncKind::FULL,
         )),
+        definition_provider: Some(OneOf::Left(true)),
         ..Default::default()
     };
     let init_params = connection
@@ -51,6 +52,30 @@ struct State {
     /// `.ct` file inside is loaded alongside the open document
     /// so cross-file symbols resolve.
     std_dir: Option<PathBuf>,
+    /// Last symbol index, refreshed on every diagnose call.
+    /// Drives go-to-definition.
+    symbols: SymbolIndex,
+}
+
+/// Cross-file symbol index for go-to-definition. Stores the
+/// declaration `Location` of every type and every method, keyed
+/// by name. Cleared and rebuilt after each `diagnose` call so
+/// the index reflects whatever the user has saved on disk.
+#[derive(Default, Debug)]
+struct SymbolIndex {
+    /// Type name → declaration location.
+    types: HashMap<String, Location>,
+    /// Trait name → declaration location.
+    traits: HashMap<String, Location>,
+    /// (type_name, method_name) → declaration location of the
+    /// method's `name` token (extension or impl).
+    methods: HashMap<(String, String), Location>,
+    /// Method name → list of (type_name, location). Used as a
+    /// fallback when a method's receiver type can't be inferred
+    /// at the cursor (e.g. plain `.method()` on something the
+    /// LSP doesn't type-check). Returning every match lets the
+    /// editor present a chooser.
+    methods_by_name: HashMap<String, Vec<Location>>,
 }
 
 impl State {
@@ -81,6 +106,7 @@ impl State {
         State {
             docs: HashMap::new(),
             std_dir,
+            symbols: SymbolIndex::default(),
         }
     }
 }
@@ -120,13 +146,194 @@ fn main_loop(
                 if connection.handle_shutdown(&req)? {
                     return Ok(());
                 }
-                // No requests answered yet (only diagnostics push).
+                handle_request(connection, state, req);
             }
             Message::Notification(not) => handle_notification(connection, state, not),
             Message::Response(_) => {}
         }
     }
     Ok(())
+}
+
+fn handle_request(connection: &Connection, state: &State, req: lsp_server::Request) {
+    use lsp_types::request::{GotoDefinition, Request as LspRequest};
+    let id = req.id.clone();
+    if req.method == GotoDefinition::METHOD {
+        let result = serde_json::from_value::<GotoDefinitionParams>(req.params)
+            .ok()
+            .and_then(|params| {
+                resolve_definition(
+                    state,
+                    &params.text_document_position_params.text_document.uri,
+                    params.text_document_position_params.position,
+                )
+            });
+        let value = match result {
+            Some(loc) => serde_json::to_value(GotoDefinitionResponse::Scalar(loc))
+                .unwrap_or(serde_json::Value::Null),
+            None => serde_json::Value::Null,
+        };
+        let _ = connection.sender.send(Message::Response(lsp_server::Response {
+            id,
+            result: Some(value),
+            error: None,
+        }));
+    }
+}
+
+/// Resolve a `textDocument/definition` request: find the
+/// identifier under the cursor in the open document, then look
+/// it up in the symbol index. Tries (in order):
+///   1. As a method when the identifier is preceded by `.` or
+///      `::` — falls back to "any type's method with this name"
+///      when the receiver type isn't statically obvious.
+///   2. As a type name.
+///   3. As a trait name.
+fn resolve_definition(state: &State, uri: &Url, pos: Position) -> Option<Location> {
+    let text = state.docs.get(uri)?;
+    let (word, prev_marker) = identifier_at(text, pos)?;
+    if word.is_empty() {
+        return None;
+    }
+    if matches!(prev_marker, IdContext::AfterDot | IdContext::AfterColons) {
+        // Method reference: prefer an exact (Type, method) match
+        // when the receiver token before the `.` / `::` is a
+        // known type. Otherwise fall back to method-name search.
+        if let IdContext::AfterColons = prev_marker {
+            if let Some(receiver) = state.symbols.types.get(&word) {
+                // Pattern is `Type::word` — receiver token IS a
+                // type. Prefer the type itself if `word` is the
+                // type name, else prefer the method.
+                let _ = receiver;
+            }
+            // Pull the receiver token.
+            if let Some(receiver_ty) = receiver_before(text, pos) {
+                if let Some(loc) = state
+                    .symbols
+                    .methods
+                    .get(&(receiver_ty, word.clone()))
+                {
+                    return Some(loc.clone());
+                }
+            }
+        }
+        if let Some(matches) = state.symbols.methods_by_name.get(&word) {
+            if let Some(first) = matches.first() {
+                return Some(first.clone());
+            }
+        }
+    }
+    if let Some(loc) = state.symbols.types.get(&word) {
+        return Some(loc.clone());
+    }
+    if let Some(loc) = state.symbols.traits.get(&word) {
+        return Some(loc.clone());
+    }
+    // Fallback: even a bare identifier might be a method.
+    if let Some(matches) = state.symbols.methods_by_name.get(&word) {
+        if let Some(first) = matches.first() {
+            return Some(first.clone());
+        }
+    }
+    None
+}
+
+/// What immediately precedes the identifier at the cursor —
+/// helps decide whether to interpret it as a method, an
+/// associated function, or a free symbol.
+enum IdContext {
+    None,
+    AfterDot,
+    AfterColons,
+}
+
+/// Extract the identifier the cursor is inside of (or adjacent
+/// to). Returns the identifier text and a tag describing what
+/// punctuation, if any, immediately precedes it.
+fn identifier_at(text: &str, pos: Position) -> Option<(String, IdContext)> {
+    let offset = position_to_char_offset(text, pos)?;
+    let chars: Vec<char> = text.chars().collect();
+    if chars.is_empty() {
+        return None;
+    }
+    let is_id = |c: char| c.is_alphanumeric() || c == '_';
+    // Find the start of the identifier the cursor sits on.
+    let mut start = offset.min(chars.len());
+    while start > 0 && is_id(chars[start - 1]) {
+        start -= 1;
+    }
+    let mut end = offset.min(chars.len());
+    while end < chars.len() && is_id(chars[end]) {
+        end += 1;
+    }
+    if start == end {
+        return None;
+    }
+    let word: String = chars[start..end].iter().collect();
+    // Look at the char(s) immediately before `start` to figure
+    // out the surrounding punctuation context.
+    let ctx = match start {
+        0 => IdContext::None,
+        1 => match chars[0] {
+            '.' => IdContext::AfterDot,
+            _ => IdContext::None,
+        },
+        _ => match (chars[start - 2], chars[start - 1]) {
+            (':', ':') => IdContext::AfterColons,
+            (_, '.') => IdContext::AfterDot,
+            _ => IdContext::None,
+        },
+    };
+    Some((word, ctx))
+}
+
+/// Snip out the receiver identifier directly before a `::` at
+/// `pos` (inclusive of `pos`'s token's start). Used to map
+/// `Type::method` to `methods[(Type, method)]`.
+fn receiver_before(text: &str, pos: Position) -> Option<String> {
+    let offset = position_to_char_offset(text, pos)?;
+    let chars: Vec<char> = text.chars().collect();
+    let is_id = |c: char| c.is_alphanumeric() || c == '_';
+    // Walk back through the identifier under cursor.
+    let mut i = offset.min(chars.len());
+    while i > 0 && is_id(chars[i - 1]) {
+        i -= 1;
+    }
+    // Expect `::` immediately before.
+    if i < 2 || chars[i - 1] != ':' || chars[i - 2] != ':' {
+        return None;
+    }
+    let mut j = i - 2;
+    while j > 0 && is_id(chars[j - 1]) {
+        j -= 1;
+    }
+    let recv: String = chars[j..i - 2].iter().collect();
+    if recv.is_empty() {
+        None
+    } else {
+        Some(recv)
+    }
+}
+
+fn position_to_char_offset(text: &str, pos: Position) -> Option<usize> {
+    let mut line: u32 = 0;
+    let mut character: u32 = 0;
+    for (i, c) in text.chars().enumerate() {
+        if line == pos.line && character == pos.character {
+            return Some(i);
+        }
+        if c == '\n' {
+            line += 1;
+            character = 0;
+        } else {
+            character += if (c as u32) > 0xFFFF { 2 } else { 1 };
+        }
+    }
+    if line == pos.line && character == pos.character {
+        Some(text.chars().count())
+    } else {
+        None
+    }
 }
 
 fn handle_notification(connection: &Connection, state: &mut State, not: Notification) {
@@ -181,7 +388,7 @@ fn handle_notification(connection: &Connection, state: &mut State, not: Notifica
     }
 }
 
-fn publish_for(connection: &Connection, state: &State, uri: &Url, text: &str) {
+fn publish_for(connection: &Connection, state: &mut State, uri: &Url, text: &str) {
     let local_path = uri
         .to_file_path()
         .ok()
@@ -239,6 +446,20 @@ fn publish_for(connection: &Connection, state: &State, uri: &Url, text: &str) {
             ),
         }
     }
+    // Track each file's name → absolute path so the symbol index
+    // can build full file URIs in the resulting `Location`s.
+    let mut name_to_path: HashMap<String, PathBuf> = HashMap::new();
+    if let Some(std_dir) = &state.std_dir {
+        for (name, _) in &files {
+            if let Some(stripped) = name.strip_prefix("std/") {
+                name_to_path.insert(name.to_string(), std_dir.join(stripped));
+            }
+        }
+    }
+    if let Some(open_path) = uri.to_file_path().ok() {
+        name_to_path.insert(local_path.clone(), open_path);
+    }
+
     files.push((local_path.clone(), text.to_string()));
     eprintln!(
         "cythan-lsp: diagnose with {} files (open = {})",
@@ -252,6 +473,11 @@ fn publish_for(connection: &Connection, state: &State, uri: &Url, text: &str) {
         .collect();
     let report = cythan_driver::new_pipeline::diagnose(&as_refs);
 
+    // Refresh the symbol index from the same file set. Best-effort:
+    // if parsing or registry building fails, the index is cleared
+    // and goto-definition returns nothing.
+    state.symbols = build_symbol_index(&files, &name_to_path);
+
     // Filter to diagnostics that point at the open file. Other-file
     // diagnostics don't have a useful URI to attach to in this
     // single-file push model.
@@ -262,7 +488,80 @@ fn publish_for(connection: &Connection, state: &State, uri: &Url, text: &str) {
         }
     }
     send_diagnostics(connection, uri, diagnostics);
-    let _ = state; // keep parameter for future per-doc state tweaks
+}
+
+/// Parse every file, build a `TypeRegistry`, and walk it to
+/// produce a fresh `SymbolIndex`. Best-effort — any parse / build
+/// failure yields a partial (or empty) index without bringing the
+/// LSP down.
+fn build_symbol_index(
+    files: &[(String, String)],
+    name_to_path: &HashMap<String, PathBuf>,
+) -> SymbolIndex {
+    let mut idx = SymbolIndex::default();
+
+    // Parse each file. On a parse error, skip the file (the user
+    // sees the diagnostic via the diagnose call; goto-definition
+    // simply doesn't index that file's symbols).
+    type Parsed = (String, Vec<new_parser::ast::Spanned<new_parser::ast::Item>>);
+    let mut parsed: Vec<Parsed> = Vec::new();
+    for (name, src) in files {
+        if let Ok(items) = new_parser::parse(src) {
+            parsed.push((name.to_string(), items));
+        }
+    }
+    let as_refs: Vec<(&str, &[_])> = parsed
+        .iter()
+        .map(|(n, v)| (n.as_str(), v.as_slice()))
+        .collect();
+
+    let reg = match typer::TypeRegistry::from_files(&as_refs) {
+        Ok(r) => r,
+        Err(_) => return idx,
+    };
+
+    let location_for = |file: &Option<String>,
+                        span: &Option<new_parser::Span>|
+     -> Option<Location> {
+        let file_name = file.as_ref()?;
+        let span = span.as_ref()?;
+        let abs = name_to_path.get(file_name)?;
+        let uri = Url::from_file_path(abs).ok()?;
+        let src = files.iter().find(|(n, _)| n == file_name).map(|(_, s)| s)?;
+        Some(Location {
+            uri,
+            range: byte_range_to_lsp(src, span),
+        })
+    };
+
+    for (name, info) in reg.iter_types() {
+        if let Some(loc) = location_for(&info.decl_file, &info.decl_span) {
+            idx.types.insert(name.to_string(), loc.clone());
+            // Methods attached to the type. The MethodInfo's
+            // function carries a `name: Spanned<String>` whose
+            // span IS the method-name token's span — perfect for
+            // a goto-definition jump.
+            for m in &info.methods {
+                let m_name = &m.function.sig.name.0;
+                let m_span = &m.function.sig.name.1;
+                let m_file = reg.file_names.get(&m.file_id).cloned();
+                if let Some(loc) = location_for(&m_file, &Some(m_span.clone())) {
+                    idx.methods.insert((name.to_string(), m_name.to_string()), loc.clone());
+                    idx.methods_by_name
+                        .entry(m_name.to_string())
+                        .or_default()
+                        .push(loc);
+                }
+            }
+        }
+    }
+    for (name, info) in reg.iter_traits() {
+        if let Some(loc) = location_for(&info.decl_file, &info.decl_span) {
+            idx.traits.insert(name.to_string(), loc);
+        }
+    }
+
+    idx
 }
 
 fn send_diagnostics(connection: &Connection, uri: &Url, diagnostics: Vec<Diagnostic>) {
