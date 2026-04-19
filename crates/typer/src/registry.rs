@@ -812,10 +812,23 @@ impl TypeRegistry {
         let target_name_raw = def.target.0.name.0.clone();
         let trait_id = self
             .resolve_trait_id(&trait_name_raw, Some(file_id))
-            .ok_or_else(|| TyperError::at(
-                format!("unknown trait `{}` in impl", trait_name_raw),
-                def.trait_ty.1.clone(),
-            ))?;
+            .ok_or_else(|| {
+                let file = self.file_names.get(&file_id).cloned().unwrap_or_default();
+                let diag = errors::Diagnostic::error(format!(
+                    "unknown trait `{}` in impl",
+                    trait_name_raw
+                ))
+                .with_code(errors::codes::E_UNKNOWN_TRAIT)
+                .with_primary(
+                    errors::FileSpan::new(&file, def.trait_ty.1.clone()),
+                    format!("trait `{}` not found in scope", trait_name_raw),
+                )
+                .with_help(format!(
+                    "declare it with `trait {} {{ … }}` or import it with `use {};`",
+                    trait_name_raw, trait_name_raw
+                ));
+                TyperError::from_diagnostic(diag)
+            })?;
         let trait_name = self.trait_canonical_keys[trait_id.0 as usize].clone();
         let target_name = self
             .canonicalize_type_name(&target_name_raw, Some(file_id))
@@ -866,10 +879,27 @@ impl TypeRegistry {
             for (t, _) in &g.bounds {
                 let trait_id = self
                     .resolve_trait_id(&t.name.0, Some(file_id))
-                    .ok_or_else(|| TyperError::at(
-                        format!("unknown trait `{}` in bound", t.name.0),
-                        def.target.1.clone(),
-                    ))?;
+                    .ok_or_else(|| {
+                        let file = self
+                            .file_names
+                            .get(&file_id)
+                            .cloned()
+                            .unwrap_or_default();
+                        let diag = errors::Diagnostic::error(format!(
+                            "unknown trait `{}` in bound",
+                            t.name.0
+                        ))
+                        .with_code(errors::codes::E_UNKNOWN_TRAIT)
+                        .with_primary(
+                            errors::FileSpan::new(&file, def.target.1.clone()),
+                            format!("trait `{}` not found in scope", t.name.0),
+                        )
+                        .with_help(format!(
+                            "declare the trait or bring it into scope with `use {};`",
+                            t.name.0
+                        ));
+                        TyperError::from_diagnostic(diag)
+                    })?;
                 bounds.push(BoundRef {
                     trait_id,
                     trait_args: t.templates.iter().map(|(tv, _)| tv.clone()).collect(),

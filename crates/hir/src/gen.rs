@@ -1131,7 +1131,7 @@ impl<'a> Generator<'a> {
         span: &new_parser::Span,
     ) -> HirError {
         let file = self.cur_file_name();
-        let diag = errors::Diagnostic::error(format!(
+        let mut diag = errors::Diagnostic::error(format!(
             "argument `{}` of `{}::{}` expected `{}`, found `{}`",
             param_name, recv_ty, method_name, expected, got
         ))
@@ -1139,7 +1139,22 @@ impl<'a> Generator<'a> {
         .with_primary(
             errors::FileSpan::new(&file, span.clone()),
             format!("expected `{}`, found `{}`", expected, got),
-        );
+        )
+        .with_note(format!(
+            "`{}::{}` declares `{}` as `{}`",
+            recv_ty, method_name, param_name, expected
+        ));
+        if (expected == "U4" && got == "U8") || (expected == "U8" && got == "U4") {
+            diag = diag.with_help(format!(
+                "cast with `as {}` if the narrowing is intentional",
+                expected
+            ));
+        } else {
+            diag = diag.with_help(format!(
+                "convert the argument to `{}` before calling, or call a method that accepts `{}`",
+                expected, got
+            ));
+        }
         HirError::from_diagnostic(diag)
     }
 
@@ -1153,12 +1168,12 @@ impl<'a> Generator<'a> {
         span: &new_parser::Span,
     ) -> HirError {
         let file = self.cur_file_name();
-        let max = match expected {
-            "U4" => 15,
-            "U8" => 255,
-            _ => i64::MAX,
+        let (max, wider) = match expected {
+            "U4" => (15i64, Some("U8")),
+            "U8" => (255i64, None),
+            _ => (i64::MAX, None),
         };
-        let diag = errors::Diagnostic::error(format!(
+        let mut diag = errors::Diagnostic::error(format!(
             "literal `{}` doesn't fit in `{}` (argument `{}` of `{}::{}`, range 0..={})",
             value, expected, param_name, recv_ty, method_name, max
         ))
@@ -1166,7 +1181,29 @@ impl<'a> Generator<'a> {
         .with_primary(
             errors::FileSpan::new(&file, span.clone()),
             format!("out of range for `{}`", expected),
-        );
+        )
+        .with_note(format!(
+            "`{}` is a {}-bit cell; valid values are `0..={}`",
+            expected,
+            if expected == "U4" { 4 } else { 8 },
+            max
+        ));
+        if value < 0 {
+            diag = diag.with_help(format!(
+                "`{}` is unsigned — use a non-negative literal",
+                expected
+            ));
+        } else if let Some(bigger) = wider {
+            diag = diag.with_help(format!(
+                "use `{}` (or a smaller literal) — `{}` only holds values up to `{}`",
+                bigger, expected, max
+            ));
+        } else {
+            diag = diag.with_help(format!(
+                "clamp the literal to the `0..={}` range for `{}`",
+                max, expected
+            ));
+        }
         HirError::from_diagnostic(diag)
     }
 
@@ -1184,7 +1221,36 @@ impl<'a> Generator<'a> {
         }
         let kind = if is_method { "method" } else { "associated function" };
         let file = self.cur_file_name();
-        let diag = errors::Diagnostic::error(format!(
+        let method_sig = self
+            .reg
+            .get_type(recv_ty)
+            .and_then(|info| {
+                info.methods
+                    .iter()
+                    .find(|m| m.function.sig.name.0 == method_name)
+            })
+            .map(|m| {
+                let params: Vec<String> = m
+                    .function
+                    .sig
+                    .params
+                    .iter()
+                    .map(|p| {
+                        if p.is_self {
+                            if p.mutable { "mut self".into() } else { "self".into() }
+                        } else {
+                            let ty = p
+                                .ty
+                                .as_ref()
+                                .map(|t| t.0.name.0.clone())
+                                .unwrap_or_default();
+                            format!("{} {}", ty, p.name.0)
+                        }
+                    })
+                    .collect();
+                format!("fn {}({})", method_name, params.join(", "))
+            });
+        let mut diag = errors::Diagnostic::error(format!(
             "{} `{}::{}` takes {} argument{} but {} w{} supplied",
             kind,
             recv_ty,
@@ -1204,6 +1270,14 @@ impl<'a> Generator<'a> {
                 got
             ),
         );
+        if let Some(sig) = method_sig {
+            diag = diag.with_help(format!("signature: `{}`", sig));
+        }
+        if got < expected {
+            diag = diag.with_help(format!("supply {} more argument(s)", expected - got));
+        } else {
+            diag = diag.with_help(format!("remove {} argument(s)", got - expected));
+        }
         Err(HirError::from_diagnostic(diag))
     }
 

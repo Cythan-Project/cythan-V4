@@ -164,30 +164,31 @@ fn to_lsp_diagnostic(d: &ErrDiag, local_file: &str, text: &str) -> Option<Diagno
         }
     };
 
+    // Build the message. Notes and helps go on their own lines
+    // with distinctive prefixes so VS Code's Problems pane +
+    // hover tooltip render them as structured hint blocks
+    // rather than one long paragraph.
     let mut message = d.message.clone();
     if !primary_msg.is_empty() {
         message.push('\n');
         message.push_str(&primary_msg);
     }
-    // If we re-anchored, stamp the original location into the
-    // message so the user can still see where the typer thinks
-    // the problem lives.
     if direct_primary.is_none() {
         if let Some(p) = d.labels.iter().find(|l| l.kind == LabelKind::Primary) {
             if !p.span.file.is_empty() && p.span.file != local_file {
                 message.push_str(&format!(
-                    "\n(reported against `{}` by the typer)",
+                    "\n\n(reported against `{}` by the typer)",
                     p.span.file
                 ));
             }
         }
     }
     for n in &d.notes {
-        message.push_str("\nnote: ");
+        message.push_str("\n  • note: ");
         message.push_str(n);
     }
     for h in &d.helps {
-        message.push_str("\nhelp: ");
+        message.push_str("\n  ▸ help: ");
         message.push_str(h);
     }
 

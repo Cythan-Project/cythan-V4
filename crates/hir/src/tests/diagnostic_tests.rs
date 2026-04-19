@@ -186,6 +186,162 @@ fn e0015_unknown_field_suggests_similar() {
 }
 
 // =========================================================================
+// E0013 — wrong argument count (method + static call)
+// =========================================================================
+#[test]
+fn e0013_method_too_few_args() {
+    // Define a type locally so the registry sees its methods
+    // without needing the full stdlib loaded.
+    let src = r#"
+        struct Box { U4 v, }
+        extension Box {
+            fn add(mut self, U4 n): U4 { 0 }
+            fn go(mut self): U4 {
+                self.add();
+                0
+            }
+        }
+    "#;
+    let diag = hir_diagnostic(src, "Box", "go");
+    assert_diag(&diag, Severity::Error, codes::E_WRONG_ARG_COUNT);
+    assert!(
+        diag.message.contains("takes 1 argument"),
+        "header should name the expected count; got {:?}",
+        diag.message
+    );
+    assert!(
+        diag.message.contains("0 were supplied"),
+        "header should name the actual count; got {:?}",
+        diag.message
+    );
+    assert!(
+        diag.helps.iter().any(|h| h.contains("signature")),
+        "expected a signature help; got {:?}",
+        diag.helps
+    );
+    assert!(
+        diag.helps.iter().any(|h| h.contains("supply")),
+        "expected an actionable supply-more help; got {:?}",
+        diag.helps
+    );
+    assert_eq!(primary_count(&diag), 1);
+}
+
+#[test]
+fn e0013_method_too_many_args() {
+    let src = r#"
+        struct Box { U4 v, }
+        extension Box {
+            fn add(mut self, U4 n): U4 { 0 }
+            fn go(mut self): U4 {
+                self.add(1, 2);
+                0
+            }
+        }
+    "#;
+    let diag = hir_diagnostic(src, "Box", "go");
+    assert_diag(&diag, Severity::Error, codes::E_WRONG_ARG_COUNT);
+    assert!(
+        diag.helps.iter().any(|h| h.contains("remove")),
+        "expected a remove-extras help; got {:?}",
+        diag.helps
+    );
+}
+
+// =========================================================================
+// E0010 — argument type mismatch
+// =========================================================================
+#[test]
+fn e0010_wrong_arg_type_struct_vs_u4() {
+    let src = r#"
+        struct Bar { U4 v, }
+        extension Bar {
+            fn takesBar(self, Bar other): U4 { 0 }
+            fn go(self): U4 {
+                U4 i = 0;
+                self.takesBar(i);
+                0
+            }
+        }
+    "#;
+    let diag = hir_diagnostic(src, "Bar", "go");
+    assert_diag(&diag, Severity::Error, codes::E_TYPE_MISMATCH);
+    assert!(
+        diag.message.contains("expected `Bar`"),
+        "message should name expected type; got {:?}",
+        diag.message
+    );
+    assert!(
+        diag.message.contains("found `U4`"),
+        "message should name found type; got {:?}",
+        diag.message
+    );
+    assert!(
+        diag.notes.iter().any(|n| n.contains("declares")),
+        "expected an explanatory note; got {:?}",
+        diag.notes
+    );
+    assert!(
+        !diag.helps.is_empty(),
+        "expected at least one help; got {:?}",
+        diag.helps
+    );
+}
+
+#[test]
+fn e0010_number_literal_overflows_u4() {
+    let src = r#"
+        struct Box { U4 v, }
+        extension Box {
+            fn take(self, U4 n): U4 { 0 }
+            fn go(self): U4 {
+                self.take(87);
+                0
+            }
+        }
+    "#;
+    let diag = hir_diagnostic(src, "Box", "go");
+    assert_diag(&diag, Severity::Error, codes::E_TYPE_MISMATCH);
+    assert!(
+        diag.message.contains("87") && diag.message.contains("U4"),
+        "should cite the value and the type; got {:?}",
+        diag.message
+    );
+    assert!(
+        diag.notes.iter().any(|n| n.contains("4-bit")),
+        "expected a note about the cell width; got {:?}",
+        diag.notes
+    );
+    assert!(
+        diag.helps.iter().any(|h| h.contains("U8") || h.contains("clamp")),
+        "expected a widen-or-clamp help; got {:?}",
+        diag.helps
+    );
+}
+
+// =========================================================================
+// E0002 — unknown trait in impl
+// =========================================================================
+#[test]
+fn e0002_unknown_trait_in_impl() {
+    let diag = typer_diagnostic(&[(
+        "a.ct",
+        "struct Foo { U4 v, }\nimpl NoSuchTrait for Foo { }\n",
+    )]);
+    assert_diag(&diag, Severity::Error, codes::E_UNKNOWN_TRAIT);
+    assert!(
+        diag.message.contains("NoSuchTrait"),
+        "message should name the trait; got {:?}",
+        diag.message
+    );
+    assert!(
+        diag.helps.iter().any(|h| h.contains("trait") || h.contains("use")),
+        "expected an actionable help; got {:?}",
+        diag.helps
+    );
+}
+
+// =========================================================================
 // W0001 — unused variable warning (and its `_name` suppression)
 // =========================================================================
 fn compile_fn_warnings(src: &str, ty: &str, method: &str) -> Vec<Diagnostic> {
