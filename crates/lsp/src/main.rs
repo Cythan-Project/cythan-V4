@@ -24,6 +24,7 @@ mod diagnostics;
 mod hover;
 mod outline;
 mod references;
+mod rename;
 mod state;
 mod symbols;
 mod text;
@@ -53,6 +54,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send>> {
                 work_done_progress_options: Default::default(),
             },
         )),
+        rename_provider: Some(OneOf::Right(RenameOptions {
+            prepare_provider: Some(true),
+            work_done_progress_options: Default::default(),
+        })),
         completion_provider: Some(CompletionOptions {
             trigger_characters: Some(vec![".".into(), ":".into()]),
             resolve_provider: Some(false),
@@ -95,7 +100,8 @@ fn handle_request(
 ) {
     use lsp_types::request::{
         CodeActionRequest, Completion, DocumentSymbolRequest, GotoDefinition, HoverRequest,
-        References, Request as LspRequest, WorkspaceSymbolRequest,
+        PrepareRenameRequest, References, Rename, Request as LspRequest,
+        WorkspaceSymbolRequest,
     };
     let id = req.id.clone();
     let value = if req.method == GotoDefinition::METHOD {
@@ -169,6 +175,16 @@ fn handle_request(
             .map(|p| code_actions::resolve_code_actions(state, p))
             .unwrap_or_default();
         serde_json::to_value(actions).unwrap_or(serde_json::Value::Null)
+    } else if req.method == PrepareRenameRequest::METHOD {
+        let resp = serde_json::from_value::<TextDocumentPositionParams>(req.params)
+            .ok()
+            .and_then(|p| rename::prepare_rename(state, p));
+        serde_json::to_value(resp).unwrap_or(serde_json::Value::Null)
+    } else if req.method == Rename::METHOD {
+        let resp = serde_json::from_value::<RenameParams>(req.params)
+            .ok()
+            .and_then(|p| rename::rename(state, p));
+        serde_json::to_value(resp).unwrap_or(serde_json::Value::Null)
     } else {
         return;
     };

@@ -20,23 +20,30 @@
 
 use lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, Diagnostic,
-    OneOf, OptionalVersionedTextDocumentIdentifier, Range, TextDocumentEdit, TextEdit,
-    Url, WorkspaceEdit,
+    NumberOrString, OneOf, OptionalVersionedTextDocumentIdentifier, Position, Range,
+    TextDocumentEdit, TextEdit, Url, WorkspaceEdit,
 };
 
 use crate::state::State;
 
 pub(crate) fn resolve_code_actions(
-    _state: &State,
+    state: &State,
     params: CodeActionParams,
 ) -> Vec<CodeActionOrCommand> {
     let uri = params.text_document.uri;
     let mut out: Vec<CodeActionOrCommand> = Vec::new();
     for d in &params.context.diagnostics {
+        // Help-derived fixes (rename to suggestion, prefix _, cast, …).
         for help in extract_helps(&d.message) {
             for action in actions_for_help(&uri, d, &help) {
                 out.push(CodeActionOrCommand::CodeAction(action));
             }
+        }
+        // Import-derived fixes — look at the diagnostic's code +
+        // the identifier from its message; if it's a known
+        // workspace symbol, offer `use X;` at the file top.
+        for action in actions_for_import(state, &uri, d) {
+            out.push(CodeActionOrCommand::CodeAction(action));
         }
     }
     out
@@ -134,6 +141,99 @@ fn extract_cast_type(help: &str) -> Option<String> {
     let rest = help.strip_prefix(p)?;
     let end = rest.find('`')?;
     Some(rest[..end].to_string())
+}
+
+/// When an E0001/E0002 diagnostic names a symbol that IS known
+/// to the workspace (just not imported in this file), offer a
+/// one-click `use X;` insertion at the top of the document.
+fn actions_for_import(state: &State, uri: &Url, diag: &Diagnostic) -> Vec<CodeAction> {
+    let Some(NumberOrString::String(code)) = &diag.code else {
+        return vec![];
+    };
+    // Only act on the unknown-type / unknown-trait codes.
+    if code != "E0001" && code != "E0002" {
+        return vec![];
+    }
+    let Some(name) = extract_backticked(&diag.message) else {
+        return vec![];
+    };
+    // Symbol known to the index? If not, nothing to import.
+    let is_known = state.symbols.types.contains_key(&name)
+        || state.symbols.traits.contains_key(&name);
+    if !is_known {
+        return vec![];
+    }
+    // Don't offer the fix if the file already imports it. Cheap
+    // textual scan — `use` in Cythan is a single-name statement
+    // so looking for `use <name>;` is reliable.
+    let Some(text) = state.docs.get(uri) else {
+        return vec![];
+    };
+    let needle = format!("use {};", name);
+    if text.contains(&needle) {
+        return vec![];
+    }
+    let (range, insert) = compute_import_insertion(text, &name);
+    vec![edit_action(
+        uri,
+        diag,
+        format!("Import `{}`", name),
+        range,
+        insert,
+        /*preferred=*/ true,
+    )]
+}
+
+/// Compute where to insert `use Name;` in a file and the text to
+/// insert. Prefers to append to an existing `use …;` block;
+/// otherwise prepends to the first line.
+fn compute_import_insertion(text: &str, name: &str) -> (Range, String) {
+    // Line scan for the last `use …;` line.
+    let mut last_use: Option<u32> = None;
+    for (i, line) in text.lines().enumerate() {
+        let t = line.trim_start();
+        if t.starts_with("use ") && t.ends_with(';') {
+            last_use = Some(i as u32);
+        } else if last_use.is_some() && !t.is_empty() {
+            // Past the imports block — stop looking.
+            break;
+        }
+    }
+    match last_use {
+        Some(line) => {
+            // Insert at the start of the next line.
+            let pos = Position {
+                line: line + 1,
+                character: 0,
+            };
+            (
+                Range { start: pos, end: pos },
+                format!("use {};\n", name),
+            )
+        }
+        None => {
+            // Insert at the top of the file.
+            let pos = Position { line: 0, character: 0 };
+            (
+                Range { start: pos, end: pos },
+                format!("use {};\n", name),
+            )
+        }
+    }
+}
+
+/// First backticked identifier in `s`. Used to pull the missing
+/// name out of error messages like ``unknown type `Foo` ...``.
+fn extract_backticked(s: &str) -> Option<String> {
+    let start = s.find('`')?;
+    let after = &s[start + 1..];
+    let end = after.find('`')?;
+    let name = &after[..end];
+    if name.chars().all(|c| c.is_alphanumeric() || c == '_') && !name.is_empty() {
+        Some(name.to_string())
+    } else {
+        None
+    }
 }
 
 fn edit_action(

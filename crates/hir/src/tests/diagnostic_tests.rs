@@ -366,6 +366,111 @@ fn e0016_undefined_variable_no_bindings_suggests_declaration() {
 }
 
 // =========================================================================
+// E0014 — unknown method with typo suggestion
+// =========================================================================
+#[test]
+fn e0014_unknown_method_suggests_similar() {
+    let src = r#"
+        struct Box { U4 v, }
+        extension Box {
+            fn get(self): U4 { self.v }
+            fn go(self): U4 {
+                self.gat();
+                0
+            }
+        }
+    "#;
+    let diag = hir_diagnostic(src, "Box", "go");
+    assert_diag(&diag, Severity::Error, codes::E_UNKNOWN_METHOD);
+    assert!(
+        diag.helps.iter().any(|h| h.contains("`get`")),
+        "expected a `did you mean get?` help; got {:?}",
+        diag.helps
+    );
+}
+
+// =========================================================================
+// E0015 — missing / duplicate / unknown field in struct literal
+// =========================================================================
+#[test]
+fn e0015_missing_fields_in_struct_literal() {
+    let src = r#"
+        struct Pair { U4 a, U4 b, }
+        extension U4 {
+            fn go(): U4 {
+                Pair p = Pair { a: 1 };
+                p.a
+            }
+        }
+    "#;
+    let diag = hir_diagnostic(src, "U4", "go");
+    assert_diag(&diag, Severity::Error, codes::E_UNKNOWN_FIELD);
+    assert!(
+        diag.message.contains("`b`"),
+        "should name the missing field; got {:?}",
+        diag.message
+    );
+    assert!(
+        diag.helps.iter().any(|h| h.contains("add `b:")),
+        "expected an actionable add-missing help; got {:?}",
+        diag.helps
+    );
+}
+
+#[test]
+fn e0015_duplicate_field_in_struct_literal() {
+    let src = r#"
+        struct Pair { U4 a, U4 b, }
+        extension U4 {
+            fn go(): U4 {
+                Pair p = Pair { a: 1, a: 2, b: 3 };
+                p.a
+            }
+        }
+    "#;
+    let diag = hir_diagnostic(src, "U4", "go");
+    assert_diag(&diag, Severity::Error, codes::E_UNKNOWN_FIELD);
+    assert!(
+        diag.message.contains("twice"),
+        "should flag the duplicate; got {:?}",
+        diag.message
+    );
+}
+
+#[test]
+fn e0015_unknown_field_in_struct_literal_suggests_similar() {
+    // Include every required field + one typo'd one, so we hit
+    // the unknown-field path rather than the missing-fields
+    // path.
+    let src = r#"
+        struct Triple { U4 first, U4 second, U4 third, }
+        extension U4 {
+            fn go(): U4 {
+                Triple p = Triple { first: 1, second: 2, third: 3, frist: 0 };
+                p.first
+            }
+        }
+    "#;
+    let diag = hir_diagnostic(src, "U4", "go");
+    assert_diag(&diag, Severity::Error, codes::E_UNKNOWN_FIELD);
+    // Either a duplicate-field hit (p.first twice) or a typo
+    // hit — both happen here because `frist` isn't in the
+    // struct. We rely on the implementation order: duplicate
+    // check runs before per-field lookups, so this actually
+    // fires the unknown-field branch.
+    assert!(
+        diag.message.contains("unknown") || diag.message.contains("no field"),
+        "expected an unknown-field error; got {:?}",
+        diag.message
+    );
+    assert!(
+        diag.helps.iter().any(|h| h.contains("`first`")),
+        "expected a `did you mean first?` help; got {:?}",
+        diag.helps
+    );
+}
+
+// =========================================================================
 // E0002 — unknown trait in impl
 // =========================================================================
 #[test]

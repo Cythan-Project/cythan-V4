@@ -2847,16 +2847,106 @@ impl<'a> Generator<'a> {
                 }
             }
         };
+        // E0015: missing fields. Pre-flight before we start
+        // wiring values so the user sees every field they
+        // forgot in one go rather than chasing errors one at a
+        // time.
+        let provided: std::collections::HashSet<&str> =
+            fields.iter().map(|(n, _)| n.0.as_str()).collect();
+        let missing: Vec<&str> = layout
+            .fields
+            .iter()
+            .filter(|f| !provided.contains(f.name.as_str()))
+            .map(|f| f.name.as_str())
+            .collect();
+        if !missing.is_empty() {
+            let file = self.cur_file_name();
+            let list = missing
+                .iter()
+                .map(|n| format!("`{}`", n))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let diag = errors::Diagnostic::error(format!(
+                "struct literal for `{}` is missing field{}: {}",
+                resolved,
+                if missing.len() == 1 { "" } else { "s" },
+                list
+            ))
+            .with_code(errors::codes::E_UNKNOWN_FIELD)
+            .with_primary(
+                errors::FileSpan::new(&file, sp.clone()),
+                format!(
+                    "missing {}",
+                    missing
+                        .iter()
+                        .map(|n| format!("`{}`", n))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            )
+            .with_help(format!(
+                "add {} to this literal",
+                missing
+                    .iter()
+                    .map(|n| format!("`{}: …`", n))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+            return Err(HirError::from_diagnostic(diag));
+        }
+        // E0015: duplicate field.
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for (fname, _) in fields {
+            if !seen.insert(fname.0.as_str()) {
+                let file = self.cur_file_name();
+                let diag = errors::Diagnostic::error(format!(
+                    "field `{}` supplied twice in `{}` literal",
+                    fname.0, resolved
+                ))
+                .with_code(errors::codes::E_UNKNOWN_FIELD)
+                .with_primary(
+                    errors::FileSpan::new(&file, fname.1.clone()),
+                    format!("duplicate field `{}`", fname.0),
+                )
+                .with_help("remove the duplicate assignment".to_string());
+                return Err(HirError::from_diagnostic(diag));
+            }
+        }
+
         for (fname, fval) in fields {
             let field = layout
                 .fields
                 .iter()
                 .find(|f| f.name == fname.0)
                 .ok_or_else(|| {
-                    HirError::at(
-                        format!("no field `{}` on `{}`", fname.0, resolved),
-                        fname.1.clone(),
-                    )
+                    let file = self.cur_file_name();
+                    let known: Vec<&str> =
+                        layout.fields.iter().map(|f| f.name.as_str()).collect();
+                    let mut diag = errors::Diagnostic::error(format!(
+                        "no field `{}` on `{}`",
+                        fname.0, resolved
+                    ))
+                    .with_code(errors::codes::E_UNKNOWN_FIELD)
+                    .with_primary(
+                        errors::FileSpan::new(&file, fname.1.clone()),
+                        format!("unknown field `{}`", fname.0),
+                    );
+                    if let Some(sugg) =
+                        errors::suggest_name(&fname.0, known.iter().copied())
+                    {
+                        diag = diag.with_help(format!("did you mean `{}`?", sugg));
+                    } else if !known.is_empty() {
+                        diag = diag.with_help(format!(
+                            "known fields of `{}`: {}",
+                            resolved,
+                            known
+                                .iter()
+                                .map(|n| format!("`{}`", n))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ));
+                    }
+                    HirError::from_diagnostic(diag)
                 })?;
             let dst_slot = SlotId(dst.0 + field.offset);
             // Same type-inference shortcut as gen_declaration: if the
