@@ -68,20 +68,32 @@
     "keywords": {
       "patterns": [
         {
-          "name": "keyword.control.cythan",
-          "match": "\\b(if|else|match|loop|while|for|in|break|continue|return|skip)\\b"
+          "name": "keyword.control.conditional.cythan",
+          "match": "\\b(if|else|match)\\b"
+        },
+        {
+          "name": "keyword.control.flow.cythan",
+          "match": "\\b(return|break|continue|skip|stop)\\b"
+        },
+        {
+          "name": "keyword.control.loop.cythan",
+          "match": "\\b(loop|while|for|in)\\b"
         },
         {
           "name": "storage.type.cythan",
-          "match": "\\b(struct|enum|trait|impl|extension|fn|let|const|use)\\b"
+          "match": "\\b(struct|enum|trait|impl|extension|fn|let|const|use|as|where)\\b"
         },
         {
           "name": "storage.modifier.cythan",
-          "match": "\\b(mut|self|Self)\\b"
+          "match": "\\b(mut|pub)\\b"
+        },
+        {
+          "name": "variable.language.cythan",
+          "match": "\\b(self|Self|super)\\b"
         },
         {
           "name": "constant.language.cythan",
-          "match": "\\b(true|false)\\b"
+          "match": "\\b(true|false|null)\\b"
         }
       ]
     },
@@ -106,8 +118,32 @@
       ]
     },
     "operators": {
-      "name": "keyword.operator.cythan",
-      "match": "==|!=|<=|>=|->|=>|&&|\\|\\||::|[+\\-*/%<>!=&|^]"
+      "patterns": [
+        {
+          "name": "keyword.operator.comparison.cythan",
+          "match": "==|!=|<=|>="
+        },
+        {
+          "name": "keyword.operator.arrow.cythan",
+          "match": "->|=>"
+        },
+        {
+          "name": "keyword.operator.logical.cythan",
+          "match": "&&|\\|\\|"
+        },
+        {
+          "name": "keyword.operator.path.cythan",
+          "match": "::"
+        },
+        {
+          "name": "keyword.operator.access.cythan",
+          "match": "\\."
+        },
+        {
+          "name": "keyword.operator.cythan",
+          "match": "[+\\-*/%<>!=&|^?]"
+        }
+      ]
     },
     "punctuation": {
       "patterns": [

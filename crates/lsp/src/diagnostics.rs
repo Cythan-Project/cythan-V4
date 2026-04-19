@@ -17,7 +17,7 @@ use errors::{Diagnostic as ErrDiag, LabelKind, Severity};
 
 use crate::state::State;
 use crate::symbols::build_symbol_index;
-use crate::text::byte_range_to_lsp;
+use crate::text::{byte_range_to_lsp, find_word_occurrences};
 
 pub(crate) fn publish_for(
     connection: &Connection,
@@ -135,18 +135,52 @@ pub(crate) fn send_diagnostics(
 }
 
 fn to_lsp_diagnostic(d: &ErrDiag, local_file: &str, text: &str) -> Option<Diagnostic> {
-    let primary = d
+    // Preferred path: a label points at the open file directly.
+    let direct_primary = d
         .labels
         .iter()
         .find(|l| l.kind == LabelKind::Primary && l.span.file == local_file)
-        .or_else(|| d.labels.iter().find(|l| l.span.file == local_file))?;
+        .or_else(|| d.labels.iter().find(|l| l.span.file == local_file));
 
-    let range = byte_range_to_lsp(text, &primary.span.range);
+    let (range, primary_msg) = if let Some(p) = direct_primary {
+        (byte_range_to_lsp(text, &p.span.range), p.message.clone())
+    } else {
+        // Fallback: the typer attributes cross-file errors to
+        // whichever file it processed first (often a std file)
+        // even when the actual mistake is in the open document.
+        // Try to re-anchor the diagnostic by matching any
+        // identifier mentioned in the message against the open
+        // document. If none match, anchor at 0:0 so the user at
+        // least sees the problem in the Problems pane.
+        match anchor_by_message(&d.message, text) {
+            Some(range) => (range, String::new()),
+            None => (
+                lsp_types::Range {
+                    start: lsp_types::Position { line: 0, character: 0 },
+                    end: lsp_types::Position { line: 0, character: 1 },
+                },
+                String::new(),
+            ),
+        }
+    };
 
     let mut message = d.message.clone();
-    if !primary.message.is_empty() {
+    if !primary_msg.is_empty() {
         message.push('\n');
-        message.push_str(&primary.message);
+        message.push_str(&primary_msg);
+    }
+    // If we re-anchored, stamp the original location into the
+    // message so the user can still see where the typer thinks
+    // the problem lives.
+    if direct_primary.is_none() {
+        if let Some(p) = d.labels.iter().find(|l| l.kind == LabelKind::Primary) {
+            if !p.span.file.is_empty() && p.span.file != local_file {
+                message.push_str(&format!(
+                    "\n(reported against `{}` by the typer)",
+                    p.span.file
+                ));
+            }
+        }
     }
     for n in &d.notes {
         message.push_str("\nnote: ");
@@ -160,7 +194,7 @@ fn to_lsp_diagnostic(d: &ErrDiag, local_file: &str, text: &str) -> Option<Diagno
     let related: Vec<DiagnosticRelatedInformation> = d
         .labels
         .iter()
-        .filter(|l| !std::ptr::eq(*l, primary))
+        .filter(|l| !direct_primary.map(|p| std::ptr::eq(*l, p)).unwrap_or(false))
         .filter_map(|l| {
             if l.span.file != local_file {
                 return None;
@@ -191,6 +225,49 @@ fn to_lsp_diagnostic(d: &ErrDiag, local_file: &str, text: &str) -> Option<Diagno
         tags: None,
         data: None,
     })
+}
+
+/// Scan the diagnostic message for a backtick-quoted identifier
+/// (the typer wraps type / trait / method / field names in
+/// backticks) and, if the identifier appears in `text`, return
+/// the LSP range of the first occurrence. That's usually a much
+/// better anchor than 0:0 when the upstream error attribution
+/// is off.
+fn anchor_by_message(message: &str, text: &str) -> Option<lsp_types::Range> {
+    // Pull every `…`-quoted substring.
+    let mut candidates: Vec<&str> = Vec::new();
+    let bytes = message.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'`' {
+            let start = i + 1;
+            let mut j = start;
+            while j < bytes.len() && bytes[j] != b'`' {
+                j += 1;
+            }
+            if j > start && j < bytes.len() {
+                let s = &message[start..j];
+                // Only accept valid identifiers — skip names
+                // with spaces or non-id chars (e.g. backtick-
+                // wrapped pretty-printed signatures).
+                if s.chars().all(|c| c.is_alphanumeric() || c == '_')
+                    && !s.is_empty()
+                {
+                    candidates.push(s);
+                }
+            }
+            i = j + 1;
+        } else {
+            i += 1;
+        }
+    }
+    for name in candidates {
+        let occs = find_word_occurrences(text, name);
+        if let Some(range) = occs.into_iter().next() {
+            return Some(byte_range_to_lsp(text, &range));
+        }
+    }
+    None
 }
 
 fn severity_to_lsp(s: Severity) -> DiagnosticSeverity {

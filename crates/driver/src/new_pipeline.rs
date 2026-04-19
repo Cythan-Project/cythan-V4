@@ -89,17 +89,17 @@ pub fn diagnose(files: &[(&str, String)]) -> DiagnosticReport {
     let mut errors: Vec<errors::Diagnostic> = Vec::new();
     let mut warnings: Vec<errors::Diagnostic> = Vec::new();
 
-    // Pass 1: parse every file. Parse errors today only carry a
-    // terse message (no span), so promote them to a generic
-    // diagnostic keyed to the file.
+    // Pass 1: parse every file. Parse errors carry a proper
+    // span and found-token from chumsky; render them as a
+    // readable message anchored at the right location.
     let mut parsed: Vec<(String, Vec<new_parser::ast::Spanned<new_parser::ast::Item>>)> = Vec::new();
     for (name, src) in files {
         match new_parser::parse(src) {
             Ok(items) => parsed.push((name.to_string(), items)),
             Err(e) => {
-                let diag = errors::Diagnostic::error(format!("parse error: {:?}", e))
-                    .with_primary(errors::FileSpan::new(*name, 0..0), "");
-                errors.push(diag);
+                for d in render_parse_error(*name, src, &e) {
+                    errors.push(d);
+                }
             }
         }
     }
@@ -158,6 +158,82 @@ pub fn diagnose(files: &[(&str, String)]) -> DiagnosticReport {
 
 fn default_file<'a>(files: &'a [(&'a str, String)]) -> &'a str {
     files.first().map(|(n, _)| *n).unwrap_or("<no-file>")
+}
+
+/// Render a parser failure as one `Diagnostic` per Simple error.
+/// Extracts the chumsky span and found-token so the diagnostic
+/// anchors at the exact location of the mistake and the message
+/// reads like `expected one of {…}, found ‘loop’` instead of the
+/// raw `Parse([Simple { … }])` debug dump.
+fn render_parse_error(
+    file: &str,
+    src: &str,
+    err: &new_parser::ParseError,
+) -> Vec<errors::Diagnostic> {
+    use new_parser::ParseError;
+    let mut out = Vec::new();
+    match err {
+        ParseError::Lex(errs) => {
+            for e in errs {
+                let span = e.span();
+                let found = e
+                    .found()
+                    .map(|c| format!("`{}`", c))
+                    .unwrap_or_else(|| "end of input".to_string());
+                let mut msg = format!("unexpected {}", found);
+                let expected: Vec<String> = e
+                    .expected()
+                    .flatten()
+                    .map(|c| format!("`{}`", c))
+                    .collect();
+                if !expected.is_empty() {
+                    msg.push_str(&format!(", expected {}", expected.join(" or ")));
+                }
+                let span = clamp_span(&span, src);
+                out.push(
+                    errors::Diagnostic::error(format!("parse error: {}", msg))
+                        .with_primary(errors::FileSpan::new(file, span), ""),
+                );
+            }
+        }
+        ParseError::Parse(errs) => {
+            for e in errs {
+                let span = e.span();
+                let found = e
+                    .found()
+                    .map(|t| format!("`{}`", t))
+                    .unwrap_or_else(|| "end of input".to_string());
+                let mut msg = format!("unexpected {}", found);
+                let expected: Vec<String> = e
+                    .expected()
+                    .flatten()
+                    .map(|t| format!("`{}`", t))
+                    .collect();
+                if !expected.is_empty() {
+                    msg.push_str(&format!(", expected {}", expected.join(" or ")));
+                }
+                let span = clamp_span(&span, src);
+                out.push(
+                    errors::Diagnostic::error(format!("parse error: {}", msg))
+                        .with_primary(errors::FileSpan::new(file, span), ""),
+                );
+            }
+        }
+    }
+    if out.is_empty() {
+        out.push(
+            errors::Diagnostic::error("parse error")
+                .with_primary(errors::FileSpan::new(file, 0..0), ""),
+        );
+    }
+    out
+}
+
+fn clamp_span(span: &std::ops::Range<usize>, src: &str) -> std::ops::Range<usize> {
+    let total = src.chars().count();
+    let start = span.start.min(total);
+    let end = span.end.min(total).max(start);
+    start..end
 }
 
 /// Bundle of `Diagnostic`s produced by `diagnose`. `errors` empty +
