@@ -1764,7 +1764,7 @@ impl<'a> Generator<'a> {
         cond: &ast::Spanned<ast::Expr>,
         then: &ast::Spanned<ast::Block>,
         else_: Option<&ast::Spanned<ast::Expr>>,
-        _sp: &new_parser::Span,
+        sp: &new_parser::Span,
         dst: Option<SlotId>,
         block: &mut HirBlock,
     ) -> Result<(), HirError> {
@@ -1792,6 +1792,7 @@ impl<'a> Generator<'a> {
         block.push(HirOp::if_zero(cond_slot, else_block, then_block));
         Ok(())
     }
+
 
     fn gen_match(
         &mut self,

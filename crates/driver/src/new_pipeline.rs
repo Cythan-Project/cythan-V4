@@ -15,9 +15,9 @@ use hir::natives::NativeProvider;
 use hir::{
     compute_exit_domains, elide_redundant_mut, elide_redundant_mut_with_stats, elide_unused_args,
     elide_unused_args_with_stats, eliminate_dead_writes, gen_function_with_natives, hir_to_mir,
-    inline_program_full, optimize_block, specialize_monomorph_with_summaries,
-    specialize_to_fixpoint, text_dump, unroll_loops_with_stats, BuiltinNatives, HirFunction,
-    SlotId, DEFAULT_UNROLL_FACTOR,
+    inline_program_full, merge_adjacent_matches, optimize_block,
+    specialize_monomorph_with_summaries, specialize_to_fixpoint, text_dump,
+    unroll_loops_with_stats, BuiltinNatives, HirFunction, SlotId, DEFAULT_UNROLL_FACTOR,
 };
 use lir::CompilableInstruction;
 use mir::{MemoryState, MirCodeBlock, MirState};
@@ -497,7 +497,13 @@ pub fn compile_with_stats(
     let (unrolled_body, unroll_stats) =
         unroll_loops_with_stats(inlined.body.clone(), DEFAULT_UNROLL_FACTOR, None);
     let specialized_body = specialize_to_fixpoint(unrolled_body);
-    let cleaned_body = optimize_block(specialized_body);
+    let merged_body = merge_adjacent_matches(specialized_body);
+    // Re-specialize: merging exposes single-value arms whose
+    // bodies were previously locked behind nested matches, and
+    // the specializer can now fold dead arms + constant-prop
+    // through them.
+    let respecialized_body = specialize_to_fixpoint(merged_body);
+    let cleaned_body = optimize_block(respecialized_body);
     let live_at_exit = output_slots_of(&inlined.sig);
     let lva_body = eliminate_dead_writes(cleaned_body, &live_at_exit);
     let final_body = optimize_block(lva_body);
@@ -711,7 +717,9 @@ pub fn compile(
     let (unrolled, _) =
         unroll_loops_with_stats(inlined.body, DEFAULT_UNROLL_FACTOR, None);
     let specialized = specialize_to_fixpoint(unrolled);
-    let cleaned = optimize_block(specialized);
+    let merged = merge_adjacent_matches(specialized);
+    let respecialized = specialize_to_fixpoint(merged);
+    let cleaned = optimize_block(respecialized);
     let live_at_exit = output_slots_of(&inlined.sig);
     let lva_cleaned = eliminate_dead_writes(cleaned, &live_at_exit);
     let final_block = optimize_block(lva_cleaned);
