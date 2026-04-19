@@ -17,6 +17,7 @@
 //! | `references`  | `textDocument/references`             |
 
 mod ast;
+mod code_actions;
 mod completion;
 mod definition;
 mod diagnostics;
@@ -45,6 +46,13 @@ fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send>> {
         document_symbol_provider: Some(OneOf::Left(true)),
         workspace_symbol_provider: Some(OneOf::Left(true)),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
+        code_action_provider: Some(CodeActionProviderCapability::Options(
+            CodeActionOptions {
+                code_action_kinds: Some(vec![CodeActionKind::QUICKFIX]),
+                resolve_provider: Some(false),
+                work_done_progress_options: Default::default(),
+            },
+        )),
         completion_provider: Some(CompletionOptions {
             trigger_characters: Some(vec![".".into(), ":".into()]),
             resolve_provider: Some(false),
@@ -86,8 +94,8 @@ fn handle_request(
     req: lsp_server::Request,
 ) {
     use lsp_types::request::{
-        Completion, DocumentSymbolRequest, GotoDefinition, HoverRequest, References,
-        Request as LspRequest, WorkspaceSymbolRequest,
+        CodeActionRequest, Completion, DocumentSymbolRequest, GotoDefinition, HoverRequest,
+        References, Request as LspRequest, WorkspaceSymbolRequest,
     };
     let id = req.id.clone();
     let value = if req.method == GotoDefinition::METHOD {
@@ -155,6 +163,12 @@ fn handle_request(
             })
             .unwrap_or_default();
         serde_json::to_value(refs).unwrap_or(serde_json::Value::Null)
+    } else if req.method == CodeActionRequest::METHOD {
+        let actions = serde_json::from_value::<CodeActionParams>(req.params)
+            .ok()
+            .map(|p| code_actions::resolve_code_actions(state, p))
+            .unwrap_or_default();
+        serde_json::to_value(actions).unwrap_or(serde_json::Value::Null)
     } else {
         return;
     };

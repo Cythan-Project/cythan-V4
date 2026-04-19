@@ -466,9 +466,7 @@ impl<'a> Generator<'a> {
         dst: Option<SlotId>,
         block: &mut HirBlock,
     ) -> Result<(), HirError> {
-        let b = self
-            .lookup(name)
-            .ok_or_else(|| HirError::at(format!("undefined variable `{}`", name), sp.clone()))?;
+        let b = self.lookup(name).ok_or_else(|| self.undefined_variable_error(name, sp))?;
         // Mark as read so the unused-variable lint doesn't fire for it.
         // `dst == None` still counts as a read — the variable was
         // evaluated for its side-effect/value even if the result is
@@ -559,9 +557,9 @@ impl<'a> Generator<'a> {
                 Ok((b.slot, b.type_name, b.size))
             }
             ast::Expr::Variable(name) => {
-                let b = self.lookup(name).ok_or_else(|| {
-                    HirError::at(format!("undefined variable `{}`", name), sp.clone())
-                })?;
+                let b = self
+                    .lookup(name)
+                    .ok_or_else(|| self.undefined_variable_error(name, sp))?;
                 Ok((b.slot, b.type_name, b.size))
             }
             ast::Expr::Field(inner, field) => {
@@ -929,6 +927,99 @@ impl<'a> Generator<'a> {
             .get(&self.simple.file_id)
             .cloned()
             .unwrap_or_default()
+    }
+
+    /// E0016 — unknown variable with a "did you mean?" suggestion
+    /// drawn from every binding currently in scope. The LSP's
+    /// code-action handler picks the suggestion up and offers a
+    /// one-click rename.
+    fn undefined_variable_error(&self, name: &str, sp: &new_parser::Span) -> HirError {
+        let file = self.cur_file_name();
+        let mut diag = errors::Diagnostic::error(format!("undefined variable `{}`", name))
+            .with_code(errors::codes::E_UNKNOWN_VARIABLE)
+            .with_primary(
+                errors::FileSpan::new(&file, sp.clone()),
+                format!("`{}` is not in scope", name),
+            );
+        let in_scope: Vec<&str> = self
+            .scopes
+            .iter()
+            .flat_map(|s| s.keys().map(|k| k.as_str()))
+            .collect();
+        if let Some(sugg) = errors::suggest_name(name, in_scope.iter().copied()) {
+            diag = diag.with_help(format!("did you mean `{}`?", sugg));
+        } else if in_scope.is_empty() {
+            diag = diag.with_help(
+                "declare it with `Type name = …;` earlier in the function".to_string(),
+            );
+        } else {
+            diag = diag.with_help(format!(
+                "bindings currently in scope: {}",
+                in_scope
+                    .iter()
+                    .take(10)
+                    .map(|n| format!("`{}`", n))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        HirError::from_diagnostic(diag)
+    }
+
+    /// E0014 — method existence. Resolves the method on the
+    /// receiver's type (inherent + trait impls) and emits a
+    /// "did you mean?" help if a similarly-named method exists.
+    fn check_method_exists(
+        &self,
+        recv_ty: &str,
+        method_name: &str,
+        span: &new_parser::Span,
+    ) -> Result<(), HirError> {
+        let Some(info) = self.reg.get_type(recv_ty) else {
+            return Ok(());
+        };
+        if info
+            .methods
+            .iter()
+            .any(|m| m.function.sig.name.0 == method_name)
+        {
+            return Ok(());
+        }
+        let file = self.cur_file_name();
+        let known: Vec<String> = info
+            .methods
+            .iter()
+            .map(|m| m.function.sig.name.0.clone())
+            .collect();
+        let mut diag = errors::Diagnostic::error(format!(
+            "no method `{}` on type `{}`",
+            method_name, recv_ty
+        ))
+        .with_code(errors::codes::E_UNKNOWN_METHOD)
+        .with_primary(
+            errors::FileSpan::new(&file, span.clone()),
+            format!("unknown method `{}`", method_name),
+        );
+        if let Some(sugg) = errors::suggest_name(method_name, known.iter().map(|s| s.as_str())) {
+            diag = diag.with_help(format!("did you mean `{}`?", sugg));
+        } else if known.is_empty() {
+            diag = diag.with_help(format!(
+                "`{}` has no methods in scope — declare one via `extension {} {{ … }}`",
+                recv_ty, recv_ty
+            ));
+        } else {
+            diag = diag.with_help(format!(
+                "methods available on `{}`: {}",
+                recv_ty,
+                known
+                    .iter()
+                    .take(10)
+                    .map(|n| format!("`{}`", n))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        Err(HirError::from_diagnostic(diag))
     }
 
     /// E0013 — method-call arity check. Silently accepts when no
@@ -1740,6 +1831,11 @@ impl<'a> Generator<'a> {
             .receiver_cell_size(&receiver.0)
             .unwrap_or_else(|| self.type_size_permissive(&resolved_recv));
 
+        // E0014: method existence. Emit before any arity/type
+        // check so the user gets a "did you mean?" for the
+        // common case of a typo'd method name instead of
+        // silently compiling and failing in the inliner.
+        self.check_method_exists(&resolved_recv, &name.0, &name.1)?;
         // E0013: argument-count check. The callee's declared
         // signature tells us how many caller-side args are
         // expected (self is implicit so we subtract self params).
@@ -1914,6 +2010,8 @@ impl<'a> Generator<'a> {
     ) -> Result<(), HirError> {
         let resolved = self.resolve_ty_name(&ty.0.name.0);
 
+        // E0014: associated-function existence check.
+        self.check_method_exists(&resolved, &name.0, &name.1)?;
         // E0013: argument-count check. Static calls don't get
         // an implicit `self`, so the expected count is the
         // method's entire param list.

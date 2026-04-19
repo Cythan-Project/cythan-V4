@@ -320,6 +320,52 @@ fn e0010_number_literal_overflows_u4() {
 }
 
 // =========================================================================
+// E0016 — undefined variable with typo suggestion
+// =========================================================================
+#[test]
+fn e0016_undefined_variable_suggests_similar() {
+    let src = r#"
+        extension U4 {
+            fn go(): U4 {
+                U4 caca = 1;
+                cac
+            }
+        }
+    "#;
+    let diag = hir_diagnostic(src, "U4", "go");
+    assert_diag(&diag, Severity::Error, codes::E_UNKNOWN_VARIABLE);
+    assert!(
+        diag.message.contains("`cac`"),
+        "should name the missing variable; got {:?}",
+        diag.message
+    );
+    assert!(
+        diag.helps.iter().any(|h| h.contains("`caca`")),
+        "expected a `did you mean caca?` help; got {:?}",
+        diag.helps
+    );
+}
+
+#[test]
+fn e0016_undefined_variable_no_bindings_suggests_declaration() {
+    let src = r#"
+        extension U4 {
+            fn go(): U4 {
+                x
+            }
+        }
+    "#;
+    let diag = hir_diagnostic(src, "U4", "go");
+    assert_diag(&diag, Severity::Error, codes::E_UNKNOWN_VARIABLE);
+    // No bindings in scope — help should point at the declaration shape.
+    assert!(
+        diag.helps.iter().any(|h| h.contains("declare")),
+        "expected a declare-it help; got {:?}",
+        diag.helps
+    );
+}
+
+// =========================================================================
 // E0002 — unknown trait in impl
 // =========================================================================
 #[test]

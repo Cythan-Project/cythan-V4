@@ -85,6 +85,7 @@ pub mod codes {
     pub const E_WRONG_ARG_COUNT: DiagCode = DiagCode("E0013");
     pub const E_UNKNOWN_METHOD: DiagCode = DiagCode("E0014");
     pub const E_UNKNOWN_FIELD: DiagCode = DiagCode("E0015");
+    pub const E_UNKNOWN_VARIABLE: DiagCode = DiagCode("E0016");
 
     // ---- warnings --------------------------------------------------
     pub const W_UNUSED_VARIABLE: DiagCode = DiagCode("W0001");
