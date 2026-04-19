@@ -1,0 +1,125 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Cythan",
+  "scopeName": "source.cythan",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#chars" },
+    { "include": "#numbers" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#functions" },
+    { "include": "#operators" },
+    { "include": "#punctuation" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.cythan",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.block.cythan",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.double.cythan",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.cythan",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "chars": {
+      "name": "string.quoted.single.cythan",
+      "begin": "'",
+      "end": "'",
+      "patterns": [
+        {
+          "name": "constant.character.escape.cythan",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.hex.cythan",
+          "match": "\\b0x[0-9A-Fa-f_]+\\b"
+        },
+        {
+          "name": "constant.numeric.binary.cythan",
+          "match": "\\b0b[01_]+\\b"
+        },
+        {
+          "name": "constant.numeric.decimal.cythan",
+          "match": "\\b[0-9][0-9_]*\\b"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.cythan",
+          "match": "\\b(if|else|match|loop|while|for|in|break|continue|return|skip)\\b"
+        },
+        {
+          "name": "storage.type.cythan",
+          "match": "\\b(struct|enum|trait|impl|extension|fn|let|const|use)\\b"
+        },
+        {
+          "name": "storage.modifier.cythan",
+          "match": "\\b(mut|self|Self)\\b"
+        },
+        {
+          "name": "constant.language.cythan",
+          "match": "\\b(true|false)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "support.type.primitive.cythan",
+          "match": "\\b(U4|U8|Bool|Cell|Array|String)\\b"
+        },
+        {
+          "name": "entity.name.type.cythan",
+          "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+        }
+      ]
+    },
+    "functions": {
+      "patterns": [
+        {
+          "name": "entity.name.function.cythan",
+          "match": "\\b([a-z_][A-Za-z0-9_]*)\\s*(?=\\()"
+        }
+      ]
+    },
+    "operators": {
+      "name": "keyword.operator.cythan",
+      "match": "==|!=|<=|>=|->|=>|&&|\\|\\||::|[+\\-*/%<>!=&|^]"
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.separator.cythan",
+          "match": "[,;]"
+        },
+        {
+          "name": "punctuation.section.brackets.cythan",
+          "match": "[{}\\[\\]()]"
+        }
+      ]
+    }
+  }
+}

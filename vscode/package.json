@@ -1,0 +1,78 @@
+{
+  "name": "cythan-language",
+  "displayName": "Cythan",
+  "description": "Cythan language support (LSP-backed diagnostics + syntax highlighting)",
+  "version": "0.1.0",
+  "publisher": "cythan",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:cythan"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "cythan",
+        "aliases": [
+          "Cythan",
+          "cythan"
+        ],
+        "extensions": [
+          ".ct"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "cythan",
+        "scopeName": "source.cythan",
+        "path": "./syntaxes/cythan.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "Cythan",
+      "properties": {
+        "cythan.serverPath": {
+          "type": "string",
+          "default": "cythan-lsp",
+          "description": "Path to the cythan-lsp executable. Defaults to `cythan-lsp` on PATH; absolute paths or `target/debug/cythan-lsp` work too."
+        },
+        "cythan.stdDir": {
+          "type": "string",
+          "default": "",
+          "description": "Override the directory where standard-library `.ct` files live. Empty = use `<workspaceRoot>/examples/new_syntax/std` if it exists."
+        },
+        "cythan.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Trace JSON-RPC traffic between VS Code and the language server."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.75.0",
+    "typescript": "^5.3.0"
+  }
+}

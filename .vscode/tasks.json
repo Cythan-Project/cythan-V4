@@ -1,0 +1,26 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Build LSP (debug)",
+      "type": "shell",
+      "command": "cargo build -p cythan-lsp",
+      "group": "build",
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "Build extension",
+      "type": "shell",
+      "command": "npm install && npm run compile",
+      "options": { "cwd": "${workspaceFolder}/vscode" },
+      "group": "build",
+      "problemMatcher": ["$tsc"]
+    },
+    {
+      "label": "Build extension + LSP",
+      "dependsOn": ["Build LSP (debug)", "Build extension"],
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": []
+    }
+  ]
+}
