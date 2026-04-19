@@ -618,6 +618,89 @@ fn e0018_continue_outside_loop() {
 }
 
 // =========================================================================
+// E0010 — variable declaration type mismatch
+// =========================================================================
+#[test]
+fn e0010_bool_decl_from_number_literal() {
+    // `Bool` is a wrapper struct around a `U4`; a bare number
+    // literal doesn't fit it. The fix is to construct with a
+    // struct literal or use a same-size `as` cast.
+    let src = r#"
+        struct Bool { U4 value, }
+        struct Foo { U4 v, }
+        extension Foo {
+            fn go(self): U4 {
+                Bool a = 0;
+                0
+            }
+        }
+    "#;
+    let diag = hir_diagnostic(src, "Foo", "go");
+    assert_diag(&diag, Severity::Error, codes::E_TYPE_MISMATCH);
+    assert!(
+        diag.message.contains("declared as `Bool`"),
+        "should name the type; got {:?}",
+        diag.message
+    );
+    assert!(
+        diag.helps.iter().any(|h| h.contains("Bool { value:")),
+        "expected a struct-init help; got {:?}",
+        diag.helps
+    );
+    assert!(
+        diag.helps.iter().any(|h| h.contains("as Bool")),
+        "expected a cast help; got {:?}",
+        diag.helps
+    );
+}
+
+#[test]
+fn e0010_u4_decl_overflow() {
+    let src = r#"
+        extension U4 {
+            fn go(): U4 {
+                U4 a = 87;
+                a
+            }
+        }
+    "#;
+    let diag = hir_diagnostic(src, "U4", "go");
+    assert_diag(&diag, Severity::Error, codes::E_TYPE_MISMATCH);
+    assert!(
+        diag.message.contains("87") && diag.message.contains("U4"),
+        "should cite the value + type; got {:?}",
+        diag.message
+    );
+    assert!(
+        diag.notes.iter().any(|n| n.contains("4-bit")),
+        "expected a cell-width note; got {:?}",
+        diag.notes
+    );
+}
+
+#[test]
+fn e0010_assignment_to_wrapper_type() {
+    let src = r#"
+        struct Bool { U4 value, }
+        struct Foo { U4 v, }
+        extension Foo {
+            fn go(self): U4 {
+                mut Bool a = Bool { value: 0 };
+                a = 0;
+                0
+            }
+        }
+    "#;
+    let diag = hir_diagnostic(src, "Foo", "go");
+    assert_diag(&diag, Severity::Error, codes::E_TYPE_MISMATCH);
+    assert!(
+        diag.message.contains("declared as `Bool`"),
+        "should reuse the declaration error text; got {:?}",
+        diag.message
+    );
+}
+
+// =========================================================================
 // E0010 — function return-type mismatch
 // =========================================================================
 #[test]

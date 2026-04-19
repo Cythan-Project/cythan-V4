@@ -820,7 +820,206 @@ impl<'a> Generator<'a> {
             }
             _ => value,
         };
+        // E0010: declared variable type must match the initializer's type.
+        // Cythan cell types are wrappers — e.g. `Bool` is `struct Bool { U4 value }`
+        // — so `Bool a = 0;` is rejected; the user needs `Bool { value: 0 }` or
+        // the same-size cast `0 as Bool`.
+        self.check_decl_value_type(&resolved_ast_ty.name.0, name, value_ref)?;
         self.gen_expr_into(&value_ref.0, &value_ref.1, Some(slot), block)
+    }
+
+    fn check_decl_value_type(
+        &self,
+        declared_raw: &str,
+        name: &ast::Spanned<String>,
+        value: &ast::Spanned<ast::Expr>,
+    ) -> Result<(), HirError> {
+        let declared = self.resolve_ty_name(declared_raw);
+        if declared == "Self" {
+            return Ok(());
+        }
+        // Template parameter of the enclosing method/type →
+        // can't compare without substitution.
+        if self.simple.type_template_args.iter().any(|t| {
+            if let ast::TypeOrValue::Type(ty) = t {
+                ty.name.0 == declared
+            } else {
+                false
+            }
+        }) {
+            return Ok(());
+        }
+
+        // Numeric-literal path: check the literal's value
+        // against the declared type's cell range.
+        if let ast::Expr::Number(n) = &value.0 {
+            match declared.as_str() {
+                "U4" => {
+                    if *n < 0 || *n > 15 {
+                        return Err(self.decl_overflow_error(
+                            &name.0, &declared, *n, &value.1,
+                        ));
+                    }
+                    return Ok(());
+                }
+                "U8" => {
+                    if *n < 0 || *n > 255 {
+                        return Err(self.decl_overflow_error(
+                            &name.0, &declared, *n, &value.1,
+                        ));
+                    }
+                    return Ok(());
+                }
+                _ => {
+                    // Declared type is a struct / enum / Bool
+                    // wrapper — a bare number literal doesn't fit.
+                    return Err(self.decl_type_mismatch_error(
+                        &name.0,
+                        &declared,
+                        "U4",
+                        &value.1,
+                        /*is_literal=*/ true,
+                    ));
+                }
+            }
+        }
+
+        // Flow-sensitive / template-involved expressions have
+        // return types that depend on substitution we don't do
+        // here. Skip to avoid false positives — the arg-type
+        // and return-type checks elsewhere still catch the
+        // common mistakes.
+        match &value.0 {
+            ast::Expr::MethodCall { .. }
+            | ast::Expr::StaticCall { .. }
+            | ast::Expr::If { .. }
+            | ast::Expr::Match { .. }
+            | ast::Expr::Block(_)
+            | ast::Expr::Cast { .. }
+            | ast::Expr::Field(_, _)
+            | ast::Expr::BinaryOp(_, _, _) => return Ok(()),
+            _ => {}
+        }
+
+        let got_raw = match self.infer_expr_type(&value.0, &value.1) {
+            Ok(t) => t,
+            Err(_) => return Ok(()),
+        };
+        if got_raw == "<?>" || got_raw == "<str>" {
+            return Ok(());
+        }
+        let got = self.resolve_ty_name(&got_raw);
+        if got == declared {
+            return Ok(());
+        }
+        let is_builtin = matches!(got.as_str(), "U4" | "U8" | "Bool");
+        if !is_builtin && self.reg.get_type(&got).is_none() {
+            return Ok(());
+        }
+        Err(self.decl_type_mismatch_error(
+            &name.0,
+            &declared,
+            &got,
+            &value.1,
+            /*is_literal=*/ false,
+        ))
+    }
+
+    fn decl_type_mismatch_error(
+        &self,
+        var: &str,
+        expected: &str,
+        got: &str,
+        span: &new_parser::Span,
+        is_literal: bool,
+    ) -> HirError {
+        let file = self.cur_file_name();
+        let mut diag = errors::Diagnostic::error(format!(
+            "variable `{}` declared as `{}` but initializer has type `{}`",
+            var, expected, got
+        ))
+        .with_code(errors::codes::E_TYPE_MISMATCH)
+        .with_primary(
+            errors::FileSpan::new(&file, span.clone()),
+            format!("expected `{}`, found `{}`", expected, got),
+        )
+        .with_note(format!(
+            "`{}` is declared as `{}` — initializers must produce that type",
+            var, expected
+        ));
+        // Cell-type wrapper suggestion: `Bool`, user-defined
+        // single-U4 structs etc. take a struct literal OR a
+        // same-size `as` cast.
+        let wrapper_suggestion = self.reg.get_type(expected).and_then(|info| match &info.kind {
+            typer::TypeKind::Struct(typer::StructKind::Concrete(layout)) => {
+                if layout.fields.len() == 1 {
+                    Some(layout.fields[0].name.clone())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        });
+        if is_literal {
+            if let Some(field) = &wrapper_suggestion {
+                diag = diag.with_help(format!(
+                    "wrap the literal in a struct init — `{} {{ {}: … }}`",
+                    expected, field
+                ));
+            }
+            diag = diag.with_help(format!(
+                "or use a same-size cast — `… as {}`",
+                expected
+            ));
+        } else {
+            diag = diag.with_help(format!(
+                "convert the initializer to `{}` before assigning, or change the declared type to `{}`",
+                expected, got
+            ));
+        }
+        HirError::from_diagnostic(diag)
+    }
+
+    fn decl_overflow_error(
+        &self,
+        var: &str,
+        expected: &str,
+        value: i64,
+        span: &new_parser::Span,
+    ) -> HirError {
+        let file = self.cur_file_name();
+        let (max, wider) = match expected {
+            "U4" => (15i64, Some("U8")),
+            "U8" => (255i64, None),
+            _ => (i64::MAX, None),
+        };
+        let mut diag = errors::Diagnostic::error(format!(
+            "literal `{}` doesn't fit in `{}` (initializer for `{}`, range 0..={})",
+            value, expected, var, max
+        ))
+        .with_code(errors::codes::E_TYPE_MISMATCH)
+        .with_primary(
+            errors::FileSpan::new(&file, span.clone()),
+            format!("out of range for `{}`", expected),
+        )
+        .with_note(format!(
+            "`{}` is a {}-bit cell; valid values are `0..={}`",
+            expected,
+            if expected == "U4" { 4 } else { 8 },
+            max
+        ));
+        if value < 0 {
+            diag = diag.with_help(format!(
+                "`{}` is unsigned — use a non-negative literal",
+                expected
+            ));
+        } else if let Some(bigger) = wider {
+            diag = diag.with_help(format!(
+                "use `{}` (or a smaller literal) — `{}` only holds values up to `{}`",
+                bigger, expected, max
+            ));
+        }
+        HirError::from_diagnostic(diag)
     }
 
     fn gen_assign(
@@ -830,12 +1029,24 @@ impl<'a> Generator<'a> {
         sp: &new_parser::Span,
         block: &mut HirBlock,
     ) -> Result<(), HirError> {
-        let (dst_slot, _dst_ty, size) =
+        let (dst_slot, dst_ty, size) =
             self.resolve_lvalue_base_sized(&target.0, &target.1)?;
         self.check_mutable_slot(dst_slot, sp)?;
         // Mutability check for the entire span.
         for i in 0..size {
             self.check_mutable_slot(SlotId(dst_slot.0 + i), sp)?;
+        }
+        // E0010: RHS type must match the target's declared type.
+        // Reuses the declaration check so `x = 0` gets the same
+        // "wrap it in a struct literal / use a cast" guidance
+        // as `Bool a = 0;`. Skip when the target isn't a simple
+        // variable name — field assignments would need a
+        // field-type lookup path we don't have here.
+        if let ast::Expr::Variable(var_name) = &target.0 {
+            if !dst_ty.is_empty() {
+                let name_span = (var_name.clone(), target.1.clone());
+                self.check_decl_value_type(&dst_ty, &name_span, value)?;
+            }
         }
         self.gen_expr_into(&value.0, &value.1, Some(dst_slot), block)
     }

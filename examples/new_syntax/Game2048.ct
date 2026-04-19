@@ -14,7 +14,7 @@ struct Game2048 {
 
 extension Game2048 {
     fn new(): Self {
-        Self { grid: Array::new(), seed: 0, changed: false, }
+        Self { grid: Array::new(), seed: 0,  changed: false }
     }
 
     // The board stores log2(value); print the literal cell contents
