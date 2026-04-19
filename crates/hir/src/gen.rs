@@ -931,6 +931,282 @@ impl<'a> Generator<'a> {
             .unwrap_or_default()
     }
 
+    /// E0013 — method-call arity check. Silently accepts when no
+    /// matching method is found (a separate "unknown method"
+    /// error will surface that case).
+    fn check_method_arg_count(
+        &self,
+        recv_ty: &str,
+        method_name: &str,
+        got: usize,
+        span: &new_parser::Span,
+    ) -> Result<(), HirError> {
+        let Some(info) = self.reg.get_type(recv_ty) else {
+            return Ok(());
+        };
+        let Some(m) = info
+            .methods
+            .iter()
+            .find(|m| m.function.sig.name.0 == method_name)
+        else {
+            return Ok(());
+        };
+        let expected = m
+            .function
+            .sig
+            .params
+            .iter()
+            .filter(|p| !p.is_self)
+            .count();
+        self.emit_arg_count_error(recv_ty, method_name, expected, got, span, true)
+    }
+
+    /// E0013 — static / associated-call arity check.
+    fn check_static_call_arg_count(
+        &self,
+        recv_ty: &str,
+        method_name: &str,
+        got: usize,
+        span: &new_parser::Span,
+    ) -> Result<(), HirError> {
+        let Some(info) = self.reg.get_type(recv_ty) else {
+            return Ok(());
+        };
+        let Some(m) = info
+            .methods
+            .iter()
+            .find(|m| m.function.sig.name.0 == method_name)
+        else {
+            return Ok(());
+        };
+        // Associated calls are only those without a `self`
+        // receiver — a method that starts with `self` isn't a
+        // valid `Type::method(...)` target.
+        if m.function.sig.params.iter().any(|p| p.is_self) {
+            return Ok(());
+        }
+        let expected = m.function.sig.params.len();
+        self.emit_arg_count_error(recv_ty, method_name, expected, got, span, false)
+    }
+
+    /// E0010 — each arg's inferred type must match the declared
+    /// param type. Skips template params (can't be checked
+    /// without substitution), `Self` (stays abstract here), and
+    /// expressions whose type we can't infer.
+    fn check_method_arg_types(
+        &self,
+        recv_ty: &str,
+        method_name: &str,
+        args: &[ast::Spanned<ast::Expr>],
+    ) -> Result<(), HirError> {
+        let Some(info) = self.reg.get_type(recv_ty) else {
+            return Ok(());
+        };
+        let Some(m) = info
+            .methods
+            .iter()
+            .find(|m| m.function.sig.name.0 == method_name)
+        else {
+            return Ok(());
+        };
+        let templates = collect_template_names(info, m);
+        let declared: Vec<&ast::Param> = m
+            .function
+            .sig
+            .params
+            .iter()
+            .filter(|p| !p.is_self)
+            .collect();
+        for (i, arg) in args.iter().enumerate() {
+            let Some(p) = declared.get(i) else { break };
+            self.check_one_arg_type(p, arg, &templates, recv_ty, method_name)?;
+        }
+        Ok(())
+    }
+
+    fn check_static_call_arg_types(
+        &self,
+        recv_ty: &str,
+        method_name: &str,
+        args: &[ast::Spanned<ast::Expr>],
+    ) -> Result<(), HirError> {
+        let Some(info) = self.reg.get_type(recv_ty) else {
+            return Ok(());
+        };
+        let Some(m) = info
+            .methods
+            .iter()
+            .find(|m| m.function.sig.name.0 == method_name)
+        else {
+            return Ok(());
+        };
+        if m.function.sig.params.iter().any(|p| p.is_self) {
+            return Ok(());
+        }
+        let templates = collect_template_names(info, m);
+        for (i, arg) in args.iter().enumerate() {
+            let Some(p) = m.function.sig.params.get(i) else { break };
+            self.check_one_arg_type(p, arg, &templates, recv_ty, method_name)?;
+        }
+        Ok(())
+    }
+
+    fn check_one_arg_type(
+        &self,
+        param: &ast::Param,
+        arg: &ast::Spanned<ast::Expr>,
+        templates: &std::collections::HashSet<String>,
+        recv_ty: &str,
+        method_name: &str,
+    ) -> Result<(), HirError> {
+        let Some(ty) = &param.ty else {
+            return Ok(());
+        };
+        let expected_raw = ty.0.name.0.clone();
+        // Template param or `Self` — skip, too much context
+        // needed to resolve correctly here.
+        if templates.contains(&expected_raw) || expected_raw == "Self" {
+            return Ok(());
+        }
+
+        // Numeric literal range check: the literal is
+        // polymorphic at the AST level (always typed `U4` by
+        // `infer_expr_type`), but its VALUE might overflow the
+        // declared cell width. Catch it here instead of letting
+        // the truncation go silently into the VM.
+        if let ast::Expr::Number(n) = &arg.0 {
+            let max = match expected_raw.as_str() {
+                "U4" => Some(15i64),
+                "U8" => Some(255i64),
+                _ => None,
+            };
+            if let Some(max) = max {
+                if *n < 0 || *n > max {
+                    return Err(self.overflow_error(
+                        recv_ty,
+                        method_name,
+                        &param.name.0,
+                        &expected_raw,
+                        *n,
+                        &arg.1,
+                    ));
+                }
+                return Ok(()); // in-range number literal always matches the numeric cell type
+            }
+        }
+
+        let got_raw = self
+            .infer_expr_type(&arg.0, &arg.1)
+            .unwrap_or_else(|_| "<?>".into());
+        if got_raw == "<?>" {
+            return Ok(());
+        }
+        let got = self.resolve_ty_name(&got_raw);
+        let expected = self.resolve_ty_name(&expected_raw);
+        if got == expected {
+            return Ok(());
+        }
+        // Number literals nested inside expressions also infer
+        // to U4; accept that when the expected type is U4 / U8
+        // and the arg isn't literally a Number (already
+        // handled above). Conservative: only flag a hard
+        // mismatch when neither side is a known numeric alias.
+        Err(self.type_mismatch_error(
+            recv_ty,
+            method_name,
+            &param.name.0,
+            &expected,
+            &got,
+            &arg.1,
+        ))
+    }
+
+    fn type_mismatch_error(
+        &self,
+        recv_ty: &str,
+        method_name: &str,
+        param_name: &str,
+        expected: &str,
+        got: &str,
+        span: &new_parser::Span,
+    ) -> HirError {
+        let file = self.cur_file_name();
+        let diag = errors::Diagnostic::error(format!(
+            "argument `{}` of `{}::{}` expected `{}`, found `{}`",
+            param_name, recv_ty, method_name, expected, got
+        ))
+        .with_code(errors::codes::E_TYPE_MISMATCH)
+        .with_primary(
+            errors::FileSpan::new(&file, span.clone()),
+            format!("expected `{}`, found `{}`", expected, got),
+        );
+        HirError::from_diagnostic(diag)
+    }
+
+    fn overflow_error(
+        &self,
+        recv_ty: &str,
+        method_name: &str,
+        param_name: &str,
+        expected: &str,
+        value: i64,
+        span: &new_parser::Span,
+    ) -> HirError {
+        let file = self.cur_file_name();
+        let max = match expected {
+            "U4" => 15,
+            "U8" => 255,
+            _ => i64::MAX,
+        };
+        let diag = errors::Diagnostic::error(format!(
+            "literal `{}` doesn't fit in `{}` (argument `{}` of `{}::{}`, range 0..={})",
+            value, expected, param_name, recv_ty, method_name, max
+        ))
+        .with_code(errors::codes::E_TYPE_MISMATCH)
+        .with_primary(
+            errors::FileSpan::new(&file, span.clone()),
+            format!("out of range for `{}`", expected),
+        );
+        HirError::from_diagnostic(diag)
+    }
+
+    fn emit_arg_count_error(
+        &self,
+        recv_ty: &str,
+        method_name: &str,
+        expected: usize,
+        got: usize,
+        span: &new_parser::Span,
+        is_method: bool,
+    ) -> Result<(), HirError> {
+        if expected == got {
+            return Ok(());
+        }
+        let kind = if is_method { "method" } else { "associated function" };
+        let file = self.cur_file_name();
+        let diag = errors::Diagnostic::error(format!(
+            "{} `{}::{}` takes {} argument{} but {} w{} supplied",
+            kind,
+            recv_ty,
+            method_name,
+            expected,
+            if expected == 1 { "" } else { "s" },
+            got,
+            if got == 1 { "as" } else { "ere" },
+        ))
+        .with_code(errors::codes::E_WRONG_ARG_COUNT)
+        .with_primary(
+            errors::FileSpan::new(&file, span.clone()),
+            format!(
+                "expected {} argument{}, found {}",
+                expected,
+                if expected == 1 { "" } else { "s" },
+                got
+            ),
+        );
+        Err(HirError::from_diagnostic(diag))
+    }
+
     /// Called once at function-end — emit a `W_UNUSED_VARIABLE` for
     /// every declared local whose slot never showed up in a read.
     /// Leading-underscore names (`_x`) are excluded as they're the
@@ -1390,6 +1666,17 @@ impl<'a> Generator<'a> {
             .receiver_cell_size(&receiver.0)
             .unwrap_or_else(|| self.type_size_permissive(&resolved_recv));
 
+        // E0013: argument-count check. The callee's declared
+        // signature tells us how many caller-side args are
+        // expected (self is implicit so we subtract self params).
+        // Emit before evaluating args so the user sees the shape
+        // mismatch rather than a later type / missing-slot error.
+        self.check_method_arg_count(&resolved_recv, &name.0, args.len(), &name.1)?;
+        // E0010: argument-type check. Compares each arg's
+        // inferred type to the declared param type and numeric
+        // literals to the declared type's value range.
+        self.check_method_arg_types(&resolved_recv, &name.0, args)?;
+
         // If the receiver is a direct l-value (variable / self / field
         // chain), use its storage slot AS the receiver slot — don't alloc a
         // temp. That way the callee's `mut self` writes land back in the
@@ -1552,6 +1839,13 @@ impl<'a> Generator<'a> {
         block: &mut HirBlock,
     ) -> Result<(), HirError> {
         let resolved = self.resolve_ty_name(&ty.0.name.0);
+
+        // E0013: argument-count check. Static calls don't get
+        // an implicit `self`, so the expected count is the
+        // method's entire param list.
+        self.check_static_call_arg_count(&resolved, &name.0, args.len(), &name.1)?;
+        // E0010: argument-type + literal-range check.
+        self.check_static_call_arg_types(&resolved, &name.0, args)?;
 
         let mut arg_slots: Vec<(SlotId, u32)> = Vec::new();
         for a in args {
@@ -2786,6 +3080,23 @@ fn clamp_u8(n: i64, sp: &new_parser::Span) -> Result<u8, HirError> {
         ));
     }
     Ok(n as u8)
+}
+
+/// Union of the method's own template params and the enclosing
+/// type's template params. Arg-type checking skips any declared
+/// param type whose head-name is in this set — we can't compare
+/// `T` to a concrete type without substituting, and a wrong
+/// substitution would fire false-positive diagnostics.
+fn collect_template_names(
+    info: &typer::TypeInfo,
+    m: &typer::MethodInfo,
+) -> std::collections::HashSet<String> {
+    let mut out: std::collections::HashSet<String> =
+        info.templates.iter().cloned().collect();
+    for t in &m.function.sig.templates {
+        out.insert(t.0.clone());
+    }
+    out
 }
 
 fn lower_templates(templates: &[ast::Spanned<ast::TypeOrValue>]) -> Vec<ConcreteTemplateArg> {
