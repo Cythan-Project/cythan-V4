@@ -38,29 +38,149 @@
 use std::collections::{HashMap, HashSet};
 
 use either::Either;
+use hir::ir::FnRef;
 use hir::{HirBlock, HirFunction, HirOp, SlotId};
 
 use crate::ir::{Graph, NodeId, NodeKind, Program, ProjKind};
 
+/// Per-callee "which of my input cells do I mutate" info. A
+/// callee with `mut self` spanning cells `0..3` returns
+/// `vec![0, 1, 2]`. Used to thread mut-param writes through
+/// `Call` / `Return` so the caller's view of those cells picks
+/// up the callee's writes after inlining.
+///
+/// Without this, `mut self` methods like `Array::set` lose
+/// their writes — HIR-gen leaves the mutated cells out of
+/// `Call.ret`, relying on the HIR inliner's back-copy pass.
+/// soir tracks values per-function and needs the mutation
+/// made explicit as extra `Proj::CallRet` / `Return.values`
+/// entries.
+pub trait MutCellsResolver {
+    fn resolve(&self, fn_ref: &FnRef) -> Vec<u32>;
+}
+
+impl<F> MutCellsResolver for F
+where
+    F: Fn(&FnRef) -> Vec<u32>,
+{
+    fn resolve(&self, fn_ref: &FnRef) -> Vec<u32> {
+        self(fn_ref)
+    }
+}
+
+/// No-op resolver: treats every call as having zero mut cells.
+/// Safe for leaf graphs (no Call ops) or for testing/toy uses
+/// where mut-param threading doesn't matter.
+struct EmptyResolver;
+impl MutCellsResolver for EmptyResolver {
+    fn resolve(&self, _: &FnRef) -> Vec<u32> {
+        Vec::new()
+    }
+}
+
+/// Extract the sorted cell indices for every mut-flagged input
+/// slot of a flat sig. Skips `_ret` slots (those are outputs,
+/// never mutable inputs).
+pub fn mut_cells_of_sig(sig: &typer::FlatSig) -> Vec<u32> {
+    let mut out = Vec::new();
+    let input_count = sig.input_count;
+    for slot in &sig.slots {
+        if slot.name == "_ret" {
+            continue;
+        }
+        if !slot.mutable {
+            continue;
+        }
+        // Skip slots that overlap output cells (shouldn't happen
+        // in practice but guard against a weird sig).
+        if slot.offset >= input_count {
+            continue;
+        }
+        for i in 0..slot.size {
+            out.push(slot.offset + i);
+        }
+    }
+    out
+}
+
 /// Translate every function in `hir_fns` into a `Program` of
-/// soir graphs.
+/// soir graphs. Uses a default resolver that looks up each
+/// `Call` target in `hir_fns` by `FnSig` (stripping
+/// `template_args` from the `FnRef`). Calls to functions not
+/// in `hir_fns` (notably on-demand `Array` synthesis) get
+/// zero mut cells — the driver should use
+/// [`translate_program_with_resolver`] and supply an Array-aware
+/// resolver for those.
 pub fn translate_program(
     hir_fns: &HashMap<typer::FnSig, HirFunction>,
 ) -> Program {
+    let default_resolver = DefaultResolver { hir_fns };
+    translate_program_with_resolver(hir_fns, &default_resolver)
+}
+
+/// Like `translate_program` but consults `resolver` to resolve
+/// each callee's mut cells. The driver uses this to add Array-
+/// method handling that computes mut cells from
+/// `hir::array_synth::ArraySpec`.
+pub fn translate_program_with_resolver(
+    hir_fns: &HashMap<typer::FnSig, HirFunction>,
+    resolver: &dyn MutCellsResolver,
+) -> Program {
     let mut program = Program::new();
     for (sig, func) in hir_fns {
-        let graph = translate_function(func);
+        let graph = translate_function_with_resolver(func, resolver);
         program.insert(sig.clone(), graph);
     }
     program
 }
 
+struct DefaultResolver<'a> {
+    hir_fns: &'a HashMap<typer::FnSig, HirFunction>,
+}
+
+impl<'a> MutCellsResolver for DefaultResolver<'a> {
+    fn resolve(&self, fn_ref: &FnRef) -> Vec<u32> {
+        let key = typer::FnSig {
+            type_name: fn_ref.type_name.clone(),
+            method_name: fn_ref.method_name.clone(),
+            trait_name: fn_ref.trait_name.clone(),
+        };
+        match self.hir_fns.get(&key) {
+            Some(f) => mut_cells_of_sig(&f.sig),
+            None => Vec::new(),
+        }
+    }
+}
+
 /// Translate one HIR function into a soir `Graph`. The result
-/// ends with exactly one `Return` node consuming the flat
-/// signature's output slots.
+/// ends with exactly one `Return` node whose `values` list has:
+///
+///   * the flat signature's output slots in order, followed by
+///   * one entry per cell of each `mut`-flagged input slot
+///     (in `mut_cells_of_sig` order).
+///
+/// Both `return expr` (lowered to `Stop` by HIR-gen) and
+/// natural fall-through contribute to the merged exit. Each
+/// top-level `Stop` captures a snapshot of `(ctrl, eff,
+/// slot_def)` and `finish` builds one canonical `Return`.
+///
+/// This variant uses an empty mut-cells resolver — safe only
+/// when the function has no `Call` ops, or when mut-param
+/// writes out of callees aren't needed (e.g. the caller doesn't
+/// care about the callee's side effects). For the general case
+/// use [`translate_function_with_resolver`].
 pub fn translate_function(func: &HirFunction) -> Graph {
+    translate_function_with_resolver(func, &EmptyResolver)
+}
+
+/// Like `translate_function` but consults `resolver` to resolve
+/// each callee's mut cells. See [`MutCellsResolver`].
+pub fn translate_function_with_resolver(
+    func: &HirFunction,
+    resolver: &dyn MutCellsResolver,
+) -> Graph {
     let mut g = Graph::new(func.sig.clone());
-    let mut builder = Builder::new(&mut g);
+    let mut builder = Builder::new(&mut g, resolver);
     builder.seed_params();
     builder.lower_block(&func.body);
     builder.finish();
@@ -87,6 +207,19 @@ struct Builder<'g> {
     /// each inlined callee in a `Block(... Skip ...)` so early
     /// returns become local exits instead of program halts.
     blocks: Vec<BlockCtx>,
+    /// Paths that exited the function body via `Stop` (HIR's
+    /// lowering of `return value`). `finish` merges these with
+    /// any natural fall-through to build a single `Return`.
+    return_preds: Vec<PathSnapshot>,
+    /// Resolver for callees' mut cells: supplied by the caller
+    /// of `translate_function_with_resolver`. Consulted at each
+    /// `HirOp::Call` to place extra `Proj::CallRet` projections
+    /// for the callee's mut-param cells.
+    mut_resolver: &'g dyn MutCellsResolver,
+    /// This function's own mut-param cell list — appended to
+    /// `Return.values` at `finish` so the caller can pick up the
+    /// mutations via the corresponding `Proj::CallRet` entries.
+    own_mut_cells: Vec<u32>,
 }
 
 /// Per-loop bookkeeping. One entry is pushed on loop entry and
@@ -138,7 +271,8 @@ struct BlockCtx {
 }
 
 impl<'g> Builder<'g> {
-    fn new(g: &'g mut Graph) -> Self {
+    fn new(g: &'g mut Graph, mut_resolver: &'g dyn MutCellsResolver) -> Self {
+        let own_mut_cells = mut_cells_of_sig(g.sig());
         Self {
             g,
             ctrl: None,
@@ -146,6 +280,9 @@ impl<'g> Builder<'g> {
             slot_def: HashMap::new(),
             loops: Vec::new(),
             blocks: Vec::new(),
+            return_preds: Vec::new(),
+            mut_resolver,
+            own_mut_cells,
         }
     }
 
@@ -176,27 +313,62 @@ impl<'g> Builder<'g> {
         }
     }
 
-    /// After lowering the function body, emit a `Return` consuming
-    /// the output slots in order. If the path already ended (e.g.
-    /// the body ends with `Stop`), skip — the graph already has
-    /// its exit node.
+    /// After lowering the function body, emit a `Return`
+    /// consuming the output slots in order. Merges:
+    ///   * the natural fall-through (if any — `self.ctrl` still
+    ///     live at function-body end), and
+    ///   * every path captured in `return_preds` (from
+    ///     `HirOp::Stop`s encountered during lowering).
+    ///
+    /// With both contributions funneled through one `Return`,
+    /// every translated function exposes a single, canonical
+    /// exit — the soir inliner's splicing logic can assume it.
     fn finish(&mut self) {
-        let Some(ctrl) = self.ctrl else {
+        // Fold natural fall-through (if any) into return_preds.
+        if let (Some(c), Some(e)) = (self.ctrl.take(), self.eff.take()) {
+            let defs = std::mem::take(&mut self.slot_def);
+            self.return_preds.push(PathSnapshot {
+                ctrl: c,
+                eff: e,
+                slot_def: defs,
+            });
+        }
+        if self.return_preds.is_empty() {
+            // No path reaches the function's exit at all — the
+            // body loops forever. A `Return` is impossible; the
+            // graph has no canonical exit, and inlining will
+            // reject it.
             return;
-        };
-        let Some(eff) = self.eff else {
-            return;
-        };
+        }
+        let preds = std::mem::take(&mut self.return_preds);
+        let entry_defs: HashMap<SlotId, NodeId> = HashMap::new();
+        let (ctrl, eff, merged_defs) = self.merge_paths(preds, &entry_defs);
         let sig = self.g.sig().clone();
-        let mut values = Vec::with_capacity(sig.output_count as usize);
+        let own_mut_cells = self.own_mut_cells.clone();
+        let mut values =
+            Vec::with_capacity(sig.output_count as usize + own_mut_cells.len());
         for i in 0..sig.output_count {
             let slot = SlotId(sig.input_count + i);
-            let v = self.read_slot(slot);
+            let v = match merged_defs.get(&slot) {
+                Some(v) => *v,
+                None => self.g.alloc_const(0),
+            };
+            values.push(v);
+        }
+        // Append one entry per mut-input cell so the caller can
+        // pick up the mutation via `Proj::CallRet(output_count + k)`.
+        // Convention must match the builder's `HirOp::Call`
+        // handling, which places caller-side CallRet projs at
+        // `ret.len() + k` for each callee mut cell `k`.
+        for cell in &own_mut_cells {
+            let slot = SlotId(*cell);
+            let v = match merged_defs.get(&slot) {
+                Some(v) => *v,
+                None => self.g.alloc_const(0),
+            };
             values.push(v);
         }
         let _ret = self.g.alloc(NodeKind::Return { ctrl, eff, values });
-        self.ctrl = None;
-        self.eff = None;
     }
 
     /// Read the current definition of `slot`. If this slot has
@@ -251,11 +423,26 @@ impl<'g> Builder<'g> {
             HirOp::Skip => self.lower_skip(),
             HirOp::Block(b) => self.lower_block_scope(b),
             HirOp::Stop => {
-                let ctrl = self.ctrl.expect("live ctrl before Stop");
-                let eff = self.eff.expect("live eff before Stop");
-                let _ = self.g.alloc(NodeKind::Stop { ctrl, eff });
-                self.ctrl = None;
-                self.eff = None;
+                // HIR's `Stop` represents `return` when lowered
+                // from `return expr`. Semantically: halt the
+                // function and hand control back to the caller
+                // with whatever the output slots currently hold.
+                //
+                // At the soir level this becomes a return
+                // predecessor — a (ctrl, eff, slot_def) snapshot
+                // that `finish()` will merge into the function's
+                // single `Return` node. Without this, callees
+                // that return via `return false` / `return x`
+                // would have no `Return` at all, and the soir
+                // inliner couldn't extract their output values.
+                let ctrl = self.ctrl.take().expect("live ctrl before Stop");
+                let eff = self.eff.take().expect("live eff before Stop");
+                let defs = std::mem::take(&mut self.slot_def);
+                self.return_preds.push(PathSnapshot {
+                    ctrl,
+                    eff,
+                    slot_def: defs,
+                });
             }
             HirOp::Break => self.lower_break(),
             HirOp::Continue => self.lower_continue(),
@@ -308,12 +495,20 @@ impl<'g> Builder<'g> {
                 let eff = self.eff.expect("live eff before Call");
                 let arg_vals: Vec<NodeId> =
                     args.iter().map(|a| self.read_slot(*a)).collect();
+                // Resolve the callee's mut-cell list so we can
+                // emit extra CallRet projs for each mutated input
+                // cell. Missing callees (e.g. templated generics
+                // not yet monomorphised) get an empty list; that
+                // matches the classical pre-mut-threading
+                // behaviour and lets the inliner report a crisp
+                // `MissingCallee` later.
+                let mut_cells: Vec<u32> = self.mut_resolver.resolve(target);
                 let call = self.g.alloc(NodeKind::Call {
                     ctrl,
                     eff,
                     target: target.clone(),
                     args: arg_vals,
-                    ret_count: ret.len() as u32,
+                    ret_count: (ret.len() + mut_cells.len()) as u32,
                 });
                 let new_eff = self.g.alloc(NodeKind::Proj {
                     of: call,
@@ -327,6 +522,25 @@ impl<'g> Builder<'g> {
                         kind: ProjKind::CallRet(i as u32),
                     });
                     self.write_slot(*ret_slot, r);
+                }
+                // Place one extra CallRet per callee mut cell.
+                // Each one writes back to the caller's slot that
+                // matches the callee's cell position — `args[c]`
+                // is exactly the caller-side SlotId whose value
+                // was passed in for callee-cell `c`. The ordering
+                // here must match the callee's `finish()`
+                // appending mut cells to `Return.values`.
+                for (k, cell) in mut_cells.iter().enumerate() {
+                    let caller_slot = match args.get(*cell as usize) {
+                        Some(s) => *s,
+                        None => continue,
+                    };
+                    let proj_idx = (ret.len() + k) as u32;
+                    let r = self.g.alloc(NodeKind::Proj {
+                        of: call,
+                        kind: ProjKind::CallRet(proj_idx),
+                    });
+                    self.write_slot(caller_slot, r);
                 }
             }
             HirOp::Match(scrut, arms) => self.lower_match(*scrut, arms),

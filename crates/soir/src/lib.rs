@@ -24,16 +24,23 @@
 //! compaction pass can rebuild the arena later.
 
 pub mod builder;
+pub mod inline;
 pub mod interp;
 pub mod ir;
+pub mod lir_emit;
 pub mod print;
 pub mod schedule;
 
 #[cfg(test)]
 mod tests;
 
-pub use builder::{translate_function, translate_program};
+pub use builder::{
+    mut_cells_of_sig, translate_function, translate_function_with_resolver,
+    translate_program, translate_program_with_resolver, MutCellsResolver,
+};
+pub use inline::{inline_program, inline_program_with_resolver, CalleeResolver, InlineError};
 pub use interp::{run, run_with_limit, RunResult, DEFAULT_STEP_LIMIT};
 pub use ir::{FnKey, Graph, Node, NodeId, NodeKind, Program, ProjKind};
+pub use lir_emit::schedule_lir;
 pub use print::dump_graph;
 pub use schedule::schedule;

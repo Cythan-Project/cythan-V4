@@ -214,12 +214,25 @@ fn block_contains_break_or_stop(b: &HirBlock) -> bool {
     b.ops.iter().any(op_contains_break_or_stop)
 }
 
+/// Does this op potentially short-circuit out of its enclosing
+/// loop on early iterations? The unroller only fires when at
+/// least one such op exists, because without one every copy of
+/// the duplicated body is semantically identical — no dead-tail
+/// to fold, no size shrink.
+///
+/// `Skip` counts alongside `Break` and `Stop`: after the HIR
+/// inliner rewrites each inlined callee's `return` into
+/// `Block { ... Skip }`, the stdlib's lockstep-decrement loops
+/// (U4::eq / Add / Sub / …) contain `Skip`s in their arm bodies
+/// that let the surrounding Block exit early. Excluding `Skip`
+/// from this check was why the unroller never fired on any
+/// inlined call site — which is what made Morpion explode into
+/// thousands of un-optimised lockstep loops.
 fn op_contains_break_or_stop(op: &HirOp) -> bool {
     match op {
-        HirOp::Break | HirOp::Stop => true,
+        HirOp::Break | HirOp::Stop | HirOp::Skip => true,
         HirOp::Block(b) => block_contains_break_or_stop(b),
         HirOp::Match(_, arms) => arms.iter().any(|(b, _)| block_contains_break_or_stop(b)),
-        // Loops are innermost-gated out already, but be defensive.
         HirOp::Loop(b) => block_contains_break_or_stop(b),
         _ => false,
     }

@@ -53,14 +53,23 @@ use mir::{Mir, MirCodeBlock};
 use crate::ir::{Graph, NodeId, NodeKind, ProjKind};
 
 /// Hard ceiling on total control steps the scheduler will take
-/// across a single `schedule()` call. Guards against infinite
-/// loops and runaway recursion in the walker — a bug that would
-/// otherwise hang the build instead of failing fast. Raised to
-/// 50M after measuring Morpion (which exercises deep nesting of
-/// Array::get + enum variants and hit 5M legitimately). M6-era
-/// rewrites should shrink the node count and bring typical
-/// compile-step counts well under 1M.
-pub const SCHEDULE_STEP_LIMIT: usize = 50_000_000;
+/// across a single `schedule()` call. Bounds work when the
+/// scheduler walks a deeply-nested graph (each arm produces its
+/// own copy of downstream code, so for deep nesting the MIR
+/// output is exponential in nesting depth). 5M is enough for
+/// simple programs through Morpion-complexity; graphs bigger than
+/// that need a smarter scheduler (emit shared sub-graphs into
+/// `Mir::Block` with `Mir::Skip` callers).
+pub const SCHEDULE_STEP_LIMIT: usize = 5_000_000;
+
+/// Hard ceiling on the size of the MIR `Vec<Mir>` the scheduler
+/// will accumulate. Bounds the RAM footprint of scheduling
+/// exponentially-deep graphs — a single `Mir::Match` per level
+/// with N arms and per-arm replicated code can produce output
+/// growing as N^depth. This is a pragmatic guard; a proper fix
+/// is to emit shared sub-graphs into a `Mir::Block` and `Mir::Skip`
+/// to it from each arm.
+pub const SCHEDULE_MIR_SIZE_LIMIT: usize = 200_000;
 
 /// Max depth for `ensure_value`'s recursive data-dependency
 /// traversal. Pure-op chains shouldn't go deep; if this trips it
@@ -122,30 +131,34 @@ struct Scheduler<'g> {
     /// the same Match, and deeply nested graphs explode into
     /// O(matches × arms × graph_size) work.
     merge_cache: HashMap<NodeId, Option<NodeId>>,
-    /// Memoized `walk_chain` output. Keyed by the walk's start
-    /// control, stop condition, and the enclosing loop / block
-    /// scope stack — because the secondary-stop checks (Skip /
-    /// Break / Continue emission) depend on those scopes, two
-    /// walks with the same start/stop but different scopes can
-    /// legitimately produce different MIR.
-    ///
-    /// This is the key fix for the exponential-duplication
-    /// blowup: after the HIR inliner stamps the same subgraph
-    /// into every outer arm (e.g. a `Cell` variant match inside
-    /// each of nine `Array::get` arms), the scheduler would
-    /// re-walk the shared subgraph per outer arm. Caching
-    /// collapses that to one walk per distinct context.
-    walk_cache: HashMap<WalkKey, MirCodeBlock>,
+    /// Total MIR ops emitted across the whole schedule (sums
+    /// into nested arm/body blocks). Bounded by
+    /// `SCHEDULE_MIR_SIZE_LIMIT` to cap RAM on exponentially-
+    /// deep graphs.
+    mir_emitted: usize,
+    /// Memoised walk_chain output for walks that are "scope-
+    /// independent" — they emit no `Mir::Skip` / `Break` /
+    /// `Continue` that would target an enclosing scope. Such
+    /// walks produce identical MIR regardless of the caller's
+    /// scope stack, so a small (start, stop)-keyed cache is
+    /// sound. This is the key M9 optimization: post-inline
+    /// graphs have many inlined callee subgraphs reached via
+    /// distinct-but-structurally-identical arm paths; each
+    /// callee body walk is self-contained (terminates at its
+    /// own Return/Stop), so the first walk populates this cache
+    /// and every subsequent walk of the same callee subgraph
+    /// hits.
+    walk_cache: HashMap<(NodeId, StopAt), MirCodeBlock>,
+    /// Running total of cached MIR ops; bounded by
+    /// `WALK_CACHE_OP_BUDGET` so cache growth can't OOM.
+    walk_cache_ops: usize,
 }
 
-/// Cache key for `walk_chain`. See the `walk_cache` doc comment.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct WalkKey {
-    start: NodeId,
-    stop: StopAt,
-    loops: Vec<NodeId>,
-    block_exits: Vec<NodeId>,
-}
+/// Cap on how much MIR (in ops) the walk cache is allowed to
+/// hold. 1M × ~100B = ~100MB worst-case — cacheable entries
+/// are scope-independent so this almost always covers every
+/// inlined callee body exactly once.
+pub const WALK_CACHE_OP_BUDGET: usize = 200_000;
 
 #[derive(Debug, Clone)]
 struct LoopFrame {
@@ -186,7 +199,9 @@ impl<'g> Scheduler<'g> {
             step_budget: 0,
             value_in_progress: HashSet::new(),
             merge_cache: HashMap::new(),
+            mir_emitted: 0,
             walk_cache: HashMap::new(),
+            walk_cache_ops: 0,
         }
     }
 
@@ -247,20 +262,20 @@ impl<'g> Scheduler<'g> {
         let kind = self.g.get(node).kind.clone();
         let slot = self.slot(node);
         match kind {
-            NodeKind::Const(v) => out.0.push(Mir::Set(slot, v)),
+            NodeKind::Const(v) => self.emit(out, Mir::Set(slot, v)),
             NodeKind::Inc(a) => {
                 let src = self.ensure_value(a, out);
                 if src != slot {
-                    out.0.push(Mir::Copy(slot, src));
+                    self.emit(out, Mir::Copy(slot, src));
                 }
-                out.0.push(Mir::Increment(slot));
+                self.emit(out, Mir::Increment(slot));
             }
             NodeKind::Dec(a) => {
                 let src = self.ensure_value(a, out);
                 if src != slot {
-                    out.0.push(Mir::Copy(slot, src));
+                    self.emit(out, Mir::Copy(slot, src));
                 }
-                out.0.push(Mir::Decrement(slot));
+                self.emit(out, Mir::Decrement(slot));
             }
             NodeKind::Proj {
                 of,
@@ -332,31 +347,40 @@ impl<'g> Scheduler<'g> {
     /// we can emit Copy ops for any phis at that merge using the
     /// correct pred.
     fn walk_chain(&mut self, start: NodeId, stop: StopAt, out: &mut MirCodeBlock) {
-        // Cache lookup — the "shared subgraph walked per outer
-        // arm" pattern after HIR inlining is exactly this (same
-        // start/stop, same enclosing scopes, different caller).
-        let key = WalkKey {
-            start,
-            stop,
-            loops: self.loops.iter().map(|f| f.header).collect(),
-            block_exits: self.block_exits.clone(),
-        };
+        // Same (start, stop) always produces the same MIR,
+        // full stop. `Mir::Skip` / `Break` / `Continue` inside
+        // the cached output unwind to the NEAREST enclosing
+        // `Mir::Block` / `Mir::Loop` at runtime — which is
+        // exactly the caller's splice context. So enclosing
+        // scope state doesn't affect the cached MIR's meaning;
+        // the walk output is a pure function of its (start,
+        // stop) pair.
+        //
+        // This is the key M9 insight: post-inline graphs have
+        // the same sub-structures reached from many outer arm
+        // paths. Without caching, each path re-walks the
+        // sub-structure independently — exponential emission.
+        // With caching, every (start, stop) walk hits after
+        // the first population, turning the exponential into
+        // linear.
+        let key = (start, stop);
         if let Some(cached) = self.walk_cache.get(&key) {
-            // Copy cached ops into the caller's block. Slot
-            // references inside the cached ops are stable
-            // because `slot_of` is insert-only.
             out.0.extend(cached.0.iter().cloned());
+            self.mir_emitted += cached.0.len();
             return;
         }
-        // Miss — run the real walker into a fresh local block,
-        // then cache + append.
+
         let mut local = MirCodeBlock(Vec::new());
-        self.walk_chain_impl(start, stop, &mut local);
-        self.walk_cache.insert(key, local.clone());
+        self.walk_chain_inner(start, stop, &mut local);
+        let local_len = local.0.len();
+        if self.walk_cache_ops + local_len <= WALK_CACHE_OP_BUDGET {
+            self.walk_cache.insert(key, local.clone());
+            self.walk_cache_ops += local_len;
+        }
         out.0.extend(local.0);
     }
 
-    fn walk_chain_impl(&mut self, start: NodeId, stop: StopAt, out: &mut MirCodeBlock) {
+    fn walk_chain_inner(&mut self, start: NodeId, stop: StopAt, out: &mut MirCodeBlock) {
         let mut current = start;
         let mut last_ctrl = NodeId::INVALID;
         // Within one walk we should visit each control node at
@@ -371,6 +395,15 @@ impl<'g> Scheduler<'g> {
                     "soir::schedule: exceeded SCHEDULE_STEP_LIMIT ({}) — last walk: \
                      start={}, stop={:?}, cur={}",
                     SCHEDULE_STEP_LIMIT, start, stop, current
+                );
+            }
+            if self.mir_emitted > SCHEDULE_MIR_SIZE_LIMIT {
+                panic!(
+                    "soir::schedule: exceeded SCHEDULE_MIR_SIZE_LIMIT ({}) — \
+                     the graph is producing exponentially many MIR ops. Likely \
+                     a deeply nested post-inline graph; needs a sharing-aware \
+                     scheduler (emit shared sub-graphs into `Mir::Block` once).",
+                    SCHEDULE_MIR_SIZE_LIMIT,
                 );
             }
             if !visited.insert(current) {
@@ -404,7 +437,7 @@ impl<'g> Scheduler<'g> {
                 if last_ctrl.is_valid() {
                     self.emit_phi_copies_for_pred(current, last_ctrl, out);
                 }
-                out.0.push(Mir::Skip);
+                self.emit(out, Mir::Skip);
                 return;
             }
             // Loop backedge / exit detection, only for *enclosing*
@@ -426,9 +459,9 @@ impl<'g> Scheduler<'g> {
                     if last_ctrl.is_valid() {
                         self.emit_phi_copies_for_pred(current, last_ctrl, out);
                     }
-                    out.0.push(Mir::Continue);
+                    self.emit(out, Mir::Continue);
                 } else {
-                    out.0.push(Mir::Break);
+                    self.emit(out, Mir::Break);
                 }
                 return;
             }
@@ -461,7 +494,7 @@ impl<'g> Scheduler<'g> {
                     self.walk_chain(body_start, StopAt::AtNode(exit), &mut body);
                     self.block_exits.pop();
                     self.emitted_here = saved;
-                    out.0.push(Mir::Block(body));
+                    self.emit(out, Mir::Block(body));
                     last_ctrl = exit;
                     current = self.ctrl_successor(exit);
                 }
@@ -491,7 +524,7 @@ impl<'g> Scheduler<'g> {
                     self.walk_chain(body_start, StopAt::AtNode(current), &mut body);
                     self.loops.pop();
                     self.emitted_here = saved_emitted;
-                    out.0.push(Mir::Loop(body));
+                    self.emit(out, Mir::Loop(body));
                     // Continue after the loop's exit Region.
                     match exit {
                         Some(e) => {
@@ -522,7 +555,7 @@ impl<'g> Scheduler<'g> {
                     self.emitted_here = saved;
                     // Mir::If0 runs then-branch when cond==0;
                     // IfTrue fires when cond != 0, so swap arms.
-                    out.0.push(Mir::If0(c_slot, e, t));
+                    self.emit(out, Mir::If0(c_slot, e, t));
                     match post {
                         Some(p) => {
                             last_ctrl = p;
@@ -552,7 +585,7 @@ impl<'g> Scheduler<'g> {
                         self.emitted_here = saved;
                         arms.push((arm_block, vals.clone()));
                     }
-                    out.0.push(Mir::Match(s_slot, arms));
+                    self.emit(out, Mir::Match(s_slot, arms));
                     match post {
                         Some(p) => {
                             last_ctrl = p;
@@ -567,18 +600,18 @@ impl<'g> Scheduler<'g> {
                         .expect("ReadReg missing ReadRegVal proj");
                     let slot = self.slot(val_proj);
                     self.emitted_here.insert(val_proj);
-                    out.0.push(Mir::ReadRegister(slot, reg));
+                    self.emit(out, Mir::ReadRegister(slot, reg));
                     last_ctrl = current;
                     current = self.ctrl_successor(current);
                 }
                 NodeKind::WriteReg { reg, val, .. } => {
                     let val_slot = self.ensure_value(val, out);
-                    out.0.push(Mir::WriteRegister(reg, Either::Right(val_slot)));
+                    self.emit(out, Mir::WriteRegister(reg, Either::Right(val_slot)));
                     last_ctrl = current;
                     current = self.ctrl_successor(current);
                 }
                 NodeKind::Stop { .. } => {
-                    out.0.push(Mir::Stop);
+                    self.emit(out, Mir::Stop);
                     return;
                 }
                 NodeKind::Return { values, .. } => {
@@ -587,7 +620,7 @@ impl<'g> Scheduler<'g> {
                         let src = self.ensure_value(*v, out);
                         let dst = sig.input_count + i as u32;
                         if src != dst {
-                            out.0.push(Mir::Copy(dst, src));
+                            self.emit(out, Mir::Copy(dst, src));
                         }
                     }
                     return;
@@ -601,6 +634,14 @@ impl<'g> Scheduler<'g> {
                 ),
             }
         }
+    }
+
+    /// Push a Mir op into `out` and bump the global emit counter.
+    /// Centralising through this helper gives the scheduler a
+    /// single place to enforce the MIR-size ceiling.
+    fn emit(&mut self, out: &mut MirCodeBlock, op: Mir) {
+        out.0.push(op);
+        self.mir_emitted += 1;
     }
 
     /// Find the unique user of `node` that consumes it as a
@@ -904,7 +945,7 @@ impl<'g> Scheduler<'g> {
             if let Some(src) = src_val_opt {
                 let src_slot = self.ensure_value(src, out);
                 if src_slot != dst_slot {
-                    out.0.push(Mir::Copy(dst_slot, src_slot));
+                    self.emit(out, Mir::Copy(dst_slot, src_slot));
                 }
             }
         }

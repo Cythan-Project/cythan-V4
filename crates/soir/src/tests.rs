@@ -1,12 +1,14 @@
 //! Unit tests for M0 (arena + printer), M1 (HIR → SoN
-//! translation), and M2 (graph-walking interpreter).
+//! translation), M2 (graph-walking interpreter), M3 (SoN → MIR
+//! scheduler), M4-real (SoN inliner), and M5 (GVN / const-fold).
 
 use crate::builder::translate_function;
+use crate::inline::inline_program;
 use crate::interp::{run_with_limit, RunResult};
-use crate::ir::{Graph, NodeId, NodeKind, ProjKind};
+use crate::ir::{Graph, NodeId, NodeKind, Program, ProjKind};
 use crate::print::dump_graph;
 use either::Either;
-use hir::{HirBlock, HirFunction, HirOp, SlotId};
+use hir::{FnRef, HirBlock, HirFunction, HirOp, SlotId};
 use mir::RunContext;
 
 fn empty_sig() -> typer::FlatSig {
@@ -618,12 +620,19 @@ fn interp_write_register_prints_bytes() {
 }
 
 #[test]
-fn interp_stop_halts() {
+fn interp_stop_returns() {
+    // At the function level, `HirOp::Stop` represents `return`
+    // in the source (HIR-gen lowers `return x` to `Set(ret, x);
+    // Stop`). The builder captures Stops as return predecessors
+    // and `finish()` routes them into the canonical `Return`,
+    // so the interpreter observes a normal return rather than a
+    // program halt.
     let mut body = HirBlock::new();
     body.push(HirOp::Stop);
     let f = func(sig(0, 0), body);
     let (r, _) = interp(&f, &[]);
-    assert!(r.halted);
+    assert!(!r.halted);
+    assert_eq!(r.values, Vec::<u8>::new());
 }
 
 #[test]
@@ -807,6 +816,89 @@ fn schedule_agrees_with_interp_on_synthetic_cases() {
         "soir-interp vs MIR-scheduled-interp print buffer mismatch"
     );
     assert_eq!(mir_outs, vec![3]);
+}
+
+// ---------------------------------------------------------------
+// SoN-level inliner (the "real M4")
+// ---------------------------------------------------------------
+
+fn fnref(type_name: &str, method: &str) -> FnRef {
+    FnRef {
+        type_name: type_name.into(),
+        method_name: method.into(),
+        template_args: Vec::new(),
+        trait_name: None,
+    }
+}
+
+fn fnkey(type_name: &str, method: &str) -> typer::FnSig {
+    typer::FnSig::new(type_name, method)
+}
+
+#[test]
+fn inliner_splices_identity_callee() {
+    // Caller:  fn main() -> U4 { Helper::id(7) }
+    // Callee:  fn id(x: U4) -> U4 { x }
+    // After inline: main becomes just "return 7".
+    let mut caller_body = HirBlock::new();
+    caller_body.push(HirOp::Set(SlotId(0), 7));           // arg = 7 in slot 0
+    caller_body.push(HirOp::Call {
+        target: fnref("Helper", "id"),
+        args: vec![SlotId(0)],
+        ret: vec![SlotId(1)],                              // output at slot 1
+    });
+    // Output slot is SlotId(1) per signature (0 = input, 1 = output... wait
+    // here we gave (0, 2) which doesn't match). Let me use an actually-
+    // matching signature.
+    let caller = func(sig(0, 1), {
+        let mut b = HirBlock::new();
+        b.push(HirOp::Set(SlotId(1), 7));                 // put 7 in local slot
+        b.push(HirOp::Call {
+            target: fnref("Helper", "id"),
+            args: vec![SlotId(1)],
+            ret: vec![SlotId(0)],                          // write to output
+        });
+        b
+    });
+    let mut callee_body = HirBlock::new();
+    callee_body.push(HirOp::Copy(SlotId(1), SlotId(0)));   // ret = x
+    let callee = func(sig(1, 1), callee_body);
+    let _ = caller_body;
+
+    let mut program = Program::new();
+    program.insert(fnkey("Main", "main"), translate_function(&caller));
+    program.insert(fnkey("Helper", "id"), translate_function(&callee));
+    let flat = inline_program(&program, &fnkey("Main", "main"))
+        .expect("inline ok");
+    // Post-inline: no Call nodes remain.
+    assert!(
+        flat.iter().all(|(_, n)| !matches!(n.kind, NodeKind::Call { .. })),
+        "call node survived inlining"
+    );
+    // Running the flat graph produces 7.
+    let mut ctx = TestCtx::new("");
+    let r = run_with_limit(&flat, &[], &mut ctx, 10_000);
+    assert_eq!(r.values, vec![7]);
+}
+
+#[test]
+fn inliner_errors_on_missing_callee() {
+    let caller = func(sig(0, 1), {
+        let mut b = HirBlock::new();
+        b.push(HirOp::Call {
+            target: fnref("Absent", "whatever"),
+            args: vec![],
+            ret: vec![SlotId(0)],
+        });
+        b
+    });
+    let mut program = Program::new();
+    program.insert(fnkey("Main", "main"), translate_function(&caller));
+    let err = inline_program(&program, &fnkey("Main", "main"));
+    assert!(matches!(
+        err,
+        Err(crate::inline::InlineError::MissingCallee { .. })
+    ));
 }
 
 #[test]

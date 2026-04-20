@@ -675,12 +675,19 @@ impl Graph {
     /// first).
     pub fn kill(&mut self, id: NodeId) {
         let old_inputs = self.get(id).kind.inputs();
-        assert!(
-            self.get(id).users.is_empty(),
-            "soir: kill({}) while users remain: {:?}",
-            id,
-            self.get(id).users
-        );
+        if !self.get(id).users.is_empty() {
+            let users_detail: Vec<String> = self
+                .get(id)
+                .users
+                .iter()
+                .map(|u| format!("{}={}", u, self.get(*u).kind.tag()))
+                .collect();
+            let self_tag = self.get(id).kind.tag();
+            panic!(
+                "soir: kill({}={}) while users remain: {:?}",
+                id, self_tag, users_detail
+            );
+        }
         for inp in old_inputs {
             if let Some(Some(n)) = self.nodes.get_mut(inp.index()) {
                 n.users.retain(|u| *u != id);
@@ -733,6 +740,12 @@ impl Graph {
             n.users.push(loop_id);
         }
     }
+}
+
+/// Public bridge for sibling modules (the soir inliner) that
+/// need the same input-swap logic the graph uses internally.
+pub fn rewrite_kind_inputs_pub(kind: NodeKind, from: NodeId, to: NodeId) -> NodeKind {
+    rewrite_kind_inputs(kind, from, to)
 }
 
 /// Swap every occurrence of `from` with `to` inside a `NodeKind`.

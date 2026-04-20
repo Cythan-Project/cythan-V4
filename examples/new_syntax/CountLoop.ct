@@ -1,0 +1,12 @@
+struct CountLoop {}
+extension CountLoop {
+    fn main(): U4 {
+        mut U4 i = 0;
+        loop {
+            if i == 4 { break; }
+            i += 1;
+        }
+        i.print();
+        0
+    }
+}

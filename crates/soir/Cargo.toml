@@ -7,6 +7,7 @@ edition = "2021"
 typer = { path = "../typer" }
 hir = { path = "../hir" }
 mir = { path = "../mir" }
+lir = { path = "../lir" }
 either = "1"
 
 [dev-dependencies]

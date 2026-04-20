@@ -623,6 +623,54 @@ pub fn run_with_backend(
     }
 }
 
+/// Run raw Cythan bytecode against a scripted input, capturing
+/// output. Equivalent to running on the Cythan VM with a step
+/// ceiling. Used by the soir-to-LIR cross-tests so we don't have
+/// to detour through MIR.
+pub fn run_bytecode_with_input_raw(
+    bytecode: &[usize],
+    input: &str,
+    step_limit: usize,
+) -> CapturedRun {
+    let ctx = TestContext::new(input);
+    let limit = if step_limit == 0 { 0 } else { step_limit };
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_bin_with_limit(bytecode, ctx, limit)
+    }));
+    match result {
+        Ok((steps, ctx_mutex)) => {
+            let ctx = ctx_mutex.lock().unwrap();
+            CapturedRun {
+                output: ctx.as_str().into_owned(),
+                remaining_input: ctx.inputs.iter().map(|b| *b as char).collect(),
+                instr_count: steps,
+                aborted_by_limit: false,
+            }
+        }
+        Err(panic_payload) => {
+            let is_limit = panic_payload
+                .downcast_ref::<String>()
+                .map(|s| s.contains("step limit"))
+                .unwrap_or_else(|| {
+                    panic_payload
+                        .downcast_ref::<&'static str>()
+                        .map(|s| s.contains("step limit"))
+                        .unwrap_or(false)
+                });
+            if is_limit {
+                CapturedRun {
+                    output: String::new(),
+                    remaining_input: String::new(),
+                    instr_count: step_limit,
+                    aborted_by_limit: true,
+                }
+            } else {
+                std::panic::resume_unwind(panic_payload);
+            }
+        }
+    }
+}
+
 fn run_bytecode_with_input(
     block: &MirCodeBlock,
     input: &str,
@@ -726,25 +774,19 @@ pub fn compile(
     hir_to_mir(&final_block).map_err(|e| format!("mir: {}", e))
 }
 
-/// Compile a program via the soir (Sea-of-Nodes) backend.
+/// Compile a program via the soir (Sea-of-Nodes) backend, reusing
+/// the HIR inliner for the final flattening. Kept as the stable
+/// path: guaranteed to handle templated generics and `Array::get`
+/// synthesis correctly because the HIR inliner already does.
 ///
-/// Reuses the existing HIR pipeline up through inlining (so all
-/// `Call` ops are already resolved), then translates the flat
-/// post-inline function to soir and schedules it to MIR. The
-/// intermediate soir rewrites (M5-M7) live inside the soir crate
-/// and fire transparently between translation and scheduling.
-///
-/// Goal parity: a program compiled via soir must produce
-/// semantically equivalent MIR to the classical `compile` path.
-/// Bytecode-level equality isn't required — the schedulers lay
-/// ops out differently — but every interaction test should yield
-/// the same output + IO behaviour.
+/// Downside: the HIR inliner duplicates each callee's body per
+/// call site, so soir sees a fully-stamped graph and has to walk
+/// every duplicate. That's what `compile_via_soir_native_inline`
+/// fixes below.
 pub fn compile_via_soir(
     files: &[(&str, String)],
     entry: &typer::FnSig,
 ) -> Result<MirCodeBlock, String> {
-    // Steps 1-4 match the classical pipeline verbatim: HIR gen,
-    // spec-mono, mut-elide, arg-elide, inline_program_full.
     let built = build_hir(files)?;
     let BuiltHir { reg, db, hir } = built;
     let natives_for_summary = BuiltinNatives::new();
@@ -759,12 +801,211 @@ pub fn compile_via_soir(
     let trimmed = elide_unused_args(demut, entry);
     let inlined = inline_program_full(&trimmed, entry, Some(&reg), Some(&db))
         .map_err(|e| format!("inline: {}", e))?;
-
-    // Steps 5+ swapped for the soir backend.
     let graph = soir::translate_function(&inlined);
-    // M5-M7 rewrites will slot in here once landed — no-ops for M4.
     let mir = soir::schedule(&graph);
     Ok(mir)
+}
+
+/// Compile via soir with the soir-native inliner. Each HIR
+/// function translates to its own soir graph; optimisation runs
+/// per-function (so shared callees like `U4::eq` are only M5/M6-
+/// rewritten once); THEN the soir inliner splices each call
+/// site. Finally, schedule → MIR.
+///
+/// `Array<T, N, F>::{new, get, set, len}` are synthesised on
+/// demand via `hir::array_synth`, translated to soir, and cached
+/// — same behaviour the classical HIR inliner has, but now
+/// spliced at the soir level so each spec is optimised once
+/// instead of per call site.
+///
+/// **Remaining limitation**: templated-generic callees that
+/// weren't pre-concretised by spec-mono still fail. For those,
+/// use `compile_via_soir` (which routes through the HIR
+/// inliner's `monomorphize_on_demand`).
+pub fn compile_via_soir_native_inline(
+    files: &[(&str, String)],
+    entry: &typer::FnSig,
+) -> Result<MirCodeBlock, String> {
+    let built = build_hir(files)?;
+    let BuiltHir { reg, db, hir } = built;
+    let natives_for_summary = BuiltinNatives::new();
+    let summaries = compute_exit_domains(&hir, |sig| {
+        is_target_known_non_mutating(sig, &natives_for_summary, &db)
+    });
+    let spec = specialize_monomorph_with_summaries(hir, entry, Some(&summaries));
+    let natives = BuiltinNatives::new();
+    let demut = elide_redundant_mut(spec.functions, |sig| {
+        is_target_known_non_mutating(sig, &natives, &db)
+    });
+    let trimmed = elide_unused_args(demut, entry);
+
+    // Translate each remaining HIR function to soir. GVN +
+    // const-fold fire during `translate_function` (M5), so each
+    // callee's graph arrives pre-shrunk.
+    let program = soir::translate_program(&trimmed);
+
+    // Array-method resolver: when the inliner hits
+    // `Array::{new,get,set,len}` it synthesises the specific
+    // monomorph via HIR's `array_synth`, then translates it to
+    // soir. Cached so each `(spec, method)` is synthesised once.
+    let mut array_cache = hir::ArrayMonomorphCache::new();
+    let mut resolve = |fn_ref: &hir::ir::FnRef| -> Option<soir::Graph> {
+        if fn_ref.type_name != "Array"
+            || !hir::array_synth::METHOD_NAMES.contains(&fn_ref.method_name.as_str())
+        {
+            return None;
+        }
+        let spec = hir::array_synth::ArraySpec::from_template_args(
+            &fn_ref.template_args,
+            &reg,
+        )?;
+        let (_, hir_fn) =
+            array_cache.get_or_synth(&spec, &fn_ref.method_name)?;
+        Some(soir::translate_function(&hir_fn))
+    };
+
+    let t_inline = std::time::Instant::now();
+    let flat = soir::inline_program_with_resolver(&program, entry, &mut resolve)
+        .map_err(|e| format!("soir inline: {}", e))?;
+    let inline_ms = t_inline.elapsed().as_millis();
+    if std::env::var("CYTHAN_SOIR_PHASE_TIMING").is_ok() {
+        eprintln!(
+            "[soir-native-inline] inline finished in {}ms, {} live nodes — \
+             starting schedule",
+            inline_ms,
+            flat.live_len()
+        );
+    }
+
+    let t_sched = std::time::Instant::now();
+    let mir = soir::schedule(&flat);
+    let sched_ms = t_sched.elapsed().as_millis();
+    if std::env::var("CYTHAN_SOIR_PHASE_TIMING").is_ok() {
+        eprintln!(
+            "[soir-native-inline] inline={}ms schedule={}ms flat_nodes={} mir_ops={}",
+            inline_ms,
+            sched_ms,
+            flat.live_len(),
+            mir.0.len(),
+        );
+    }
+    Ok(mir)
+}
+
+/// Compile via soir, emitting LIR directly (CFG-style) instead
+/// of going through MIR.
+///
+/// The soir → MIR scheduler suffers from MIR's structured-only
+/// semantics: shared sub-graphs in deeply-nested post-inline
+/// graphs duplicate per arm, exploding the MIR. LIR has labels
+/// + jumps + If0 + 16-way Match, so each soir control node
+/// emits ONCE under a label and transitions are explicit jumps
+/// — exactly how LLVM / GCC / Cranelift schedule SSA into a
+/// CFG. Sharing falls out for free.
+///
+/// Pipeline: HIR-gen → spec-mono → mut/arg-elide → soir
+/// translate per-function (M1) → soir inline (M4 + Array
+/// resolver) → **soir → LIR directly** → LIR opt → bytecode.
+///
+/// Returns the bytecode word list ready for the Cythan VM.
+pub fn compile_via_soir_lir(
+    files: &[(&str, String)],
+    entry: &typer::FnSig,
+) -> Result<Vec<usize>, String> {
+    let built = build_hir(files)?;
+    let BuiltHir { reg, db, hir } = built;
+    let natives_for_summary = BuiltinNatives::new();
+    let summaries = compute_exit_domains(&hir, |sig| {
+        is_target_known_non_mutating(sig, &natives_for_summary, &db)
+    });
+    let spec = specialize_monomorph_with_summaries(hir, entry, Some(&summaries));
+    let natives = BuiltinNatives::new();
+    let demut = elide_redundant_mut(spec.functions, |sig| {
+        is_target_known_non_mutating(sig, &natives, &db)
+    });
+    let trimmed = elide_unused_args(demut, entry);
+
+    // Mut-cells resolver covering both the bulk of the program
+    // (Simple fns in `trimmed` keyed by FnSig) and on-demand
+    // `Array<T,N,F>::set` synths (keyed by full FnRef because a
+    // single `Array::set` name can span many specs with
+    // different self sizes).
+    //
+    // This must be consistent between the program translation
+    // pass below and the Array-synth resolver below it — both
+    // end up producing graphs whose `Return.values` layout and
+    // `Call` projections have to agree, or the inliner will
+    // rewire nothing and mutations are silently dropped.
+    let trimmed_ref = &trimmed;
+    let reg_ref = &reg;
+    let mut_cells = |fn_ref: &hir::ir::FnRef| -> Vec<u32> {
+        let key = typer::FnSig {
+            type_name: fn_ref.type_name.clone(),
+            method_name: fn_ref.method_name.clone(),
+            trait_name: fn_ref.trait_name.clone(),
+        };
+        if let Some(f) = trimmed_ref.get(&key) {
+            return soir::mut_cells_of_sig(&f.sig);
+        }
+        if fn_ref.type_name == "Array"
+            && hir::array_synth::METHOD_NAMES.contains(&fn_ref.method_name.as_str())
+        {
+            if let Some(spec) = hir::array_synth::ArraySpec::from_template_args(
+                &fn_ref.template_args,
+                reg_ref,
+            ) {
+                // Only `set` mutates `self`; `new`, `get`, `len`
+                // are read-only. Match the synth'd sig's cell
+                // layout: for `set`, `self` occupies
+                // cells `0..total_cells()`.
+                if fn_ref.method_name == "set" {
+                    return (0..spec.total_cells()).collect();
+                }
+            }
+        }
+        Vec::new()
+    };
+
+    let program = soir::translate_program_with_resolver(&trimmed, &mut_cells);
+
+    let mut array_cache = hir::ArrayMonomorphCache::new();
+    let resolve = |fn_ref: &hir::ir::FnRef| -> Option<soir::Graph> {
+        if fn_ref.type_name != "Array"
+            || !hir::array_synth::METHOD_NAMES.contains(&fn_ref.method_name.as_str())
+        {
+            return None;
+        }
+        let spec = hir::array_synth::ArraySpec::from_template_args(
+            &fn_ref.template_args,
+            reg_ref,
+        )?;
+        let (_, hir_fn) =
+            array_cache.get_or_synth(&spec, &fn_ref.method_name)?;
+        // Translate the synth'd method with the same resolver so
+        // its `Call`s inside — if any ever land here — use
+        // matching mut-cells. Today Array methods are leaf (no
+        // Calls), so `&mut_cells` vs empty doesn't matter, but
+        // threading the same resolver through keeps the two
+        // paths consistent.
+        Some(soir::translate_function_with_resolver(&hir_fn, &mut_cells))
+    };
+
+    // `resolve` borrows `array_cache` mutably. Wrap it in a
+    // cell-equivalent so the closure can call in-place. The
+    // resolver needs `FnMut(&FnRef) -> Option<Graph>`, which
+    // the current closure already satisfies via its mutable
+    // capture of `array_cache`.
+    let mut resolve_mut = resolve;
+
+    let flat = soir::inline_program_with_resolver(&program, entry, &mut resolve_mut)
+        .map_err(|e| format!("soir inline: {}", e))?;
+
+    let lir = soir::schedule_lir(&flat);
+    // Skip the LIR peephole optimiser for now; the soir-lir
+    // emission produces a CFG with patterns the classical
+    // optimiser doesn't expect. Re-enable once we've verified
+    // semantics match.
+    Ok(lir::CompilableInstruction::compile_to_binary(lir))
 }
 
 /// Output slots of a function's flat signature: the cells reserved

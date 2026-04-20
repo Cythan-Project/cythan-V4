@@ -587,7 +587,80 @@ fn morpion_equality() {
 // is safe to stage behind a flag and eventually flip to default.
 // -----------------------------------------------------------------------
 
-use cythan_driver::new_pipeline::compile_via_soir;
+use cythan_driver::new_pipeline::{
+    compile_via_soir, compile_via_soir_lir, compile_via_soir_native_inline,
+    run_bytecode_with_input_raw,
+};
+
+/// Cross-check helper for the soir → LIR path. Compiles the
+/// program through both classical (HIR inline + MIR + LIR +
+/// bytecode) and soir-to-LIR (soir inline + LIR + bytecode),
+/// then runs both on the Cythan VM and asserts identical
+/// output. Enforces the 30s ceiling.
+fn cross_check_soir_lir(
+    files: Vec<(&'static str, String)>,
+    entry: typer::FnSig,
+    input: &str,
+    step_limit: usize,
+) {
+    use std::time::Instant;
+    // Classical reference path.
+    let classical = compile(&files, &entry).expect("classical compile");
+    let r_class = cythan_driver::new_pipeline::run_with_backend(
+        &classical,
+        cythan_driver::new_pipeline::Backend::Cythan,
+        input,
+        4096,
+        step_limit,
+    );
+    assert!(!r_class.aborted_by_limit, "classical hit step limit");
+
+    // soir → LIR path.
+    let t = Instant::now();
+    let bytecode = compile_via_soir_lir(&files, &entry).expect("soir-lir compile");
+    let elapsed = t.elapsed();
+    assert!(
+        elapsed.as_secs() < 30,
+        "soir-lir compile exceeded 30s: {:?}",
+        elapsed
+    );
+    let r_soir = run_bytecode_with_input_raw(&bytecode, input, step_limit);
+    assert!(!r_soir.aborted_by_limit, "soir-lir hit step limit");
+
+    assert_eq!(r_class.output, r_soir.output, "output mismatch");
+    assert_eq!(
+        r_class.remaining_input, r_soir.remaining_input,
+        "input-consumption mismatch"
+    );
+}
+
+/// Cross-check helper for the native-inline path. Asserts the
+/// 30s compile ceiling so a regression into exponential walking
+/// fails the test loudly instead of timing out silently.
+fn cross_check_native(
+    files: Vec<(&'static str, String)>,
+    entry: typer::FnSig,
+    input: &str,
+    mem_cells: usize,
+) {
+    use std::time::Instant;
+    let classical = compile(&files, &entry).expect("classical compile");
+    let t = Instant::now();
+    let via_soir = compile_via_soir_native_inline(&files, &entry)
+        .expect("soir native-inline compile");
+    let elapsed = t.elapsed();
+    assert!(
+        elapsed.as_secs() < 30,
+        "soir native-inline compile exceeded 30s: {:?}",
+        elapsed
+    );
+    let r_class = run_mir_with_input(&classical, input, mem_cells);
+    let r_soir = run_mir_with_input(&via_soir, input, mem_cells);
+    assert!(!r_class.aborted_by_limit);
+    assert!(!r_soir.aborted_by_limit);
+    assert_eq!(r_class.output, r_soir.output);
+    assert_eq!(r_class.remaining_input, r_soir.remaining_input);
+}
 
 fn cross_check(files: Vec<(&'static str, String)>, entry: typer::FnSig, input: &str, mem_cells: usize) {
     let classical = compile(&files, &entry).expect("classical compile");
@@ -742,8 +815,406 @@ fn soir_morpion_compiles() {
     );
 }
 
+
 #[test]
-#[ignore = "see soir_morpion_phases_time — blocked on M6 pattern rewrites"]
+fn soir_lir_echo() {
+    let mut files = new_syntax_stdlib();
+    files.push((
+        "Echo.ct",
+        r#"
+            struct Echo {}
+            extension Echo {
+                fn main(): U4 {
+                    'h'.print();
+                    'i'.print();
+                    '\n'.print();
+                    0
+                }
+            }
+        "#
+        .to_string(),
+    ));
+    cross_check_soir_lir(files, typer::FnSig::new("Echo", "main"), "", 100_000);
+}
+
+#[test]
+fn soir_lir_sizes() {
+    use std::time::Instant;
+    let mut files = new_syntax_stdlib();
+    files.push(("Morpion.ct", load_file("Morpion.ct")));
+    let entry = typer::FnSig::new("Morpion", "main");
+    let t = Instant::now();
+    let bc = compile_via_soir_lir(&files, &entry).expect("soir-lir");
+    eprintln!("soir-lir Morpion: {} bytecode words in {}ms", bc.len(), t.elapsed().as_millis());
+    let classical = compile(&files, &entry).expect("classical");
+    let cl_lir = cythan_driver::new_pipeline::mir_to_lir(&classical);
+    let cl_bc = cythan_driver::new_pipeline::lir_to_bytecode(cl_lir);
+    eprintln!("classical Morpion: {} bytecode words", cl_bc.len());
+}
+
+#[test]
+fn soir_lir_struct_mutation_in_loop() {
+    // Cross-check struct mutation persisting across loop
+    // iterations — the smallest version of the Morpion bug.
+    // If this passes, the loop-phi for the struct's slots is
+    // wired correctly. If it fails, that's the bug.
+    let mut files = new_syntax_stdlib();
+    files.push((
+        "Box.ct",
+        r#"
+            struct Box { U4 v }
+            extension Box {
+                fn bump(mut self) {
+                    self.v += 1;
+                }
+                fn main(): U4 {
+                    mut Box b = Box { v: 0 };
+                    mut U4 i = 0;
+                    loop {
+                        if i == 3 { break; }
+                        b.bump();
+                        i += 1;
+                    }
+                    b.v.print();
+                    0
+                }
+            }
+        "#
+        .to_string(),
+    ));
+    cross_check_soir_lir(files, typer::FnSig::new("Box", "main"), "", 100_000);
+}
+
+#[test]
+fn debug_dump_array_graph() {
+    use hir::{
+        elide_redundant_mut, elide_unused_args, BuiltinNatives, NativeProvider,
+    };
+    let mut files = new_syntax_stdlib();
+    files.push((
+        "ArrTest.ct",
+        r#"
+            struct ArrTest { Array<U4, 4, U4> a }
+            extension ArrTest {
+                fn main(): U4 {
+                    mut ArrTest t = ArrTest { a: Array<U4, 4, U4>::new() };
+                    mut U4 i = 0;
+                    loop {
+                        if i == 4 { break; }
+                        t.a.set(i, 5);
+                        i += 1;
+                    }
+                    t.a.get(0).print();
+                    0
+                }
+            }
+        "#
+        .to_string(),
+    ));
+    let entry = typer::FnSig::new("ArrTest", "main");
+    let built = cythan_driver::new_pipeline::build_hir(&files).unwrap();
+    let cythan_driver::new_pipeline::BuiltHir { reg, db, hir } = built;
+    let n = BuiltinNatives::new();
+    let summaries = hir::compute_exit_domains(&hir, |s| {
+        n.has_method(&s.type_name, &s.method_name)
+            || matches!(db.get(s), Some(typer::Fn::Simple(s)) if s.body.sig.params.iter().all(|p| !p.mutable))
+    });
+    let spec = hir::specialize_monomorph_with_summaries(hir, &entry, Some(&summaries));
+    let demut = elide_redundant_mut(spec.functions, |s| {
+        n.has_method(&s.type_name, &s.method_name)
+            || matches!(db.get(s), Some(typer::Fn::Simple(s)) if s.body.sig.params.iter().all(|p| !p.mutable))
+    });
+    let trimmed = elide_unused_args(demut, &entry);
+    let program = soir::translate_program(&trimmed);
+    let mut array_cache = hir::ArrayMonomorphCache::new();
+    let mut resolve = |fn_ref: &hir::ir::FnRef| -> Option<soir::Graph> {
+        if fn_ref.type_name != "Array" || !hir::array_synth::METHOD_NAMES.contains(&fn_ref.method_name.as_str()) {
+            return None;
+        }
+        let spec = hir::array_synth::ArraySpec::from_template_args(&fn_ref.template_args, &reg)?;
+        let (_, hir_fn) = array_cache.get_or_synth(&spec, &fn_ref.method_name)?;
+        Some(soir::translate_function(&hir_fn))
+    };
+    let flat = soir::inline_program_with_resolver(&program, &entry, &mut resolve).unwrap();
+    eprintln!("=== flat graph ===");
+    eprintln!("{}", soir::dump_graph(&flat));
+}
+
+#[test]
+fn debug_dump_array_lir() {
+    use cythan_driver::new_pipeline::{
+        build_hir, compile_via_soir_lir, lir_to_text,
+    };
+    use hir::{
+        elide_redundant_mut, elide_unused_args, BuiltinNatives, NativeProvider,
+    };
+    let mut files = new_syntax_stdlib();
+    files.push((
+        "ArrTest.ct",
+        r#"
+            struct ArrTest { Array<U4, 4, U4> a }
+            extension ArrTest {
+                fn main(): U4 {
+                    mut ArrTest t = ArrTest { a: Array<U4, 4, U4>::new() };
+                    mut U4 i = 0;
+                    loop {
+                        if i == 4 { break; }
+                        t.a.set(i, 5);
+                        i += 1;
+                    }
+                    t.a.get(0).print();
+                    0
+                }
+            }
+        "#
+        .to_string(),
+    ));
+    let entry = typer::FnSig::new("ArrTest", "main");
+
+    // Reproduce compile_via_soir_lir but stop before bytecode.
+    let built = build_hir(&files).unwrap();
+    let cythan_driver::new_pipeline::BuiltHir { reg, db, hir } = built;
+    let n = BuiltinNatives::new();
+    let summaries = hir::compute_exit_domains(&hir, |s| {
+        n.has_method(&s.type_name, &s.method_name)
+            || matches!(db.get(s), Some(typer::Fn::Simple(s)) if s.body.sig.params.iter().all(|p| !p.mutable))
+    });
+    let spec = hir::specialize_monomorph_with_summaries(hir, &entry, Some(&summaries));
+    let demut = elide_redundant_mut(spec.functions, |s| {
+        n.has_method(&s.type_name, &s.method_name)
+            || matches!(db.get(s), Some(typer::Fn::Simple(s)) if s.body.sig.params.iter().all(|p| !p.mutable))
+    });
+    let trimmed = elide_unused_args(demut, &entry);
+    let program = soir::translate_program(&trimmed);
+    let mut array_cache = hir::ArrayMonomorphCache::new();
+    let mut resolve = |fn_ref: &hir::ir::FnRef| -> Option<soir::Graph> {
+        if fn_ref.type_name != "Array"
+            || !hir::array_synth::METHOD_NAMES.contains(&fn_ref.method_name.as_str())
+        {
+            return None;
+        }
+        let spec = hir::array_synth::ArraySpec::from_template_args(&fn_ref.template_args, &reg)?;
+        let (_, hir_fn) = array_cache.get_or_synth(&spec, &fn_ref.method_name)?;
+        Some(soir::translate_function(&hir_fn))
+    };
+    let flat = soir::inline_program_with_resolver(&program, &entry, &mut resolve).unwrap();
+    let lir = soir::schedule_lir(&flat);
+    eprintln!("=== soir-lir output ({} ops) ===", lir.len());
+    eprintln!("{}", lir_to_text(&lir));
+
+    let _ = compile_via_soir_lir;
+}
+
+#[test]
+fn soir_lir_array_mutation_in_loop() {
+    let mut files = new_syntax_stdlib();
+    files.push((
+        "ArrTest.ct",
+        r#"
+            struct ArrTest { Array<U4, 4, U4> a }
+            extension ArrTest {
+                fn main(): U4 {
+                    mut ArrTest t = ArrTest { a: Array<U4, 4, U4>::new() };
+                    mut U4 i = 0;
+                    loop {
+                        if i == 4 { break; }
+                        t.a.set(i, 5);
+                        i += 1;
+                    }
+                    t.a.get(0).print();
+                    t.a.get(1).print();
+                    t.a.get(2).print();
+                    t.a.get(3).print();
+                    0
+                }
+            }
+        "#
+        .to_string(),
+    ));
+    cross_check_soir_lir(files, typer::FnSig::new("ArrTest", "main"), "", 100_000);
+}
+
+#[test]
+fn soir_lir_morpion() {
+    // The milestone test: full Morpion game compiles via the
+    // soir → LIR (CFG-style) backend AND its bytecode runs on
+    // the Cythan VM matching the classical pipeline. If this
+    // passes, we've solved the per-arm-duplication explosion
+    // by emitting jumps to shared blocks the way LLVM /
+    // Cranelift / GCC do at machine-code level.
+    let mut files = new_syntax_stdlib();
+    files.push(("Morpion.ct", load_file("Morpion.ct")));
+    cross_check_soir_lir(
+        files,
+        typer::FnSig::new("Morpion", "main"),
+        "123547698",
+        4_000_000,
+    );
+}
+
+#[test]
+fn soir_lir_count_loop() {
+    let mut files = new_syntax_stdlib();
+    files.push((
+        "CountLoop.ct",
+        r#"
+            struct CountLoop {}
+            extension CountLoop {
+                fn main(): U4 {
+                    mut U4 i = 0;
+                    loop { if i == 4 { break; } i += 1; }
+                    i.print();
+                    0
+                }
+            }
+        "#
+        .to_string(),
+    ));
+    cross_check_soir_lir(
+        files,
+        typer::FnSig::new("CountLoop", "main"),
+        "",
+        100_000,
+    );
+}
+
+#[test]
+fn soir_native_inline_echo() {
+    let mut files = new_syntax_stdlib();
+    files.push((
+        "Echo.ct",
+        r#"
+            struct Echo {}
+            extension Echo {
+                fn main(): U4 {
+                    'h'.print();
+                    'i'.print();
+                    '\n'.print();
+                    0
+                }
+            }
+        "#
+        .to_string(),
+    ));
+    cross_check_native(files, typer::FnSig::new("Echo", "main"), "", 512);
+}
+
+#[test]
+fn soir_native_inline_input_echo() {
+    let mut files = new_syntax_stdlib();
+    files.push((
+        "InputEcho.ct",
+        r#"
+            struct InputEcho {}
+            extension InputEcho {
+                fn main(): U4 {
+                    U8 a = U8::input();
+                    a.print();
+                    U8 b = U8::input();
+                    b.print();
+                    '\n'.print();
+                    0
+                }
+            }
+        "#
+        .to_string(),
+    ));
+    cross_check_native(
+        files,
+        typer::FnSig::new("InputEcho", "main"),
+        "AB",
+        512,
+    );
+}
+
+#[test]
+#[ignore = "scheduler hits the MIR-size ceiling on Morpion's post-inline \
+    graph. Bounded walk_cache (256k ops) caps RAM, but each unique \
+    (start, stop, scope-stack) triple still produces its own MIR, and \
+    the scheduler's duplication exceeds 500k ops. Proper fix: structural \
+    GVN on control subgraphs (merge duplicated match/region subtrees \
+    across inlined copies) OR full GCM + dominator-based emission."]
+fn soir_native_inline_morpion_phase_timing() {
+    // Diagnostic: time each phase of compile_via_soir_native_inline
+    // so we know if the 30s ceiling is breached during compile or
+    // during MIR execution.
+    use std::time::Instant;
+    let mut files = new_syntax_stdlib();
+    files.push(("Morpion.ct", load_file("Morpion.ct")));
+    let entry = typer::FnSig::new("Morpion", "main");
+    let t = Instant::now();
+    let mir = compile_via_soir_native_inline(&files, &entry).expect("compile");
+    let compile = t.elapsed();
+    eprintln!(
+        "native-inline compile: {}ms, {} MIR ops",
+        compile.as_millis(),
+        mir.0.len()
+    );
+    // Must complete under the ceiling.
+    assert!(compile.as_secs() < 30, "compile too slow: {:?}", compile);
+    // Don't run the MIR — this test is compile-phase only so a
+    // broken soir→MIR scheduler can't mask compile regressions.
+}
+
+#[test]
+#[ignore = "scheduler hits the MIR-size limit on Morpion's post-inline \
+    graph. Array synth + per-function optimisation work, but the \
+    scheduler duplicates downstream code into each arm of deeply \
+    nested matches. Sharing-aware scheduling (Mir::Block + Mir::Skip) \
+    is the next step."]
+fn soir_native_inline_morpion() {
+    // Full Morpion game: exercises `Array::new` / `get` / `set`
+    // synthesis, deeply nested enum matches, arithmetic via the
+    // stdlib's lockstep loops, and IO. If this passes under 30s
+    // the per-function architecture works end-to-end.
+    let mut files = new_syntax_stdlib();
+    files.push(("Morpion.ct", load_file("Morpion.ct")));
+    cross_check_native(
+        files,
+        typer::FnSig::new("Morpion", "main"),
+        "123547698",
+        4096,
+    );
+}
+
+#[test]
+fn soir_native_inline_count_loop() {
+    // count_loop exercises the `U4::eq` + `U4::AddAssign` inlined
+    // callees via the soir-native inliner. If the per-function
+    // path resolves them correctly, the output matches classical.
+    let mut files = new_syntax_stdlib();
+    files.push((
+        "CountLoop.ct",
+        r#"
+            struct CountLoop {}
+            extension CountLoop {
+                fn main(): U4 {
+                    mut U4 i = 0;
+                    loop {
+                        if i == 4 { break; }
+                        i += 1;
+                    }
+                    i.print();
+                    0
+                }
+            }
+        "#
+        .to_string(),
+    ));
+    cross_check_native(
+        files,
+        typer::FnSig::new("CountLoop", "main"),
+        "",
+        1024,
+    );
+}
+
+#[test]
+#[ignore = "blocked on M9b (true sharing-aware scheduler). Running \
+    causes scheduler to walk exponentially many arm-duplicated paths; \
+    SCHEDULE_MIR_SIZE_LIMIT (200k) panics cleanly, but the test \
+    framework times out before even reaching that. DO NOT UN-IGNORE \
+    without first implementing structural GVN or GCM — will burn RAM."]
 fn soir_cross_morpion_equality() {
     // Full game cross-check: Morpion cat's-game scenario must
     // produce identical output through both backends. This is
