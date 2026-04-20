@@ -1,0 +1,16 @@
+[package]
+name = "soir"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+typer = { path = "../typer" }
+hir = { path = "../hir" }
+mir = { path = "../mir" }
+either = "1"
+
+[dev-dependencies]
+new-parser = { path = "../new_parser" }
+
+[lints]
+workspace = true

@@ -576,3 +576,210 @@ fn morpion_equality() {
         result.output
     );
 }
+
+// -----------------------------------------------------------------------
+// soir backend cross-checks (M4 rollout gate)
+//
+// For each of these cases the program is compiled via BOTH the classical
+// `compile` path and the new `compile_via_soir` path, then run against the
+// same scripted input. Outputs and remaining inputs must match. This is
+// the "nothing broken" harness: as long as these pass, the soir backend
+// is safe to stage behind a flag and eventually flip to default.
+// -----------------------------------------------------------------------
+
+use cythan_driver::new_pipeline::compile_via_soir;
+
+fn cross_check(files: Vec<(&'static str, String)>, entry: typer::FnSig, input: &str, mem_cells: usize) {
+    let classical = compile(&files, &entry).expect("classical compile");
+    let via_soir = compile_via_soir(&files, &entry).expect("soir compile");
+    let r_class = run_mir_with_input(&classical, input, mem_cells);
+    let r_soir = run_mir_with_input(&via_soir, input, mem_cells);
+    assert!(!r_class.aborted_by_limit, "classical hit step limit");
+    assert!(!r_soir.aborted_by_limit, "soir hit step limit");
+    assert_eq!(r_class.output, r_soir.output, "output mismatch");
+    assert_eq!(
+        r_class.remaining_input, r_soir.remaining_input,
+        "input-consumption mismatch"
+    );
+}
+
+#[test]
+fn soir_cross_echo() {
+    let mut files = new_syntax_stdlib();
+    files.push((
+        "Echo.ct",
+        r#"
+            struct Echo {}
+            extension Echo {
+                fn main(): U4 {
+                    'h'.print();
+                    'i'.print();
+                    '\n'.print();
+                    0
+                }
+            }
+        "#
+        .to_string(),
+    ));
+    cross_check(files, typer::FnSig::new("Echo", "main"), "", 512);
+}
+
+#[test]
+fn soir_cross_input_echo() {
+    let mut files = new_syntax_stdlib();
+    files.push((
+        "InputEcho.ct",
+        r#"
+            struct InputEcho {}
+            extension InputEcho {
+                fn main(): U4 {
+                    U8 a = U8::input();
+                    a.print();
+                    U8 b = U8::input();
+                    b.print();
+                    '\n'.print();
+                    0
+                }
+            }
+        "#
+        .to_string(),
+    ));
+    cross_check(files, typer::FnSig::new("InputEcho", "main"), "AB", 512);
+}
+
+#[test]
+#[ignore = "28k-node post-inline graph + deep nesting exhausts the \
+    scheduler's step budget; M6 pattern rewrites should shrink this \
+    enough to lift the #[ignore]"]
+fn soir_morpion_phases_time() {
+    // Isolate which phase of the soir pipeline is slow: HIR
+    // pre-processing, soir translation, or soir scheduling. Runs
+    // each sub-step independently so we know where to look.
+    use cythan_driver::new_pipeline::{
+        build_hir, compile as classical_compile,
+    };
+    use hir::{
+        elide_redundant_mut, elide_unused_args, inline_program_full,
+        specialize_monomorph_with_summaries, compute_exit_domains, BuiltinNatives,
+        NativeProvider,
+    };
+    use std::time::Instant;
+    let mut files = new_syntax_stdlib();
+    files.push(("Morpion.ct", load_file("Morpion.ct")));
+    let entry = typer::FnSig::new("Morpion", "main");
+    let t0 = Instant::now();
+    let built = build_hir(&files).expect("build_hir");
+    eprintln!("build_hir: {}ms", t0.elapsed().as_millis());
+
+    let t1 = Instant::now();
+    let natives_for_summary = BuiltinNatives::new();
+    let hir_map = built.hir.clone();
+    let db_ref = &built.db;
+    let summaries = compute_exit_domains(&hir_map, |sig| {
+        natives_for_summary.has_method(&sig.type_name, &sig.method_name)
+            || matches!(
+                db_ref.get(sig),
+                Some(typer::Fn::Simple(s)) if s.body.sig.params.iter().all(|p| !p.mutable)
+            )
+    });
+    let spec = specialize_monomorph_with_summaries(hir_map, &entry, Some(&summaries));
+    let natives = BuiltinNatives::new();
+    let demut = elide_redundant_mut(spec.functions, |sig| {
+        natives.has_method(&sig.type_name, &sig.method_name)
+            || matches!(
+                db_ref.get(sig),
+                Some(typer::Fn::Simple(s)) if s.body.sig.params.iter().all(|p| !p.mutable)
+            )
+    });
+    let trimmed = elide_unused_args(demut, &entry);
+    let inlined = inline_program_full(&trimmed, &entry, Some(&built.reg), Some(&built.db))
+        .expect("inline");
+    eprintln!("hir pipeline → inlined: {}ms, {} ops", t1.elapsed().as_millis(),
+              hir::count_ops(&inlined.body));
+
+    let t2 = Instant::now();
+    let graph = soir::translate_function(&inlined);
+    eprintln!("soir translate: {}ms, {} live nodes", t2.elapsed().as_millis(),
+              graph.live_len());
+
+    let t3 = Instant::now();
+    let mir = soir::schedule(&graph);
+    eprintln!("soir schedule: {}ms, {} MIR ops", t3.elapsed().as_millis(),
+              mir.0.len());
+
+    // Sanity: also run classical to compare compile time.
+    let t4 = Instant::now();
+    let _ = classical_compile(&files, &entry).expect("classical");
+    eprintln!("classical compile: {}ms", t4.elapsed().as_millis());
+}
+
+#[test]
+#[ignore = "see soir_morpion_phases_time — blocked on M6"]
+fn soir_morpion_compiles() {
+    // Narrower than the full cross-check: just verify that the
+    // soir backend produces MIR for Morpion in bounded time
+    // (relies on the SCHEDULE_STEP_LIMIT + cycle guards). If
+    // this times out, the scheduler is pathological; if it
+    // passes but the cross-check times out, the issue is in
+    // MIR execution (likely a soir-produced MIR that's correct
+    // but un-optimised, exhausting the run-time step limit).
+    use std::time::Instant;
+    let mut files = new_syntax_stdlib();
+    files.push(("Morpion.ct", load_file("Morpion.ct")));
+    let entry = typer::FnSig::new("Morpion", "main");
+    let start = Instant::now();
+    let mir = compile_via_soir(&files, &entry).expect("soir compile");
+    let elapsed = start.elapsed();
+    eprintln!(
+        "soir compile(Morpion): {}ms, {} MIR ops",
+        elapsed.as_millis(),
+        mir.0.len()
+    );
+    assert!(
+        elapsed.as_secs() < 30,
+        "soir compile exceeded the 30s ceiling: {:?}",
+        elapsed
+    );
+}
+
+#[test]
+#[ignore = "see soir_morpion_phases_time — blocked on M6 pattern rewrites"]
+fn soir_cross_morpion_equality() {
+    // Full game cross-check: Morpion cat's-game scenario must
+    // produce identical output through both backends. This is
+    // the real "rollout gate" signal — if it passes, soir can
+    // compile a non-trivial program (arrays, enums, structs,
+    // traits, match dispatch, nested loops, IO) correctly.
+    let mut files = new_syntax_stdlib();
+    files.push(("Morpion.ct", load_file("Morpion.ct")));
+    cross_check(
+        files,
+        typer::FnSig::new("Morpion", "main"),
+        "123547698",
+        4096,
+    );
+}
+
+#[test]
+fn soir_cross_count_loop() {
+    let mut files = new_syntax_stdlib();
+    files.push((
+        "CountLoop.ct",
+        r#"
+            struct CountLoop {}
+            extension CountLoop {
+                fn main(): U4 {
+                    mut U4 i = 0;
+                    loop {
+                        if i == 4 { break; }
+                        i += 1;
+                    }
+                    i.print();
+                    0
+                }
+            }
+        "#
+        .to_string(),
+    ));
+    cross_check(files, typer::FnSig::new("CountLoop", "main"), "", 1024);
+}

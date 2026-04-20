@@ -11,6 +11,7 @@ cythan = { path = "../vm" }
 new-parser = { path = "../new_parser" }
 typer = { path = "../typer" }
 hir = { path = "../hir" }
+soir = { path = "../soir" }
 
 [lints]
 workspace = true

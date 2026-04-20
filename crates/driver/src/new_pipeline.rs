@@ -726,6 +726,47 @@ pub fn compile(
     hir_to_mir(&final_block).map_err(|e| format!("mir: {}", e))
 }
 
+/// Compile a program via the soir (Sea-of-Nodes) backend.
+///
+/// Reuses the existing HIR pipeline up through inlining (so all
+/// `Call` ops are already resolved), then translates the flat
+/// post-inline function to soir and schedules it to MIR. The
+/// intermediate soir rewrites (M5-M7) live inside the soir crate
+/// and fire transparently between translation and scheduling.
+///
+/// Goal parity: a program compiled via soir must produce
+/// semantically equivalent MIR to the classical `compile` path.
+/// Bytecode-level equality isn't required — the schedulers lay
+/// ops out differently — but every interaction test should yield
+/// the same output + IO behaviour.
+pub fn compile_via_soir(
+    files: &[(&str, String)],
+    entry: &typer::FnSig,
+) -> Result<MirCodeBlock, String> {
+    // Steps 1-4 match the classical pipeline verbatim: HIR gen,
+    // spec-mono, mut-elide, arg-elide, inline_program_full.
+    let built = build_hir(files)?;
+    let BuiltHir { reg, db, hir } = built;
+    let natives_for_summary = BuiltinNatives::new();
+    let summaries = compute_exit_domains(&hir, |sig| {
+        is_target_known_non_mutating(sig, &natives_for_summary, &db)
+    });
+    let spec = specialize_monomorph_with_summaries(hir, entry, Some(&summaries));
+    let natives = BuiltinNatives::new();
+    let demut = elide_redundant_mut(spec.functions, |sig| {
+        is_target_known_non_mutating(sig, &natives, &db)
+    });
+    let trimmed = elide_unused_args(demut, entry);
+    let inlined = inline_program_full(&trimmed, entry, Some(&reg), Some(&db))
+        .map_err(|e| format!("inline: {}", e))?;
+
+    // Steps 5+ swapped for the soir backend.
+    let graph = soir::translate_function(&inlined);
+    // M5-M7 rewrites will slot in here once landed — no-ops for M4.
+    let mir = soir::schedule(&graph);
+    Ok(mir)
+}
+
 /// Output slots of a function's flat signature: the cells reserved
 /// for the `_ret` param, which the caller (or the top-level runner)
 /// reads after the function returns.

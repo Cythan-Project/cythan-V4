@@ -12,14 +12,28 @@ cythan = { path = "crates/vm" }
 cythan-driver = { path = "crates/driver" }
 typer = { path = "crates/typer" }
 hir = { path = "crates/hir" }
+soir = { path = "crates/soir" }
 errors = { path = "crates/errors" }
 clap = { version = "4", features = ["derive"] }
 
 [profile.release]
 debug = true
 
+# Test profile inherits dev's debug symbols but bumps opt-level so
+# `cargo test` runs interaction tests at release-ish speed (the
+# compilation pipeline + MIR interpreter are both CPU-bound; a
+# full game at opt-level 0 takes 60+s, at 2 it's under 2s).
+[profile.test]
+opt-level = 2
+
+# Optimise dependencies in dev too — they rarely change and
+# benefit every `cargo check` / `cargo test` run. Workspace
+# crates stay at opt-level 0 for fast incremental debug builds.
+[profile.dev.package."*"]
+opt-level = 2
+
 [workspace]
-members = ["crates/lir", "crates/vm", "crates/mir", "crates/errors", "crates/driver", "crates/new_parser", "crates/typer", "crates/hir", "crates/lsp"]
+members = ["crates/lir", "crates/vm", "crates/mir", "crates/errors", "crates/driver", "crates/new_parser", "crates/typer", "crates/hir", "crates/lsp", "crates/soir"]
 
 [workspace.lints.clippy]
 # Error type from ariadne is inherently large (192 bytes); boxing it would require
