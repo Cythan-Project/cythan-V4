@@ -124,7 +124,7 @@ fn inc_dec_track_known_value() {
     //   →  Set(s0, 5); Inc(s0); Set(s1, 6)   (s0 is 6 after Inc)
     let input = blk(vec![
         HirOp::Set(sid(0), 5),
-        HirOp::Inc(sid(0)),
+        HirOp::inc(sid(0)),
         HirOp::Copy(sid(1), sid(0)),
     ]);
     let out = specialize_to_fixpoint(input);
@@ -142,7 +142,7 @@ fn mutated_slot_is_forgotten_after_loop() {
     //   the Copy must NOT collapse to a Set(s1, 3).
     let input = blk(vec![
         HirOp::Set(sid(0), 3),
-        HirOp::Loop(blk(vec![HirOp::Inc(sid(0))])),
+        HirOp::Loop(blk(vec![HirOp::inc(sid(0))])),
         HirOp::Copy(sid(1), sid(0)),
     ]);
     let out = specialize_to_fixpoint(input);
@@ -165,7 +165,7 @@ fn readonly_slot_keeps_domain_inside_loop() {
     let input = blk(vec![
         HirOp::Set(sid(0), 5),
         HirOp::Loop(blk(vec![
-            HirOp::Inc(sid(1)),
+            HirOp::inc(sid(1)),
             if_zero(sid(0), vec![HirOp::Break], vec![]),
         ])),
     ]);
@@ -197,7 +197,7 @@ fn dse_sees_through_match_that_doesnt_read_slot() {
             sid(2),
             vec![
                 (blk(vec![HirOp::Set(sid(3), 0)]), vec![0]),
-                (blk(vec![HirOp::Inc(sid(3))]), (1..=15).collect()),
+                (blk(vec![HirOp::inc(sid(3))]), (1..=15).collect()),
             ],
         ),
         HirOp::Copy(sid(0), sid(1)),
@@ -220,7 +220,7 @@ fn dse_preserves_set_read_inside_match_arm() {
             sid(2),
             vec![
                 (blk(vec![HirOp::Copy(sid(3), sid(0))]), vec![0]), // reads v0
-                (blk(vec![HirOp::Inc(sid(3))]), (1..=15).collect()),
+                (blk(vec![HirOp::inc(sid(3))]), (1..=15).collect()),
             ],
         ),
         HirOp::Copy(sid(0), sid(1)),
@@ -239,7 +239,7 @@ fn identity_copy_is_removed() {
     let input = blk(vec![
         HirOp::Set(sid(0), 3),
         HirOp::Copy(sid(0), sid(0)),
-        HirOp::Inc(sid(0)),
+        HirOp::inc(sid(0)),
     ]);
     let out = specialize_to_fixpoint(input);
     assert!(
@@ -289,7 +289,7 @@ fn readonly_slot_keeps_domain_across_loop_exit() {
     //   the loop exit — the Copy should collapse to Set(s2, 7).
     let input = blk(vec![
         HirOp::Set(sid(0), 7),
-        HirOp::Loop(blk(vec![HirOp::Inc(sid(1)), HirOp::Break])),
+        HirOp::Loop(blk(vec![HirOp::inc(sid(1)), HirOp::Break])),
         HirOp::Copy(sid(2), sid(0)),
     ]);
     let out = specialize_to_fixpoint(input);

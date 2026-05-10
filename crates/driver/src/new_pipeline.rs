@@ -506,7 +506,11 @@ pub fn compile_with_stats(
     let cleaned_body = optimize_block(respecialized_body);
     let live_at_exit = output_slots_of(&inlined.sig);
     let lva_body = eliminate_dead_writes(cleaned_body, &live_at_exit);
-    let final_body = optimize_block(lva_body);
+    let cleaned2_body = optimize_block(lva_body);
+    // Final pass: collapse `match { v => Set(d, k), … }` shapes into a
+    // single MapValue. Runs last so it sees fully-merged matches.
+    let (final_body, _mapvalue_collapses) =
+        hir::match_to_mapvalue::rewrite_block(cleaned2_body);
     let hir_ops_post_specialize = hir::count_ops(&final_body);
 
     let mir = hir_to_mir(&final_body).map_err(|e| format!("mir: {}", e))?;
@@ -770,7 +774,8 @@ pub fn compile(
     let cleaned = optimize_block(respecialized);
     let live_at_exit = output_slots_of(&inlined.sig);
     let lva_cleaned = eliminate_dead_writes(cleaned, &live_at_exit);
-    let final_block = optimize_block(lva_cleaned);
+    let cleaned2 = optimize_block(lva_cleaned);
+    let (final_block, _) = hir::match_to_mapvalue::rewrite_block(cleaned2);
     hir_to_mir(&final_block).map_err(|e| format!("mir: {}", e))
 }
 

@@ -410,15 +410,27 @@ impl<'g> Builder<'g> {
                 let v = self.read_slot(*src);
                 self.write_slot(*dst, v);
             }
-            HirOp::Inc(s) => {
-                let v = self.read_slot(*s);
-                let new = self.g.alloc_inc(v);
-                self.write_slot(*s, new);
-            }
-            HirOp::Dec(s) => {
-                let v = self.read_slot(*s);
-                let new = self.g.alloc_dec(v);
-                self.write_slot(*s, new);
+            HirOp::MapValue(src, dst, table) => {
+                let v = self.read_slot(*src);
+                // Recognize the canonical inc/dec tables to keep the
+                // SoIR cache effective; arbitrary tables fall through
+                // (TODO: a NodeKind::Map(NodeId, [u8;16]) for full
+                // generality once the SoIR pipeline needs it).
+                let new = if *table == hir::ir::INC_TABLE {
+                    self.g.alloc_inc(v)
+                } else if *table == hir::ir::DEC_TABLE {
+                    self.g.alloc_dec(v)
+                } else {
+                    // Fall back: emit a 16-arm Match-of-Set, then read.
+                    // For now, panic — SoIR doesn't yet support general
+                    // MapValue tables, and only inc/dec reach this path
+                    // through the normal HIR-gen pipeline.
+                    panic!(
+                        "soir: general MapValue table not yet supported \
+                         (src={src:?}, dst={dst:?})"
+                    );
+                };
+                self.write_slot(*dst, new);
             }
             HirOp::Skip => self.lower_skip(),
             HirOp::Block(b) => self.lower_block_scope(b),

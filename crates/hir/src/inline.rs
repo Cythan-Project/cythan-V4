@@ -91,8 +91,7 @@ fn hir_op_to_mir(op: &HirOp) -> Result<Mir, String> {
     Ok(match op {
         HirOp::Set(s, v) => Mir::Set(s.0, *v),
         HirOp::Copy(dst, src) => Mir::Copy(dst.0, src.0),
-        HirOp::Inc(s) => Mir::Increment(s.0),
-        HirOp::Dec(s) => Mir::Decrement(s.0),
+        HirOp::MapValue(src, dst, table) => Mir::MapValue(src.0, dst.0, *table),
         HirOp::Loop(b) => Mir::Loop(hir_to_mir(b)?),
         HirOp::Break => Mir::Break,
         HirOp::Continue => Mir::Continue,
@@ -177,8 +176,11 @@ impl<'a> Inliner<'a> {
         match op {
             HirOp::Set(s, v) => out.push(HirOp::Set(self.remap(*s, base), *v)),
             HirOp::Copy(a, b) => out.push(HirOp::Copy(self.remap(*a, base), self.remap(*b, base))),
-            HirOp::Inc(s) => out.push(HirOp::Inc(self.remap(*s, base))),
-            HirOp::Dec(s) => out.push(HirOp::Dec(self.remap(*s, base))),
+            HirOp::MapValue(src, dst, table) => out.push(HirOp::MapValue(
+                self.remap(*src, base),
+                self.remap(*dst, base),
+                *table,
+            )),
             HirOp::Loop(b) => out.push(HirOp::Loop(self.inline_block(b, base)?)),
             HirOp::Break => out.push(HirOp::Break),
             HirOp::Continue => out.push(HirOp::Continue),

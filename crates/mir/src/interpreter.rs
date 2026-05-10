@@ -120,8 +120,10 @@ impl MemoryState {
             // we'd fall through silently inside loops.
             Mir::Set(a, b) => self.set_mem(*a, *b & 0x0F),
             Mir::Copy(a, b) => self.set_mem(*a, self.get_mem(*b) & 0x0F),
-            Mir::Increment(a) => self.set_mem(*a, self.get_mem(*a).wrapping_add(1) % 16),
-            Mir::Decrement(a) => self.set_mem(*a, self.get_mem(*a).wrapping_sub(1) % 16),
+            Mir::MapValue(src, dst, table) => {
+                let v = self.get_mem(*src) & 0x0F;
+                self.set_mem(*dst, table[v as usize]);
+            }
             Mir::If0(a, b, c) => {
                 if self.get_mem(*a) == 0 {
                     return self.execute_block(b, printer);

@@ -17,6 +17,15 @@ impl std::fmt::Display for SlotId {
     }
 }
 
+/// `+= 1` table for a u4 cell: input N → (N+1) mod 16. Seed for
+/// `HirOp::inc` / `Mir::increment`.
+pub const INC_TABLE: [u8; 16] =
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 0];
+
+/// `-= 1` table: input N → (N + 15) mod 16.
+pub const DEC_TABLE: [u8; 16] =
+    [15, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
+
 /// One HIR operation. Mirrors `mir::Mir` plus the unresolved `Call`
 /// variant. Unlike MIR, HIR has *no* `If0` — zero-versus-nonzero
 /// branching is expressed as a two-arm `Match`. Rationale: keeps
@@ -28,8 +37,13 @@ pub enum HirOp {
     Set(SlotId, u8),
     /// `Copy(dst, src)` — dst is written, src is read.
     Copy(SlotId, SlotId),
-    Inc(SlotId),
-    Dec(SlotId),
+    /// `MapValue(src, dst, table)` — `dst = table[src]`. Pure 1-cell
+    /// lookup. The single primitive for U4-shape transforms: increment,
+    /// decrement, identity, and any `match X { N => const_n, ... }` shape
+    /// the optimizer recognizes. Inc/Dec are encoded as MapValue with
+    /// fixed tables (`INC_TABLE` / `DEC_TABLE`, src == dst) so the LIR
+    /// emitter can still produce the tight inc/dec bytecode template.
+    MapValue(SlotId, SlotId, [u8; 16]),
     Loop(HirBlock),
     Break,
     Continue,
@@ -66,6 +80,31 @@ impl HirOp {
             ],
         )
     }
+
+    /// `s += 1` — wraps modulo 16. Encoded as a MapValue so the optimizer
+    /// sees it as a generic table lookup; the LIR emitter detects the
+    /// inc-shaped table and emits the tight `inc` bytecode template.
+    pub fn inc(slot: SlotId) -> HirOp {
+        HirOp::MapValue(slot, slot, INC_TABLE)
+    }
+
+    /// `s -= 1` — wraps modulo 16.
+    pub fn dec(slot: SlotId) -> HirOp {
+        HirOp::MapValue(slot, slot, DEC_TABLE)
+    }
+
+    /// True if this op writes a cell value to `slot` (Set, Copy dst,
+    /// MapValue dst, ReadRegister dst). Excludes `Match` / `Loop` / etc.
+    /// whose writes are conditional on inner blocks.
+    pub fn writes_slot(&self, slot: SlotId) -> bool {
+        match self {
+            HirOp::Set(s, _) => *s == slot,
+            HirOp::Copy(d, _) => *d == slot,
+            HirOp::MapValue(_, d, _) => *d == slot,
+            HirOp::ReadRegister(d, _) => *d == slot,
+            _ => false,
+        }
+    }
 }
 
 /// Total HIR ops in a block, recursively counting every nested
@@ -79,7 +118,16 @@ fn count_op(op: &HirOp) -> usize {
     match op {
         HirOp::Loop(b) | HirOp::Block(b) => 1 + count_ops(b),
         HirOp::Match(_, arms) => 1 + arms.iter().map(|(b, _)| count_ops(b)).sum::<usize>(),
-        _ => 1,
+        HirOp::Set(_, _)
+        | HirOp::Copy(_, _)
+        | HirOp::MapValue(_, _, _)
+        | HirOp::Break
+        | HirOp::Continue
+        | HirOp::Stop
+        | HirOp::ReadRegister(_, _)
+        | HirOp::WriteRegister(_, _)
+        | HirOp::Skip
+        | HirOp::Call { .. } => 1,
     }
 }
 

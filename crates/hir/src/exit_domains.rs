@@ -197,13 +197,9 @@ fn analyze_op(
             let d = ctx.get(*src);
             ctx.put(*dst, d);
         }
-        HirOp::Inc(s) => {
-            let d = ctx.get(*s).inc();
-            ctx.put(*s, d);
-        }
-        HirOp::Dec(s) => {
-            let d = ctx.get(*s).dec();
-            ctx.put(*s, d);
+        HirOp::MapValue(src, dst, table) => {
+            let d = ctx.get(*src).map(table);
+            ctx.put(*dst, d);
         }
         HirOp::ReadRegister(dst, _) => ctx.forget(*dst),
         HirOp::WriteRegister(_, _) => {}
@@ -333,8 +329,11 @@ fn collect_mut_block(b: &HirBlock, out: &mut std::collections::HashSet<SlotId>) 
 
 fn collect_mut_op(op: &HirOp, out: &mut std::collections::HashSet<SlotId>) {
     match op {
-        HirOp::Set(s, _) | HirOp::Copy(s, _) | HirOp::Inc(s) | HirOp::Dec(s) => {
+        HirOp::Set(s, _) | HirOp::Copy(s, _) => {
             out.insert(*s);
+        }
+        HirOp::MapValue(_, dst, _) => {
+            out.insert(*dst);
         }
         HirOp::ReadRegister(s, _) => {
             out.insert(*s);

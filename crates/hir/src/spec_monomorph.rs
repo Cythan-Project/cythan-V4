@@ -292,15 +292,10 @@ fn walk_op(
             ctx.put(dst, ctx.get(src));
             out.push(HirOp::Copy(dst, src));
         }
-        HirOp::Inc(s) => {
-            let d = ctx.get(s).inc();
-            ctx.put(s, d);
-            out.push(HirOp::Inc(s));
-        }
-        HirOp::Dec(s) => {
-            let d = ctx.get(s).dec();
-            ctx.put(s, d);
-            out.push(HirOp::Dec(s));
+        HirOp::MapValue(src, dst, table) => {
+            let d = ctx.get(src).map(&table);
+            ctx.put(dst, d);
+            out.push(HirOp::MapValue(src, dst, table));
         }
         HirOp::Match(scrutinee, arms) => {
             let mut new_arms = Vec::with_capacity(arms.len());
@@ -456,8 +451,11 @@ fn slots_mutated(block: &HirBlock) -> HashSet<SlotId> {
 
 fn collect_mutated(op: &HirOp, out: &mut HashSet<SlotId>) {
     match op {
-        HirOp::Set(s, _) | HirOp::Copy(s, _) | HirOp::Inc(s) | HirOp::Dec(s) => {
+        HirOp::Set(s, _) | HirOp::Copy(s, _) => {
             out.insert(*s);
+        }
+        HirOp::MapValue(_, dst, _) => {
+            out.insert(*dst);
         }
         HirOp::ReadRegister(s, _) => {
             out.insert(*s);

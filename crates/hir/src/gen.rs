@@ -1069,12 +1069,14 @@ impl<'a> Generator<'a> {
             self.check_mutable_slot(SlotId(dst_slot.0 + i), sp)?;
         }
 
-        // Native U4 fast path: `+= 1` / `-= 1` are Inc/Dec.
+        // Native U4 fast path: `+= 1` / `-= 1` lower to MapValue with the
+        // canonical inc/dec table. The MIR-to-LIR pass detects this shape
+        // and emits the tight `inc(s)` / `dec(s)` Cythan macros.
         if dst_ty == "U4" {
             if let ast::Expr::Number(1) = value.0 {
                 let op_hir = match op {
-                    ast::CompoundOp::AddAssign => HirOp::Inc(dst_slot),
-                    ast::CompoundOp::SubAssign => HirOp::Dec(dst_slot),
+                    ast::CompoundOp::AddAssign => HirOp::inc(dst_slot),
+                    ast::CompoundOp::SubAssign => HirOp::dec(dst_slot),
                 };
                 block.push(op_hir);
                 return Ok(());

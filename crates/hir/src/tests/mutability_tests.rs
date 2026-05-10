@@ -106,7 +106,7 @@ fn compound_assign_on_mut_local_emits_inc() {
         "run",
     );
     assert!(
-        hir.body.ops.iter().any(|op| matches!(op, HirOp::Inc(_))),
-        "expected Inc for `x += 1`"
+        hir.body.ops.iter().any(|op| matches!(op, HirOp::MapValue(_, _, t) if *t == INC_TABLE)),
+        "expected MapValue(INC) for `x += 1`"
     );
 }

@@ -183,8 +183,8 @@ fn hir_to_mir_converts_basic_ops() {
         ops: vec![
             HirOp::Set(SlotId(0), 5),
             HirOp::Copy(SlotId(1), SlotId(0)),
-            HirOp::Inc(SlotId(1)),
-            HirOp::Dec(SlotId(1)),
+            HirOp::inc(SlotId(1)),
+            HirOp::dec(SlotId(1)),
             HirOp::Stop,
         ],
         result_slot: None,
@@ -192,8 +192,8 @@ fn hir_to_mir_converts_basic_ops() {
     let mir = hir_to_mir(&block).expect("convert");
     assert!(matches!(mir.0[0], Mir::Set(0, 5)));
     assert!(matches!(mir.0[1], Mir::Copy(1, 0)));
-    assert!(matches!(mir.0[2], Mir::Increment(1)));
-    assert!(matches!(mir.0[3], Mir::Decrement(1)));
+    assert!(matches!(mir.0[2], Mir::MapValue(1, 1, mir::INC_TABLE)));
+    assert!(matches!(mir.0[3], Mir::MapValue(1, 1, mir::DEC_TABLE)));
     assert!(matches!(mir.0[4], Mir::Stop));
 }
 

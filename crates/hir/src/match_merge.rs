@@ -296,8 +296,7 @@ fn op_may_write(op: &HirOp, slot: SlotId) -> bool {
     match op {
         HirOp::Set(s, _) => *s == slot,
         HirOp::Copy(dst, _) => *dst == slot,
-        HirOp::Inc(s) => *s == slot,
-        HirOp::Dec(s) => *s == slot,
+        HirOp::MapValue(_, dst, _) => *dst == slot,
         HirOp::ReadRegister(dst, _) => *dst == slot,
         HirOp::Match(_, arms) => arms
             .iter()

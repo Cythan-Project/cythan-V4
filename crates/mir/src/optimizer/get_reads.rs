@@ -24,8 +24,11 @@ impl MirCodeBlock {
                 Mir::Stop => (),
                 Mir::Skip => (),
                 Mir::Set(_, _) => (),
-                Mir::Increment(_) => (),
-                Mir::Decrement(_) => (),
+                Mir::MapValue(src, _, _) => {
+                    // Reads src; if dst != src the dst is purely a write.
+                    // (Inc/Dec have src == dst — both happen.)
+                    muts.insert(*src);
+                }
                 Mir::ReadRegister(_, _) => (),
                 Mir::WriteRegister(_, Either::Left(_)) => (),
                 Mir::Match(a, b) => {

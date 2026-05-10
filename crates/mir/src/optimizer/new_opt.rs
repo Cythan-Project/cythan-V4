@@ -48,11 +48,8 @@ pub fn get_static_vars(cb: &MirCodeBlock) -> HashMap<u32, u8> {
             Mir::Copy(a, _) => {
                 vars.remove(a);
             }
-            Mir::Increment(a) => {
-                vars.remove(a);
-            }
-            Mir::Decrement(a) => {
-                vars.remove(a);
+            Mir::MapValue(_, dst, _) => {
+                vars.remove(dst);
             }
             Mir::If0(_, b, c) => {
                 remove_inner(b, vars, in_rm);
@@ -99,8 +96,14 @@ fn apply_static_vars(cb: MirCodeBlock, vars: &HashMap<u32, u8>) -> MirCodeBlock 
                             Mir::Copy(a, b)
                         }
                     }
-                    Mir::Increment(a) => Mir::Increment(a),
-                    Mir::Decrement(a) => Mir::Decrement(a),
+                    Mir::MapValue(src, dst, table) => {
+                        // Constant-fold when src is a known value.
+                        if let Some(v) = vars.get(&src) {
+                            Mir::Set(dst, table[(*v & 0x0F) as usize])
+                        } else {
+                            Mir::MapValue(src, dst, table)
+                        }
+                    }
                     Mir::If0(a, b, c) => {
                         if let Some(e) = vars.get(&a) {
                             if e == &0 {
@@ -324,17 +327,13 @@ pub fn opt_not_read(mut code: MirCodeBlock) -> MirCodeBlock {
                 wrote.remove(&b);
                 vec![Mir::Copy(a, b)]
             }
-            Mir::Increment(a) => {
-                if wrote.contains(&a) {
+            Mir::MapValue(src, dst, table) => {
+                if wrote.contains(&dst) {
                     return vec![];
                 }
-                vec![Mir::Increment(a)]
-            }
-            Mir::Decrement(a) => {
-                if wrote.contains(&a) {
-                    return vec![];
-                }
-                vec![Mir::Decrement(a)]
+                wrote.insert(dst);
+                wrote.remove(&src);
+                vec![Mir::MapValue(src, dst, table)]
             }
             Mir::If0(a, b, c) => {
                 wrote.clear();
@@ -681,22 +680,16 @@ fn optimize(mir: Mir, context: &mut OptContext) -> Vec<Mir> {
             }
             vec![Mir::Copy(a, b)]
         }
-        Mir::Increment(a) => {
-            if let Some(e) = context.get_value(a) {
-                context.set(a, VariableStatus::Value((e + 1) % 16));
-            } else {
-                context.remove(a);
+        Mir::MapValue(src, dst, table) => {
+            // If src is a known constant we can collapse to a Set.
+            if let Some(v) = context.get_value(src) {
+                let mapped = table[(v & 0x0F) as usize];
+                context.set(dst, VariableStatus::Value(mapped));
+                return vec![Mir::Set(dst, mapped)];
             }
-            vec![Mir::Increment(a)]
-        }
-        Mir::Decrement(a) => {
-            if let Some(e) = context.get_value(a) {
-                context.set(a, VariableStatus::Value(e.wrapping_sub(1) % 16));
-            } else {
-                context.remove(a);
-            }
-
-            vec![Mir::Decrement(a)]
+            // Otherwise: dst loses any prior knowledge.
+            context.remove(dst);
+            vec![Mir::MapValue(src, dst, table)]
         }
         Mir::If0(a, b, c) => match context.get_flatten(a) {
             Some(VariableStatus::Ref(e)) => {
@@ -821,13 +814,8 @@ fn remove_unread(codeblock: MirCodeBlock, reads: &HashSet<u32>) -> MirCodeBlock 
                             return None;
                         }
                     }
-                    Mir::Increment(a) => {
-                        if !reads.contains(a) {
-                            return None;
-                        }
-                    }
-                    Mir::Decrement(a) => {
-                        if !reads.contains(a) {
+                    Mir::MapValue(_, dst, _) => {
+                        if !reads.contains(dst) {
                             return None;
                         }
                     }

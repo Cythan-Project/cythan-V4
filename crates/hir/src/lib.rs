@@ -8,6 +8,7 @@ pub mod inline;
 pub mod interp;
 pub mod ir;
 pub mod match_merge;
+pub mod match_to_mapvalue;
 pub mod monomorph;
 pub mod mut_elide;
 pub mod natives;

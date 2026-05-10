@@ -265,17 +265,11 @@ impl<'g> Scheduler<'g> {
             NodeKind::Const(v) => self.emit(out, Mir::Set(slot, v)),
             NodeKind::Inc(a) => {
                 let src = self.ensure_value(a, out);
-                if src != slot {
-                    self.emit(out, Mir::Copy(slot, src));
-                }
-                self.emit(out, Mir::Increment(slot));
+                self.emit(out, Mir::MapValue(src, slot, mir::INC_TABLE));
             }
             NodeKind::Dec(a) => {
                 let src = self.ensure_value(a, out);
-                if src != slot {
-                    self.emit(out, Mir::Copy(slot, src));
-                }
-                self.emit(out, Mir::Decrement(slot));
+                self.emit(out, Mir::MapValue(src, slot, mir::DEC_TABLE));
             }
             NodeKind::Proj {
                 of,

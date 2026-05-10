@@ -420,7 +420,7 @@ fn translates_loop_with_break() {
     let mut then_arm = HirBlock::new();
     then_arm.push(HirOp::Break);
     let mut else_arm = HirBlock::new();
-    else_arm.push(HirOp::Inc(SlotId(1)));
+    else_arm.push(HirOp::inc(SlotId(1)));
     let mut lbody = HirBlock::new();
     lbody.push(HirOp::Match(
         SlotId(1),
@@ -543,9 +543,9 @@ fn interp_inc_dec() {
     // fn(x) -> U4 { x + 1 - 1 + 1 } => x + 1
     let mut body = HirBlock::new();
     body.push(HirOp::Copy(SlotId(1), SlotId(0)));
-    body.push(HirOp::Inc(SlotId(1)));
-    body.push(HirOp::Dec(SlotId(1)));
-    body.push(HirOp::Inc(SlotId(1)));
+    body.push(HirOp::inc(SlotId(1)));
+    body.push(HirOp::dec(SlotId(1)));
+    body.push(HirOp::inc(SlotId(1)));
     let f = func(sig(1, 1), body);
     let (r, _) = interp(&f, &[3]);
     assert_eq!(r.values, vec![4]);
@@ -586,7 +586,7 @@ fn interp_loop_counts_and_breaks() {
     let mut break_arm = HirBlock::new();
     break_arm.push(HirOp::Break);
     let mut inc_arm = HirBlock::new();
-    inc_arm.push(HirOp::Inc(SlotId(1)));
+    inc_arm.push(HirOp::inc(SlotId(1)));
     let mut lbody = HirBlock::new();
     lbody.push(HirOp::Match(
         SlotId(1),
@@ -644,8 +644,8 @@ fn interp_match_inside_loop_counts_then_returns() {
     let mut break_arm = HirBlock::new();
     break_arm.push(HirOp::Break);
     let mut cont_arm = HirBlock::new();
-    cont_arm.push(HirOp::Inc(SlotId(2))); // count++
-    cont_arm.push(HirOp::Inc(SlotId(1))); // temp++
+    cont_arm.push(HirOp::inc(SlotId(2))); // count++
+    cont_arm.push(HirOp::inc(SlotId(1))); // temp++
     let mut lbody = HirBlock::new();
     lbody.push(HirOp::Match(
         SlotId(1),
@@ -715,9 +715,9 @@ fn schedule_identity() {
 fn schedule_inc_dec() {
     let mut body = HirBlock::new();
     body.push(HirOp::Copy(SlotId(1), SlotId(0)));
-    body.push(HirOp::Inc(SlotId(1)));
-    body.push(HirOp::Inc(SlotId(1)));
-    body.push(HirOp::Dec(SlotId(1)));
+    body.push(HirOp::inc(SlotId(1)));
+    body.push(HirOp::inc(SlotId(1)));
+    body.push(HirOp::dec(SlotId(1)));
     let f = func(sig(1, 1), body);
     let (outs, _) = schedule_and_run(&f, &[3]);
     assert_eq!(outs, vec![4]);
@@ -748,7 +748,7 @@ fn schedule_loop_counts_to_four() {
     let mut break_arm = HirBlock::new();
     break_arm.push(HirOp::Break);
     let mut inc_arm = HirBlock::new();
-    inc_arm.push(HirOp::Inc(SlotId(1)));
+    inc_arm.push(HirOp::inc(SlotId(1)));
     let mut lbody = HirBlock::new();
     lbody.push(HirOp::Match(
         SlotId(1),
@@ -787,7 +787,7 @@ fn schedule_agrees_with_interp_on_synthetic_cases() {
     let mut break_arm = HirBlock::new();
     break_arm.push(HirOp::Break);
     let mut inc_arm = HirBlock::new();
-    inc_arm.push(HirOp::Inc(SlotId(1)));
+    inc_arm.push(HirOp::inc(SlotId(1)));
     let mut lbody = HirBlock::new();
     lbody.push(HirOp::Match(
         SlotId(1),

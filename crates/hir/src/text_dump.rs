@@ -84,11 +84,14 @@ fn dump_op(op: &HirOp, depth: usize, out: &mut String) {
         HirOp::Copy(dst, src) => {
             let _ = writeln!(out, "{} := {}", dst, src);
         }
-        HirOp::Inc(s) => {
-            let _ = writeln!(out, "{}++", s);
-        }
-        HirOp::Dec(s) => {
-            let _ = writeln!(out, "{}--", s);
+        HirOp::MapValue(src, dst, table) => {
+            if *src == *dst && *table == crate::ir::INC_TABLE {
+                let _ = writeln!(out, "{}++", dst);
+            } else if *src == *dst && *table == crate::ir::DEC_TABLE {
+                let _ = writeln!(out, "{}--", dst);
+            } else {
+                let _ = writeln!(out, "{} := map({}, {:?})", dst, src, table);
+            }
         }
         HirOp::Loop(body) => {
             let _ = writeln!(out, "loop {{");

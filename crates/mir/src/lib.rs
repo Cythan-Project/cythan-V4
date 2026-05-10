@@ -7,6 +7,6 @@ mod state;
 
 pub use block::MirCodeBlock;
 pub use interpreter::*;
-pub use mir::Mir;
+pub use mir::{Mir, DEC_TABLE, INC_TABLE};
 pub use optimizer::block_inliner::*;
 pub use state::MirState;

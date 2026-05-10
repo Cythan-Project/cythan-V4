@@ -98,7 +98,10 @@ fn mark_touched_op(op: &HirOp, out: &mut [bool], ic: u32) {
             mark(*dst, out);
             mark(*src, out);
         }
-        HirOp::Inc(s) | HirOp::Dec(s) => mark(*s, out),
+        HirOp::MapValue(src, dst, _) => {
+            mark(*src, out);
+            mark(*dst, out);
+        }
         HirOp::ReadRegister(dst, _) => mark(*dst, out),
         HirOp::WriteRegister(_, Either::Left(_)) => {}
         HirOp::WriteRegister(_, Either::Right(s)) => mark(*s, out),
@@ -360,8 +363,11 @@ fn rewrite_op(
         HirOp::Copy(dst, src) => {
             HirOp::Copy(map_slot(dst, self_remap), map_slot(src, self_remap))
         }
-        HirOp::Inc(s) => HirOp::Inc(map_slot(s, self_remap)),
-        HirOp::Dec(s) => HirOp::Dec(map_slot(s, self_remap)),
+        HirOp::MapValue(src, dst, table) => HirOp::MapValue(
+            map_slot(src, self_remap),
+            map_slot(dst, self_remap),
+            table,
+        ),
         HirOp::ReadRegister(dst, r) => {
             HirOp::ReadRegister(map_slot(dst, self_remap), r)
         }
@@ -508,7 +514,7 @@ mod tests {
             0,
         );
         let body = HirBlock {
-            ops: vec![HirOp::Inc(SlotId(0))],
+            ops: vec![HirOp::inc(SlotId(0))],
             result_slot: None,
         };
         let f = mk_func(sig, body, 2);

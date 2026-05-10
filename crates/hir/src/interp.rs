@@ -209,13 +209,9 @@ impl<'a, C: IoContext> Interpreter<'a, C> {
             HirOp::Copy(dst, src) => {
                 slots[dst.0 as usize] = slots[src.0 as usize];
             }
-            HirOp::Inc(s) => {
-                let cur = slots[s.0 as usize];
-                slots[s.0 as usize] = cur.wrapping_add(1) % 16;
-            }
-            HirOp::Dec(s) => {
-                let cur = slots[s.0 as usize];
-                slots[s.0 as usize] = cur.wrapping_sub(1) % 16;
+            HirOp::MapValue(src, dst, table) => {
+                let v = slots[src.0 as usize] & 0x0F;
+                slots[dst.0 as usize] = table[v as usize];
             }
             HirOp::Loop(body) => loop {
                 match self.exec_block(body, slots)? {

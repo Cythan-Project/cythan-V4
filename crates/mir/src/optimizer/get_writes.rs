@@ -8,10 +8,11 @@ impl MirCodeBlock {
             match mir {
                 Mir::Set(a, _)
                 | Mir::Copy(a, _)
-                | Mir::ReadRegister(a, _)
-                | Mir::Increment(a)
-                | Mir::Decrement(a) => {
+                | Mir::ReadRegister(a, _) => {
                     muts.insert(*a);
+                }
+                Mir::MapValue(_, dst, _) => {
+                    muts.insert(*dst);
                 }
                 Mir::If0(_, a, b) => {
                     a.iter().for_each(|x| inner(x, muts));

@@ -5,13 +5,25 @@ use lir::{AsmValue, CompilableInstruction, Label, LabelType, Number, Var};
 
 use crate::{block::MirCodeBlock, skip_status::SkipStatus, state::MirState};
 
+/// `+= 1` table: input N → (N+1) mod 16.
+pub const INC_TABLE: [u8; 16] =
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 0];
+
+/// `-= 1` table: input N → (N+15) mod 16.
+pub const DEC_TABLE: [u8; 16] =
+    [15, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
+
 #[derive(PartialEq, Clone, Hash, Debug)]
 #[allow(dead_code)]
 pub enum Mir {
     Set(u32, u8),
     Copy(u32, u32),                       // to, from - from isn't mutated
-    Increment(u32),                       // in, in is mutated
-    Decrement(u32),                       // in, in is mutated
+    /// `MapValue(src, dst, table)` — `dst = table[src]`. Replaces
+    /// `Increment` / `Decrement`. The MIR-to-LIR lowering recognizes the
+    /// canonical inc/dec tables (with src == dst) and emits the tight
+    /// `inc(s)` / `dec(s)` LIR instructions; any other shape falls back
+    /// to a flat 16-arm Match-of-Copy.
+    MapValue(u32, u32, [u8; 16]),
     If0(u32, MirCodeBlock, MirCodeBlock), // Jumps to the label if the thing is equals to 0
     Loop(MirCodeBlock),
     Break,
@@ -24,12 +36,29 @@ pub enum Mir {
     Match(u32, Vec<(MirCodeBlock, Vec<u8>)>),
 }
 
+impl Mir {
+    pub fn increment(slot: u32) -> Mir {
+        Mir::MapValue(slot, slot, INC_TABLE)
+    }
+
+    pub fn decrement(slot: u32) -> Mir {
+        Mir::MapValue(slot, slot, DEC_TABLE)
+    }
+}
+
 impl Display for Mir {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Copy(a, b) => write!(f, "v{} = v{}", *a, *b),
-            Self::Increment(a) => write!(f, "v{}++", *a),
-            Self::Decrement(a) => write!(f, "v{}--", *a),
+            Self::MapValue(src, dst, table) => {
+                if *src == *dst && *table == INC_TABLE {
+                    write!(f, "v{}++", *dst)
+                } else if *src == *dst && *table == DEC_TABLE {
+                    write!(f, "v{}--", *dst)
+                } else {
+                    write!(f, "v{} = map(v{}, {:?})", *dst, *src, table)
+                }
+            }
             Self::If0(a, b, c) => {
                 if b.0.is_empty() {
                     write!(
@@ -136,11 +165,9 @@ impl Mir {
                 set.insert(*a);
                 set.insert(*b);
             }
-            Mir::Increment(a) => {
-                set.insert(*a);
-            }
-            Mir::Decrement(a) => {
-                set.insert(*a);
+            Mir::MapValue(src, dst, _) => {
+                set.insert(*src);
+                set.insert(*dst);
             }
             Mir::If0(a, b, c) => {
                 set.insert(*a);
@@ -182,8 +209,31 @@ impl Mir {
                 }
                 state.copy(Var(*a as usize), AsmValue::Var(Var(*b as usize)))
             }
-            Self::Increment(a) => state.inc(Var(*a as usize)),
-            Self::Decrement(a) => state.dec(Var(*a as usize)),
+            Self::MapValue(src, dst, table) => {
+                // Tight bytecode for the canonical inc/dec shapes.
+                if *src == *dst && *table == INC_TABLE {
+                    state.inc(Var(*src as usize));
+                } else if *src == *dst && *table == DEC_TABLE {
+                    state.dec(Var(*src as usize));
+                } else {
+                    // General lookup: group input values by output so a
+                    // table with K distinct outputs lowers to K arms,
+                    // not 16. Saves ≥10× bytecode for boolean-valued
+                    // tables (true/false → 2 arms instead of 16).
+                    let mut groups: std::collections::BTreeMap<u8, Vec<u8>> =
+                        std::collections::BTreeMap::new();
+                    for i in 0u8..=15 {
+                        groups.entry(table[i as usize]).or_default().push(i);
+                    }
+                    let arms: Vec<(MirCodeBlock, Vec<u8>)> = groups
+                        .into_iter()
+                        .map(|(out_v, ins)| {
+                            (MirCodeBlock(vec![Mir::Set(*dst, out_v)]), ins)
+                        })
+                        .collect();
+                    return Mir::Match(*src, arms).to_asm(state);
+                }
+            }
             Self::If0(a, b, c) => {
                 if b == c {
                     return b.to_asm(state);

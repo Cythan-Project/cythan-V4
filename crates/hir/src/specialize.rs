@@ -108,6 +108,18 @@ impl Domain {
         let wrap = (self.0 & 0x0001) << 15;
         Self(shifted | wrap)
     }
+    /// Domain after `MapValue` with `table`: for every value `v` the
+    /// input could be, the output could be `table[v]`. Forms the
+    /// straight bit-set union.
+    pub fn map(self, table: &[u8; 16]) -> Self {
+        let mut out: u16 = 0;
+        for v in 0u8..=15 {
+            if self.0 & (1u16 << v) != 0 {
+                out |= 1u16 << (table[v as usize] & 0x0F);
+            }
+        }
+        Self(out)
+    }
 }
 
 /// Per-slot domain context, threaded flow-sensitively.
@@ -225,15 +237,10 @@ fn specialize_op(
                 out.push(HirOp::Copy(dst, src));
             }
         }
-        HirOp::Inc(slot) => {
-            let dom = ctx.get(slot).inc();
-            ctx.put(slot, dom);
-            out.push(HirOp::Inc(slot));
-        }
-        HirOp::Dec(slot) => {
-            let dom = ctx.get(slot).dec();
-            ctx.put(slot, dom);
-            out.push(HirOp::Dec(slot));
+        HirOp::MapValue(src, dst, table) => {
+            let dom = ctx.get(src).map(&table);
+            ctx.put(dst, dom);
+            out.push(HirOp::MapValue(src, dst, table));
         }
         HirOp::Match(scrutinee, arms) => {
             let scrut_dom = ctx.get(scrutinee);
@@ -465,8 +472,11 @@ fn slots_mutated(block: &HirBlock) -> std::collections::HashSet<SlotId> {
 
 fn collect_mutated(op: &HirOp, out: &mut std::collections::HashSet<SlotId>) {
     match op {
-        HirOp::Set(s, _) | HirOp::Copy(s, _) | HirOp::Inc(s) | HirOp::Dec(s) => {
+        HirOp::Set(s, _) | HirOp::Copy(s, _) => {
             out.insert(*s);
+        }
+        HirOp::MapValue(_, dst, _) => {
+            out.insert(*dst);
         }
         HirOp::ReadRegister(s, _) => {
             out.insert(*s);

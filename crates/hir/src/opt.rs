@@ -75,9 +75,9 @@ fn gather_consts(block: &HirBlock) -> HashMap<SlotId, u8> {
                     candidate.remove(dst);
                     poisoned.insert(*dst);
                 }
-                HirOp::Inc(s) | HirOp::Dec(s) => {
-                    candidate.remove(s);
-                    poisoned.insert(*s);
+                HirOp::MapValue(_src, dst, _) => {
+                    candidate.remove(dst);
+                    poisoned.insert(*dst);
                 }
                 HirOp::ReadRegister(s, _) => {
                     candidate.remove(s);
@@ -263,19 +263,13 @@ fn process_op_backward(
                 Some(HirOp::Copy(dst, src))
             }
         }
-        HirOp::Inc(s) => {
-            if !live.contains(&s) {
+        HirOp::MapValue(src, dst, table) => {
+            if !live.contains(&dst) {
                 None
             } else {
-                // Read-modify-write — slot stays live.
-                Some(HirOp::Inc(s))
-            }
-        }
-        HirOp::Dec(s) => {
-            if !live.contains(&s) {
-                None
-            } else {
-                Some(HirOp::Dec(s))
+                live.remove(&dst);
+                live.insert(src);
+                Some(HirOp::MapValue(src, dst, table))
             }
         }
         HirOp::ReadRegister(dst, r) => {
@@ -406,8 +400,8 @@ fn collect_read(op: &HirOp, out: &mut HashSet<SlotId>) {
         HirOp::Copy(_, src) => {
             out.insert(*src);
         }
-        HirOp::Inc(s) | HirOp::Dec(s) => {
-            out.insert(*s);
+        HirOp::MapValue(src, _, _) => {
+            out.insert(*src);
         }
         HirOp::Match(s, arms) => {
             out.insert(*s);
@@ -497,7 +491,7 @@ fn op_reads_or_barrier(op: &HirOp, slot: SlotId) -> bool {
     match op {
         HirOp::Set(_, _) => false,
         HirOp::Copy(dst, src) => *src == slot || *dst == slot_next_to(slot, dst),
-        HirOp::Inc(s) | HirOp::Dec(s) => *s == slot,
+        HirOp::MapValue(src, _, _) => *src == slot,
         // Recurse into arms: Match is only a barrier if the slot
         // is actually read (as scrutinee or inside any arm body).
         HirOp::Match(s, arms) => {
@@ -539,7 +533,7 @@ fn op_writes_same(op: &HirOp, slot: SlotId) -> bool {
     match op {
         HirOp::Set(s, _) => *s == slot,
         HirOp::Copy(dst, _) => *dst == slot,
-        HirOp::Inc(s) | HirOp::Dec(s) => *s == slot,
+        HirOp::MapValue(_, dst, _) => *dst == slot,
         HirOp::ReadRegister(s, _) => *s == slot,
         HirOp::Call { ret, .. } => ret.contains(&slot),
         _ => false,
