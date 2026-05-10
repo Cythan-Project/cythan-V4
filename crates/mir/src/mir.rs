@@ -202,24 +202,35 @@ impl Mir {
                 state.copy(Var(*a as usize), AsmValue::Var(Var(*b as usize)))
             }
             Self::MapValue(src, dst, table) => {
-                // Group input values by output so a table with K distinct
-                // outputs lowers to K Match arms, not 16. Boolean tables
-                // (true/false) collapse to 2 arms; full-permutation
-                // tables (e.g. inc/dec) keep 16. No specialised "inc"
-                // bytecode any more — it's the same Match machinery as
-                // any other lookup.
-                let mut groups: std::collections::BTreeMap<u8, Vec<u8>> =
-                    std::collections::BTreeMap::new();
-                for i in 0u8..=15 {
-                    groups.entry(table[i as usize]).or_default().push(i);
+                // `Lir::Map` only knows the tight inc/dec bytecode
+                // macros (`+1` / `-1` cycles). Any other table —
+                // e.g. boolean lookups from `Eq`, range tables from
+                // `Ord` — falls back to the standard Match-of-Set
+                // path, where each arm writes one output constant
+                // to `dst`. Group inputs by output so a 2-output
+                // boolean table emits 2 arms, not 16.
+                if *table == INC_TABLE || *table == DEC_TABLE {
+                    // Lir::Map handles `src != dst` by prefixing a
+                    // Copy, so we don't need the slots to match here.
+                    state.instructions.push(CompilableInstruction::Map(
+                        Var(*src as usize),
+                        Var(*dst as usize),
+                        *table,
+                    ));
+                } else {
+                    let mut groups: std::collections::BTreeMap<u8, Vec<u8>> =
+                        std::collections::BTreeMap::new();
+                    for i in 0u8..=15 {
+                        groups.entry(table[i as usize]).or_default().push(i);
+                    }
+                    let arms: Vec<(MirCodeBlock, Vec<u8>)> = groups
+                        .into_iter()
+                        .map(|(out_v, ins)| {
+                            (MirCodeBlock(vec![Mir::Set(*dst, out_v)]), ins)
+                        })
+                        .collect();
+                    return Mir::Match(*src, arms).to_asm(state);
                 }
-                let arms: Vec<(MirCodeBlock, Vec<u8>)> = groups
-                    .into_iter()
-                    .map(|(out_v, ins)| {
-                        (MirCodeBlock(vec![Mir::Set(*dst, out_v)]), ins)
-                    })
-                    .collect();
-                return Mir::Match(*src, arms).to_asm(state);
             }
             Self::If0(a, b, c) => {
                 if b == c {

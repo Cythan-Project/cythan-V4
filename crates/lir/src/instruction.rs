@@ -18,6 +18,11 @@ pub enum CompilableInstruction {
     If0(Var, Label),     // Jumps to the label if the thing is equals to 0
     Stop,
     Match(Var, [Option<Label>; 16]),
+    /// `dst = table[src]`. Bytecode-level lookup primitive. For the
+    /// canonical +1 / -1 tables this emits the tight `inc(src)` /
+    /// `dec(src)` macros (~18 cells); for arbitrary tables it falls
+    /// back to a 16-arm `Match` (~37 cells, grouped by output).
+    Map(Var, Var, [u8; 16]),
     ReadRegister(Var, Number),
     WriteRegister(Number, AsmValue),
 }
@@ -95,6 +100,36 @@ impl CompilableInstruction {
                 Self::check_compile_var(a, template, ctx);
                 template.add_code(Cow::Owned(format!("if_0({} {})", a, b)))
             }
+            Self::Map(src, dst, table) => {
+                // Only the +1 / -1 cycles reach Lir::Map — the
+                // MIR-to-LIR pass routes every other shape through
+                // the standard `Mir::Match` emission. Pick the
+                // matching macro and emit a single `inc(dst)` /
+                // `dec(dst)` line (≈18 cells). If src ≠ dst the
+                // macros only know how to read+write the same
+                // cell, so prefix with a Copy.
+                const INC: [u8; 16] =
+                    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 0];
+                const DEC: [u8; 16] =
+                    [15, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
+                Self::check_compile_var(dst, template, ctx);
+                if src.0 != dst.0 {
+                    Self::check_compile_var(src, template, ctx);
+                    template.add_code(Cow::Owned(format!("{} {}", src, dst)));
+                }
+                if *table == INC {
+                    template.add_code(Cow::Owned(format!("inc({})", dst)));
+                } else if *table == DEC {
+                    template.add_code(Cow::Owned(format!("dec({})", dst)));
+                } else {
+                    // Defensive — the MIR lowering pass should never
+                    // hand a non-canonical table to Lir::Map.
+                    panic!(
+                        "Lir::Map only supports inc/dec tables; got {:?}",
+                        table
+                    );
+                }
+            }
             Self::Match(a, b) => {
                 let k = ctx.counter.count();
                 Self::check_compile_var(a, template, ctx);
@@ -147,6 +182,9 @@ impl Display for CompilableInstruction {
                     AsmValue::Number(a) => a.0.to_string(),
                 }
             ),
+            Self::Map(src, dst, table) => {
+                write!(f, "${} = map(${}, {:?})", dst.0, src.0, table)
+            }
             Self::Jump(a) => write!(f, "jmp {}", a),
             Self::Label(a) => write!(f, "{}", a),
             Self::If0(a, b) => write!(f, "if ${} {}", a.0, b),

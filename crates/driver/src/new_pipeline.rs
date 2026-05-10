@@ -623,6 +623,16 @@ pub fn run_with_backend(
 ) -> CapturedRun {
     match backend {
         Backend::Mir => run_mir_with_input_limited(block, input, mem_cells, step_limit),
+        // `step_limit == 0` switches the bytecode path to Brent's
+        // cycle detection: terminates as soon as the deterministic
+        // state repeats, with no arbitrary ceiling. Tests use this
+        // to fail fast on a buggy non-terminating program without
+        // hand-tuning a step budget.
+        Backend::Lir | Backend::Cythan if step_limit == 0 => {
+            let lir = mir_to_lir(block);
+            let bytecode = lir_to_bytecode(lir);
+            run_bytecode_until_done_raw(&bytecode, input)
+        }
         Backend::Lir | Backend::Cythan => run_bytecode_with_input(block, input, step_limit),
     }
 }
@@ -672,6 +682,29 @@ pub fn run_bytecode_with_input_raw(
                 std::panic::resume_unwind(panic_payload);
             }
         }
+    }
+}
+
+/// Run bytecode under cycle detection. Returns `aborted_by_limit =
+/// true` when Brent's algorithm catches a deterministic cycle —
+/// no more arbitrary step ceilings to tune.
+pub fn run_bytecode_until_done_raw(
+    bytecode: &[usize],
+    input: &str,
+) -> CapturedRun {
+    use crate::cycle_runner::{run_bin_until_done, RunOutcome};
+    let ctx = TestContext::new(input);
+    let (outcome, ctx_mutex) = run_bin_until_done(bytecode, ctx);
+    let ctx = ctx_mutex.lock().unwrap();
+    let (instr_count, aborted_by_limit) = match outcome {
+        RunOutcome::Halted { steps } => (steps, false),
+        RunOutcome::Cycle { steps, .. } => (steps, true),
+    };
+    CapturedRun {
+        output: ctx.as_str().into_owned(),
+        remaining_input: ctx.inputs.iter().map(|b| *b as char).collect(),
+        instr_count,
+        aborted_by_limit,
     }
 }
 
