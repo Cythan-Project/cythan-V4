@@ -334,9 +334,22 @@ pub fn expr_parser() -> impl Parser<Token, Spanned<Expr>, Error = PErr> + Clone 
         // for the next combinator to consume.
         let pat_variant_name =
             choice((type_name_tok(), ident_tok())).map_with_span(|s, sp| (s, sp));
-        let pattern = choice((
+        // A single (atom) pattern: wildcard, integer / range, or
+        // type-qualified variant. Alternation `p1 | p2 | ...` is layered on
+        // top by the outer `pattern` parser.
+        let number_pat = select! { Token::Number(n) => n }
+            .map_with_span(|n, sp| (n as u8, sp));
+        let int_or_range_pat = number_pat
+            .clone()
+            .then(just(Token::DotDotEq).ignore_then(number_pat.clone()).or_not())
+            .map_with_span(|(start, end), sp| match end {
+                Some((e, _)) => (Pattern::Range(start.0, e), sp),
+                None => (Pattern::Integer(start.0), sp),
+            });
+        let pattern_atom = choice((
             just(Token::Underscore)
                 .map_with_span(|_, sp| (Pattern::Wildcard, sp)),
+            int_or_range_pat,
             bare_type_parser()
                 .then_ignore(just(Token::PathSep))
                 .then(pat_variant_name)
@@ -357,6 +370,19 @@ pub fn expr_parser() -> impl Parser<Token, Spanned<Expr>, Error = PErr> + Clone 
                     )
                 }),
         ));
+        // Alternation: collapse `p` (single) vs `p1 | p2 | ...` (Or).
+        let pattern = pattern_atom
+            .clone()
+            .then(just(Token::Pipe).ignore_then(pattern_atom).repeated())
+            .map_with_span(|(first, rest), sp| {
+                if rest.is_empty() {
+                    first
+                } else {
+                    let mut all = vec![first];
+                    all.extend(rest);
+                    (Pattern::Or(all), sp)
+                }
+            });
 
         // Control flow expressions — parsed as atoms.
         //

@@ -353,6 +353,9 @@ impl StripSpans for Pattern {
                 variant.strip_spans();
                 binding.strip_spans();
             }
+            Pattern::Integer(_) => {}
+            Pattern::Range(_, _) => {}
+            Pattern::Or(ps) => ps.strip_spans(),
             Pattern::Wildcard => {}
         }
     }

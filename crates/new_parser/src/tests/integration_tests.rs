@@ -129,8 +129,9 @@ fn test_parse_u8() {
     let ext = find_extension(&items, "U8");
     let names = method_names(ext);
     for expected in [
-        "new", "zero", "inc", "dec", "add", "sub", "fromU4", "fromU4AsNumber",
-        "input", "print", "equals", "equalsZero", "printDec", "debug",
+        "new", "zero", "carry_add", "borrow_sub", "add", "sub",
+        "fromU4", "fromU4AsNumber", "input", "print", "equals",
+        "equalsZero", "printDec", "debug",
     ] {
         assert!(names.iter().any(|n| n == expected), "missing {}", expected);
     }

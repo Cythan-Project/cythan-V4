@@ -12,42 +12,153 @@ extension U8 {
         Self { lower: 0, higher: 0 }
     }
 
-    // Single-step increment with carry. Used internally by add.
-    fn inc(mut self) {
-        self.lower += 1;
-        if self.lower == 0 {
-            self.higher += 1;
+    // U8 = (higher, lower) U4 pair. add/sub combine a U4 add/sub on each
+    // half with a 1-bit carry/borrow lookup so the whole op is constant
+    // time — no outer loop counting `other` down to zero.
+    // Returns 1 if a + b overflows past 15, else 0. Pure lookup.
+    fn carry_add(U4 a, U4 b): U4 {
+        match a {
+            0 => 0,
+            1 => match b {
+                15 => 1,
+                _ => 0,
+            },
+            2 => match b {
+                14..=15 => 1,
+                _ => 0,
+            },
+            3 => match b {
+                13..=15 => 1,
+                _ => 0,
+            },
+            4 => match b {
+                12..=15 => 1,
+                _ => 0,
+            },
+            5 => match b {
+                11..=15 => 1,
+                _ => 0,
+            },
+            6 => match b {
+                10..=15 => 1,
+                _ => 0,
+            },
+            7 => match b {
+                9..=15 => 1,
+                _ => 0,
+            },
+            8 => match b {
+                8..=15 => 1,
+                _ => 0,
+            },
+            9 => match b {
+                7..=15 => 1,
+                _ => 0,
+            },
+            10 => match b {
+                6..=15 => 1,
+                _ => 0,
+            },
+            11 => match b {
+                5..=15 => 1,
+                _ => 0,
+            },
+            12 => match b {
+                4..=15 => 1,
+                _ => 0,
+            },
+            13 => match b {
+                3..=15 => 1,
+                _ => 0,
+            },
+            14 => match b {
+                2..=15 => 1,
+                _ => 0,
+            },
+            15 => match b {
+                1..=15 => 1,
+                _ => 0,
+            },
         }
     }
 
-    // Single-step decrement with borrow. Used internally by sub.
-    fn dec(mut self) {
-        if self.lower == 0 {
-            self.higher -= 1;
+    // Returns 1 if subtracting b from a borrows (b > a), else 0.
+    fn borrow_sub(U4 a, U4 b): U4 {
+        match a {
+            0 => match b {
+                1..=15 => 1,
+                _ => 0,
+            },
+            1 => match b {
+                2..=15 => 1,
+                _ => 0,
+            },
+            2 => match b {
+                3..=15 => 1,
+                _ => 0,
+            },
+            3 => match b {
+                4..=15 => 1,
+                _ => 0,
+            },
+            4 => match b {
+                5..=15 => 1,
+                _ => 0,
+            },
+            5 => match b {
+                6..=15 => 1,
+                _ => 0,
+            },
+            6 => match b {
+                7..=15 => 1,
+                _ => 0,
+            },
+            7 => match b {
+                8..=15 => 1,
+                _ => 0,
+            },
+            8 => match b {
+                9..=15 => 1,
+                _ => 0,
+            },
+            9 => match b {
+                10..=15 => 1,
+                _ => 0,
+            },
+            10 => match b {
+                11..=15 => 1,
+                _ => 0,
+            },
+            11 => match b {
+                12..=15 => 1,
+                _ => 0,
+            },
+            12 => match b {
+                13..=15 => 1,
+                _ => 0,
+            },
+            13 => match b {
+                14..=15 => 1,
+                _ => 0,
+            },
+            14 => match b {
+                15 => 1,
+                _ => 0,
+            },
+            15 => 0,
         }
-        self.lower -= 1;
     }
 
     fn add(mut self, Self other) {
-        mut Self u = other;
-        loop {
-            if u == 0 {
-                break;
-            }
-            self.inc();
-            u.dec();
-        }
+        U4 carry = U8::carry_add(self.lower, other.lower);
+        self.lower = self.lower + other.lower;
+        self.higher = self.higher + other.higher + carry;
     }
 
     fn sub(mut self, Self other) {
-        mut Self u = other;
-        loop {
-            if u == 0 {
-                break;
-            }
-            self.dec();
-            u.dec();
-        }
+        U4 borrow = U8::borrow_sub(self.lower, other.lower);
+        self.lower = self.lower - other.lower;
+        self.higher = self.higher - other.higher - borrow;
     }
 
     fn fromU4(U4 a): Self {

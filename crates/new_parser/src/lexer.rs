@@ -76,6 +76,7 @@ pub fn lexer() -> impl Parser<char, Vec<(Token, Span)>, Error = Simple<char>> {
         just("-=").to(Token::MinusAssign),
         just("&&").to(Token::AndAnd),
         just("||").to(Token::OrOr),
+        just("..=").to(Token::DotDotEq),
     ));
     let single_op = choice((
         just('.').to(Token::Dot),
@@ -94,6 +95,7 @@ pub fn lexer() -> impl Parser<char, Vec<(Token, Span)>, Error = Simple<char>> {
         just('}').to(Token::RBrace),
         just('[').to(Token::LBracket),
         just(']').to(Token::RBracket),
+        just('|').to(Token::Pipe),
     ));
     let op = multi_op.or(single_op);
 

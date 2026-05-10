@@ -258,6 +258,14 @@ pub enum Pattern {
         variant: Spanned<String>,
         binding: Option<Spanned<PatternBinding>>,
     },
+    /// `0`, `1`, ..., a literal numeric pattern. Used for matching on
+    /// raw cell-sized values (U4, Bool) against constant discriminants.
+    Integer(u8),
+    /// `start..=end` (inclusive) numeric range.
+    Range(u8, u8),
+    /// `p1 | p2 | ...` — alternation. Inner patterns must be numeric
+    /// (Integer / Range / nested Or); flattened in HIR-gen.
+    Or(Vec<Spanned<Pattern>>),
     Wildcard,
 }
 

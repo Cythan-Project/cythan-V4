@@ -63,6 +63,8 @@ pub enum Token {
     RBrace,
     LBracket,
     RBracket,
+    DotDotEq,
+    Pipe,
 }
 
 impl fmt::Display for Token {
@@ -125,6 +127,8 @@ impl fmt::Display for Token {
             Token::RBrace => write!(f, "}}"),
             Token::LBracket => write!(f, "["),
             Token::RBracket => write!(f, "]"),
+            Token::DotDotEq => write!(f, "..="),
+            Token::Pipe => write!(f, "|"),
         }
     }
 }

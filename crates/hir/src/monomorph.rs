@@ -370,6 +370,13 @@ fn subst_pattern(
             variant: variant.clone(),
             binding: binding.clone(),
         },
+        ast::Pattern::Integer(n) => ast::Pattern::Integer(*n),
+        ast::Pattern::Range(a, b) => ast::Pattern::Range(*a, *b),
+        ast::Pattern::Or(ps) => ast::Pattern::Or(
+            ps.iter()
+                .map(|(p, sp)| (subst_pattern(p, bindings), sp.clone()))
+                .collect(),
+        ),
         ast::Pattern::Wildcard => ast::Pattern::Wildcard,
     }
 }

@@ -1805,12 +1805,19 @@ impl<'a> Generator<'a> {
         // Determine scrutinee type (name + concrete template args).
         let scrut_ty = self.infer_expr_type(&scrutinee.0, &scrutinee.1)?;
         let resolved = self.resolve_ty_name(&scrut_ty);
+
         let info = self.reg.get_type(&resolved).ok_or_else(|| {
             HirError::at(
                 format!("unknown scrutinee type `{}`", resolved),
                 sp.clone(),
             )
         })?;
+
+        // Numeric-scrutinee fast path: any non-enum 1-cell scrutinee
+        // (e.g. U4 / Bool) lowers as a direct Match on the cell value.
+        if !matches!(info.kind, typer::TypeKind::Enum(_)) {
+            return self.gen_int_match(scrutinee, arms, sp, &resolved, dst, block);
+        }
         // For a generic enum, resolve the instantiated layout; fetch the
         // scrutinee's template args from its binding (via `concrete_type_of`).
         // Also derive the variants' payload AST types so pattern bindings
@@ -2001,12 +2008,84 @@ impl<'a> Generator<'a> {
                         .map(|d| d as u8)
                         .collect()
                 }
+                ast::Pattern::Integer(_)
+                | ast::Pattern::Range(_, _)
+                | ast::Pattern::Or(_) => unreachable!(
+                    "numeric patterns are routed through gen_int_match"
+                ),
             };
             self.gen_expr_into(&arm.body.0, &arm.body.1, dst, &mut ab)?;
             out_arms.push((ab, discr_values));
         }
 
         block.push(HirOp::Match(discr_slot, out_arms));
+        Ok(())
+    }
+
+    /// Numeric `match`: scrutinee is a 1-cell value (U4 / Bool) and arms are
+    /// integer literals plus an optional wildcard. Lowers to a single
+    /// `HirOp::Match` whose discriminant slot is the scrutinee cell, with one
+    /// arm per integer pattern (single-value vec) and a default arm covering
+    /// every cell value (0..=15) not listed.
+    fn gen_int_match(
+        &mut self,
+        scrutinee: &ast::Spanned<ast::Expr>,
+        arms: &[ast::MatchArm],
+        sp: &new_parser::Span,
+        resolved: &str,
+        dst: Option<SlotId>,
+        block: &mut HirBlock,
+    ) -> Result<(), HirError> {
+        let size = self.type_size(resolved).unwrap_or(1);
+        if size != 1 {
+            return Err(HirError::at(
+                format!(
+                    "match on `{}` is unsupported: scrutinee must be an enum \
+                     or a 1-cell numeric type ({} is {} cells)",
+                    resolved, resolved, size
+                ),
+                sp.clone(),
+            ));
+        }
+        // Reject mixing integer and variant patterns.
+        for arm in arms {
+            if matches!(arm.pattern.0, ast::Pattern::Variant { .. }) {
+                return Err(HirError::at(
+                    "cannot mix variant and integer patterns in one match"
+                        .to_string(),
+                    arm.pattern.1.clone(),
+                ));
+            }
+        }
+        let scrut_slot = self.alloc_temp(resolved, 1);
+        self.gen_expr_into(&scrutinee.0, &scrutinee.1, Some(scrut_slot), block)?;
+
+        // Pre-collect explicit values across every non-wildcard arm so the
+        // wildcard can mop up only what wasn't matched.
+        let mut explicit: std::collections::HashSet<u8> =
+            std::collections::HashSet::new();
+        for arm in arms {
+            collect_pattern_values(&arm.pattern.0, &arm.pattern.1, &mut explicit)?;
+        }
+
+        let mut out_arms: Vec<(HirBlock, Vec<u8>)> = Vec::new();
+        for arm in arms {
+            let mut ab = HirBlock::new();
+            ab.result_slot = dst;
+            let values: Vec<u8> = if matches!(arm.pattern.0, ast::Pattern::Wildcard)
+            {
+                (0u8..=15).filter(|d| !explicit.contains(d)).collect()
+            } else {
+                let mut set = std::collections::HashSet::new();
+                collect_pattern_values(&arm.pattern.0, &arm.pattern.1, &mut set)?;
+                let mut v: Vec<u8> = set.into_iter().collect();
+                v.sort_unstable();
+                v
+            };
+            self.gen_expr_into(&arm.body.0, &arm.body.1, dst, &mut ab)?;
+            out_arms.push((ab, values));
+        }
+        block.push(HirOp::Match(scrut_slot, out_arms));
         Ok(())
     }
 
@@ -3724,6 +3803,58 @@ impl<'a> Generator<'a> {
 }
 
 // ---- free helpers ---------------------------------------------------------
+
+/// Walk a numeric `Pattern` (Integer / Range / Or, or Wildcard skipped) and
+/// gather every cell value (0..=15) it covers into `out`. Errors on
+/// out-of-range values, an inverted range, or a Variant pattern in numeric
+/// context.
+fn collect_pattern_values(
+    p: &ast::Pattern,
+    sp: &new_parser::Span,
+    out: &mut std::collections::HashSet<u8>,
+) -> Result<(), HirError> {
+    match p {
+        ast::Pattern::Integer(n) => {
+            if *n > 15 {
+                return Err(HirError::at(
+                    format!("integer pattern `{}` out of range 0..=15", n),
+                    sp.clone(),
+                ));
+            }
+            out.insert(*n);
+        }
+        ast::Pattern::Range(a, b) => {
+            if *a > 15 || *b > 15 {
+                return Err(HirError::at(
+                    format!("range pattern `{}..={}` out of range 0..=15", a, b),
+                    sp.clone(),
+                ));
+            }
+            if a > b {
+                return Err(HirError::at(
+                    format!("range pattern `{}..={}` is empty (start > end)", a, b),
+                    sp.clone(),
+                ));
+            }
+            for v in *a..=*b {
+                out.insert(v);
+            }
+        }
+        ast::Pattern::Or(ps) => {
+            for (sub, sub_sp) in ps {
+                collect_pattern_values(sub, sub_sp, out)?;
+            }
+        }
+        ast::Pattern::Wildcard => {}
+        ast::Pattern::Variant { .. } => {
+            return Err(HirError::at(
+                "variant pattern cannot appear in a numeric match".to_string(),
+                sp.clone(),
+            ));
+        }
+    }
+    Ok(())
+}
 
 fn clamp_u8(n: i64, sp: &new_parser::Span) -> Result<u8, HirError> {
     if !(0..=255).contains(&n) {
