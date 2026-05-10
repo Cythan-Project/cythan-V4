@@ -101,34 +101,33 @@ impl CompilableInstruction {
                 template.add_code(Cow::Owned(format!("if_0({} {})", a, b)))
             }
             Self::Map(src, dst, table) => {
-                // Only the +1 / -1 cycles reach Lir::Map — the
-                // MIR-to-LIR pass routes every other shape through
-                // the standard `Mir::Match` emission. Pick the
-                // matching macro and emit a single `inc(dst)` /
-                // `dec(dst)` line (≈18 cells). If src ≠ dst the
-                // macros only know how to read+write the same
-                // cell, so prefix with a Copy.
-                const INC: [u8; 16] =
-                    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 0];
-                const DEC: [u8; 16] =
-                    [15, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
+                // Tight 18-cell emission for any 1-cell→1-cell
+                // lookup table. Generalises the inc/dec macros
+                // (which were special-cased ±1 cycles) by writing
+                // each output value directly to the cell whose
+                // address equals its input — then a final indirect
+                // copy through `'test` reads the slot off in O(1).
+                //
+                // Per-input `(value, target_cell)` pair:
+                //   * value  = `'#T[X]`, which the cythan_compiler
+                //              substitutes with `T[X]` (or 16 when
+                //              `T[X] == 0`, since `'#0` is defined
+                //              as 16 in the program header).
+                //   * target = `X`, with `X == 0` mapped to cell 16
+                //              so the cell-0 PC isn't clobbered.
                 Self::check_compile_var(dst, template, ctx);
                 if src.0 != dst.0 {
                     Self::check_compile_var(src, template, ctx);
                     template.add_code(Cow::Owned(format!("{} {}", src, dst)));
                 }
-                if *table == INC {
-                    template.add_code(Cow::Owned(format!("inc({})", dst)));
-                } else if *table == DEC {
-                    template.add_code(Cow::Owned(format!("dec({})", dst)));
-                } else {
-                    // Defensive — the MIR lowering pass should never
-                    // hand a non-canonical table to Lir::Map.
-                    panic!(
-                        "Lir::Map only supports inc/dec tables; got {:?}",
-                        table
-                    );
+                let k = ctx.counter.count();
+                let mut body = format!("{} 'test_map_{k}", dst);
+                for x in 0u8..=15 {
+                    let target = if x == 0 { 16 } else { x as usize };
+                    body.push_str(&format!("\n'#{} {}", table[x as usize], target));
                 }
+                body.push_str(&format!("\n'test_map_{k}:earasable {}", dst));
+                template.add_code(Cow::Owned(body));
             }
             Self::Match(a, b) => {
                 let k = ctx.counter.count();

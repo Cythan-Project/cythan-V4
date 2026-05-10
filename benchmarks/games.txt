@@ -2,8 +2,8 @@ cythan-V4 benchmark report — Cythan VM backend
 
 game       scenario                       vm_steps  out_bytes  bytecode_words
 ----       --------                       --------  ---------  --------------
-chess      fool_mate_4158                   130762        395           33828
-morpion    cats_game_123547698               33581        130           32770
-morpion    diagonal_o_wins_1234567           26167        103           32770
-pendu      lose_hhhhhh                       36666        490           62568
-pendu      win_gramire                       44879        186           62568
+chess      fool_mate_4158                   123556        395           29577
+morpion    cats_game_123547698               32603        130           21134
+morpion    diagonal_o_wins_1234567           25396        103           21134
+pendu      lose_hhhhhh                       36176        490           49650
+pendu      win_gramire                       44225        186           49650

@@ -245,6 +245,50 @@ mod tests {
         assert_eq!(ctx.lock().unwrap().print, vec![6]);
     }
 
+    /// `MapValue` on `src == 0` — exercises the cell-16
+    /// indirection path the macro uses (cell-0 holds the PC, so
+    /// input 0 is rerouted to cell 16). Easy to break when
+    /// generalising the inc/dec template.
+    #[test]
+    fn map_value_zero_input_uses_cell_16() {
+        let mut table = [0u8; 16];
+        table[0] = 11;
+        let bytecode = bytecode_of(MirCodeBlock(vec![
+            Mir::Set(20, 0),
+            Mir::MapValue(20, 21, table),
+            Mir::Set(22, 0),
+            Mir::WriteRegister(1, Either::Right(22)),
+            Mir::WriteRegister(2, Either::Right(21)),
+            Mir::WriteRegister(0, Either::Left(1)),
+            Mir::Stop,
+        ]));
+        let (outcome, ctx) = run_bin_until_done(&bytecode, TestContext::new(""));
+        assert!(matches!(outcome, RunOutcome::Halted { .. }));
+        assert_eq!(ctx.lock().unwrap().print, vec![11]);
+    }
+
+    /// Output of zero (`T[X] == 0`) — exercises the `'#0 = 16`
+    /// label substitution. If the emitter writes literal `0`
+    /// instead of `'#0`, dispatch quietly clobbers cell 0 (the
+    /// PC).
+    #[test]
+    fn map_value_zero_output_uses_pound_zero_label() {
+        let mut table = [5u8; 16];
+        table[3] = 0;
+        let bytecode = bytecode_of(MirCodeBlock(vec![
+            Mir::Set(20, 3),
+            Mir::MapValue(20, 21, table),
+            Mir::Set(22, 0),
+            Mir::WriteRegister(1, Either::Right(22)),
+            Mir::WriteRegister(2, Either::Right(21)),
+            Mir::WriteRegister(0, Either::Left(1)),
+            Mir::Stop,
+        ]));
+        let (outcome, ctx) = run_bin_until_done(&bytecode, TestContext::new(""));
+        assert!(matches!(outcome, RunOutcome::Halted { .. }));
+        assert_eq!(ctx.lock().unwrap().print, vec![0]);
+    }
+
     /// `MapValue` with a non-canonical 2-output (boolean-shaped)
     /// table — exercises the fall-back Match-of-Set bytecode
     /// emission. Catches bugs there before whole-program tests
