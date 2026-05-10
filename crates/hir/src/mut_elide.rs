@@ -367,7 +367,7 @@ mod tests {
     fn keeps_mut_when_body_writes() {
         let sig = mk_sig(vec![mk_slot("a", 0, 1, true)], 0);
         let body = HirBlock {
-            ops: vec![HirOp::inc(SlotId(0))],
+            ops: vec![HirOp::MapValue(SlotId(0), SlotId(0), INC_TABLE)],
             result_slot: None,
         };
         let f = mk_func(sig, body, 1, "f");
@@ -420,7 +420,7 @@ mod tests {
         // f(b: &mut U4) { g(b) }  — b is transitively mutated.
         let g_sig = mk_sig(vec![mk_slot("a", 0, 1, true)], 0);
         let g_body = HirBlock {
-            ops: vec![HirOp::inc(SlotId(0))],
+            ops: vec![HirOp::MapValue(SlotId(0), SlotId(0), INC_TABLE)],
             result_slot: None,
         };
         let g = mk_func(g_sig, g_body, 1, "g");
@@ -512,7 +512,7 @@ mod tests {
         let sig = mk_sig(vec![mk_slot("s", 0, 3, true)], 0);
         // Body writes cell 1 of the param → keep mut.
         let body = HirBlock {
-            ops: vec![HirOp::inc(SlotId(1))],
+            ops: vec![HirOp::MapValue(SlotId(1), SlotId(1), INC_TABLE)],
             result_slot: None,
         };
         let f = mk_func(sig, body, 3, "f");

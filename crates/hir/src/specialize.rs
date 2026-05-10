@@ -95,19 +95,6 @@ impl Domain {
     pub fn is_subset_of(self, other: Self) -> bool {
         (self.0 & other.0) == self.0
     }
-    /// Domain after `Inc`: every bit shifts up by one, bit 15
-    /// wraps to bit 0.
-    pub fn inc(self) -> Self {
-        let shifted = (self.0 << 1) & 0xFFFE;
-        let wrap = (self.0 & 0x8000) >> 15;
-        Self(shifted | wrap)
-    }
-    /// Domain after `Dec`: bits shift down, bit 0 wraps to bit 15.
-    pub fn dec(self) -> Self {
-        let shifted = (self.0 >> 1) & 0x7FFF;
-        let wrap = (self.0 & 0x0001) << 15;
-        Self(shifted | wrap)
-    }
     /// Domain after `MapValue` with `table`: for every value `v` the
     /// input could be, the output could be `table[v]`. Forms the
     /// straight bit-set union.
@@ -493,7 +480,10 @@ fn collect_mutated(op: &HirOp, out: &mut std::collections::HashSet<SlotId>) {
                 collect_mutated(o, out);
             }
         }
-        HirOp::Call { ret, .. } => {
+        HirOp::Call { args, ret, .. } => {
+            for a in args {
+                out.insert(*a);
+            }
             for r in ret {
                 out.insert(*r);
             }
@@ -530,16 +520,16 @@ mod domain_tests {
     }
 
     #[test]
-    fn inc_wraps_at_16() {
+    fn map_inc_wraps_at_16() {
         let d = Domain::singleton(15);
-        let d2 = d.inc();
+        let d2 = d.map(&crate::ir::INC_TABLE);
         assert_eq!(d2, Domain::singleton(0));
     }
 
     #[test]
-    fn dec_wraps_at_zero() {
+    fn map_dec_wraps_at_zero() {
         let d = Domain::singleton(0);
-        let d2 = d.dec();
+        let d2 = d.map(&crate::ir::DEC_TABLE);
         assert_eq!(d2, Domain::singleton(15));
     }
 

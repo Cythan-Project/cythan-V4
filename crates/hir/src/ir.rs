@@ -17,8 +17,9 @@ impl std::fmt::Display for SlotId {
     }
 }
 
-/// `+= 1` table for a u4 cell: input N → (N+1) mod 16. Seed for
-/// `HirOp::inc` / `Mir::increment`.
+/// `+= 1` table for a u4 cell: input N → (N+1) mod 16. Named for
+/// readability in tests and the conversion pass; otherwise it's
+/// just one of many possible `MapValue` lookup tables.
 pub const INC_TABLE: [u8; 16] =
     [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 0];
 
@@ -79,18 +80,6 @@ impl HirOp {
                 (else_block, (1..=15).collect()),
             ],
         )
-    }
-
-    /// `s += 1` — wraps modulo 16. Encoded as a MapValue so the optimizer
-    /// sees it as a generic table lookup; the LIR emitter detects the
-    /// inc-shaped table and emits the tight `inc` bytecode template.
-    pub fn inc(slot: SlotId) -> HirOp {
-        HirOp::MapValue(slot, slot, INC_TABLE)
-    }
-
-    /// `s -= 1` — wraps modulo 16.
-    pub fn dec(slot: SlotId) -> HirOp {
-        HirOp::MapValue(slot, slot, DEC_TABLE)
     }
 
     /// True if this op writes a cell value to `slot` (Set, Copy dst,

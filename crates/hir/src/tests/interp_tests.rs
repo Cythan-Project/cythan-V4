@@ -24,6 +24,44 @@ pub fn compile_all(src: &str) -> HashMap<typer::FnSig, HirFunction> {
     out
 }
 
+/// Like [`compile_all`] but also brings in `std/Ops.ct` + `std/U4.ct` so
+/// `+= 1` / `-= 1` resolve to the real `AddAssign` / `SubAssign` impls.
+/// Tests that exercise compound assignment on `U4` use this.
+pub fn compile_all_with_u4_std(src: &str) -> HashMap<typer::FnSig, HirFunction> {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/new_syntax/std");
+    let load = |p: &str| {
+        std::fs::read_to_string(path.join(p))
+            .unwrap_or_else(|e| panic!("read {p}: {e}"))
+            .replace('\r', "")
+    };
+    let parts = [
+        ("std/System.ct".to_string(), load("System.ct")),
+        ("std/Ops.ct".to_string(), load("Ops.ct")),
+        ("std/Bool.ct".to_string(), load("Bool.ct")),
+        ("std/U4.ct".to_string(), load("U4.ct")),
+        ("user.ct".to_string(), src.to_string()),
+    ];
+    let parsed: Vec<_> = parts
+        .iter()
+        .map(|(name, s)| (name.clone(), new_parser::parse(s).expect("parse")))
+        .collect();
+    let as_refs: Vec<(&str, &[_])> = parsed
+        .iter()
+        .map(|(n, v)| (n.as_str(), v.as_slice()))
+        .collect();
+    let reg = typer::TypeRegistry::from_files(&as_refs).expect("typer");
+    let db = typer::FunctionDB::from_registry(&reg).expect("fn_db");
+    let mut out = HashMap::new();
+    for (k, f) in &db.functions {
+        if let typer::Fn::Simple(s) = f {
+            let hir = gen_function(k, s, &reg, &db).expect("hir gen");
+            out.insert(k.clone(), hir);
+        }
+    }
+    out
+}
+
 fn run_noio(
     src: &str,
     type_name: &str,
@@ -31,6 +69,22 @@ fn run_noio(
     args: &[u8],
 ) -> Vec<u8> {
     let fns = compile_all(src);
+    let mut io = CapturedIo::new();
+    let mut interp = Interpreter::new(fns, &mut io);
+    interp
+        .run(&typer::FnSig::new(type_name, method), args)
+        .expect("interp")
+}
+
+/// Like [`run_noio`] but brings in the U4 stdlib for tests using
+/// `+= 1` / `-= 1`.
+fn run_noio_with_std(
+    src: &str,
+    type_name: &str,
+    method: &str,
+    args: &[u8],
+) -> Vec<u8> {
+    let fns = compile_all_with_u4_std(src);
     let mut io = CapturedIo::new();
     let mut interp = Interpreter::new(fns, &mut io);
     interp
@@ -98,7 +152,7 @@ fn inc_dec_via_compound_assign() {
             }
         }
     "#;
-    let out = run_noio(src, "U4", "bump", &[3]);
+    let out = run_noio_with_std(src, "U4", "bump", &[3]);
     assert_eq!(out, vec![4]);
 }
 
@@ -106,7 +160,7 @@ fn inc_dec_via_compound_assign() {
 fn inc_wraps_at_16() {
     // U4 is 4 bits → 15 + 1 wraps to 0.
     let src = "extension U4 { fn wrap(mut U4 x): U4 { x += 1; x } }";
-    let out = run_noio(src, "U4", "wrap", &[15]);
+    let out = run_noio_with_std(src, "U4", "wrap", &[15]);
     assert_eq!(out, vec![0]);
 }
 
@@ -162,7 +216,7 @@ fn loop_with_break_using_if_on_variable() {
             }
         }
     "#;
-    let out = run_noio(src, "U4", "first_nonzero", &[]);
+    let out = run_noio_with_std(src, "U4", "first_nonzero", &[]);
     assert_eq!(out, vec![1]);
 }
 

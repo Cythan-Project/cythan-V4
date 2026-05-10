@@ -472,7 +472,14 @@ fn collect_mutated(op: &HirOp, out: &mut HashSet<SlotId>) {
                 collect_mutated(o, out);
             }
         }
-        HirOp::Call { ret, .. } => {
+        HirOp::Call { args, ret, .. } => {
+            // Conservative: any arg may be a `mut` parameter the callee
+            // writes through, plus every ret slot. Treating all args as
+            // potentially-mutated keeps domain analysis sound across
+            // calls without consulting the callee body.
+            for a in args {
+                out.insert(*a);
+            }
             for r in ret {
                 out.insert(*r);
             }

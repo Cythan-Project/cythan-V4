@@ -89,7 +89,7 @@ fn compound_assign_on_immutable_rejected() {
 }
 
 #[test]
-fn compound_assign_on_mut_local_emits_inc() {
+fn compound_assign_on_mut_local_emits_add_assign_call() {
     use crate::tests::compile;
     use crate::ir::*;
     let hir = compile(
@@ -105,8 +105,15 @@ fn compound_assign_on_mut_local_emits_inc() {
         "U4",
         "run",
     );
+    // `+= 1` desugars to a Call into `<U4 as AddAssign>::add_assign`.
+    // The specializer + match-to-mapvalue pass collapse it down to a
+    // single MapValue(INC) later in the pipeline.
     assert!(
-        hir.body.ops.iter().any(|op| matches!(op, HirOp::MapValue(_, _, t) if *t == INC_TABLE)),
-        "expected MapValue(INC) for `x += 1`"
+        hir.body.ops.iter().any(|op| matches!(
+            op,
+            HirOp::Call { target, .. } if target.method_name == "add_assign"
+        )),
+        "expected `add_assign` Call for `x += 1`, got: {:?}",
+        hir.body.ops
     );
 }

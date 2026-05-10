@@ -290,6 +290,25 @@ impl<'a, C: IoContext> Interpreter<'a, C> {
                 }
                 // Execute body.
                 let _ = self.exec_block(&callee.body, &mut callee_slots)?;
+                // Mut-back-copy: any input cell whose param is declared
+                // `mut` may have been written by the callee — propagate
+                // those values back to the caller's arg slots so the
+                // mutation is visible. Mirrors the MIR inliner's
+                // step-3 back-copy.
+                let mut cell = 0u32;
+                for slot in &callee.sig.slots {
+                    if slot.name == "_ret" {
+                        break;
+                    }
+                    if slot.mutable {
+                        for k in 0..slot.size {
+                            let arg_slot = args[(cell + k) as usize];
+                            slots[arg_slot.0 as usize] =
+                                callee_slots[(cell + k) as usize];
+                        }
+                    }
+                    cell += slot.size;
+                }
                 // Unpack returns.
                 for (i, r) in ret.iter().enumerate() {
                     slots[r.0 as usize] =

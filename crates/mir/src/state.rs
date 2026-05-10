@@ -15,14 +15,6 @@ impl MirState {
     pub fn jump(&mut self, label: Label) {
         self.instructions.push(CompilableInstruction::Jump(label));
     }
-    pub fn dec(&mut self, variable: Var) {
-        self.instructions
-            .push(CompilableInstruction::Decrement(variable));
-    }
-    pub fn inc(&mut self, variable: Var) {
-        self.instructions
-            .push(CompilableInstruction::Increment(variable));
-    }
     pub fn if0(&mut self, variable: Var, label: Label) {
         self.instructions
             .push(CompilableInstruction::If0(variable, label));

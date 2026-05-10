@@ -193,8 +193,6 @@ impl<'g> Interp<'g> {
         }
         let v = match self.g.get(id).kind.clone() {
             NodeKind::Const(v) => v,
-            NodeKind::Inc(a) => (self.val(a) + 1) & 0x0F,
-            NodeKind::Dec(a) => (self.val(a).wrapping_sub(1)) & 0x0F,
             NodeKind::Add(a, b) => (self.val(a) + self.val(b)) & 0x0F,
             NodeKind::Sub(a, b) => (self.val(a).wrapping_sub(self.val(b))) & 0x0F,
             NodeKind::Eq(a, b) => {

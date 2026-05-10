@@ -263,14 +263,6 @@ impl<'g> Scheduler<'g> {
         let slot = self.slot(node);
         match kind {
             NodeKind::Const(v) => self.emit(out, Mir::Set(slot, v)),
-            NodeKind::Inc(a) => {
-                let src = self.ensure_value(a, out);
-                self.emit(out, Mir::MapValue(src, slot, mir::INC_TABLE));
-            }
-            NodeKind::Dec(a) => {
-                let src = self.ensure_value(a, out);
-                self.emit(out, Mir::MapValue(src, slot, mir::DEC_TABLE));
-            }
             NodeKind::Proj {
                 of,
                 kind: ProjKind::ReadRegVal,

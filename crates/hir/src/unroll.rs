@@ -246,7 +246,7 @@ mod tests {
     #[test]
     fn factor_one_is_noop() {
         let inner = HirBlock {
-            ops: vec![HirOp::inc(SlotId(0)), HirOp::Break],
+            ops: vec![HirOp::MapValue(SlotId(0), SlotId(0), INC_TABLE), HirOp::Break],
             result_slot: None,
         };
         let b = HirBlock {
@@ -282,7 +282,7 @@ mod tests {
                         ),
                         (
                             HirBlock {
-                                ops: vec![HirOp::inc(SlotId(1))],
+                                ops: vec![HirOp::MapValue(SlotId(1), SlotId(1), INC_TABLE)],
                                 result_slot: None,
                             },
                             (1..=15).collect(),
@@ -340,7 +340,7 @@ mod tests {
             result_slot: None,
         };
         let outer = HirBlock {
-            ops: vec![HirOp::Loop(inner), HirOp::dec(SlotId(0))],
+            ops: vec![HirOp::Loop(inner), HirOp::MapValue(SlotId(0), SlotId(0), DEC_TABLE)],
             result_slot: None,
         };
         let b = HirBlock {
@@ -359,7 +359,7 @@ mod tests {
     fn no_break_means_no_attempt() {
         // No Break/Stop anywhere → gate trips, unroll skipped.
         let body = HirBlock {
-            ops: vec![HirOp::inc(SlotId(0))],
+            ops: vec![HirOp::MapValue(SlotId(0), SlotId(0), INC_TABLE)],
             result_slot: None,
         };
         let b = HirBlock {

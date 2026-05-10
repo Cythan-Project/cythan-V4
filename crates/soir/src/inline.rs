@@ -557,8 +557,6 @@ fn rewrite_kind_with_remap(kind: NodeKind, remap: &HashMap<NodeId, NodeId>) -> N
             arm_values,
         },
         NodeKind::Proj { of, kind } => NodeKind::Proj { of: sub(of), kind },
-        NodeKind::Inc(a) => NodeKind::Inc(sub(a)),
-        NodeKind::Dec(a) => NodeKind::Dec(sub(a)),
         NodeKind::Add(a, b) => NodeKind::Add(sub(a), sub(b)),
         NodeKind::Sub(a, b) => NodeKind::Sub(sub(a), sub(b)),
         NodeKind::Eq(a, b) => NodeKind::Eq(sub(a), sub(b)),

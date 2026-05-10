@@ -411,26 +411,28 @@ impl<'g> Builder<'g> {
                 self.write_slot(*dst, v);
             }
             HirOp::MapValue(src, dst, table) => {
-                let v = self.read_slot(*src);
-                // Recognize the canonical inc/dec tables to keep the
-                // SoIR cache effective; arbitrary tables fall through
-                // (TODO: a NodeKind::Map(NodeId, [u8;16]) for full
-                // generality once the SoIR pipeline needs it).
-                let new = if *table == hir::ir::INC_TABLE {
-                    self.g.alloc_inc(v)
-                } else if *table == hir::ir::DEC_TABLE {
-                    self.g.alloc_dec(v)
-                } else {
-                    // Fall back: emit a 16-arm Match-of-Set, then read.
-                    // For now, panic — SoIR doesn't yet support general
-                    // MapValue tables, and only inc/dec reach this path
-                    // through the normal HIR-gen pipeline.
-                    panic!(
-                        "soir: general MapValue table not yet supported \
-                         (src={src:?}, dst={dst:?})"
-                    );
-                };
-                self.write_slot(*dst, new);
+                // Lower as a synthetic `Match(src, …)` whose arms each
+                // write one output constant to dst. Group input values
+                // by output so the arm count = number of distinct
+                // outputs (e.g. boolean tables → 2 arms).
+                let mut groups: std::collections::BTreeMap<u8, Vec<u8>> =
+                    std::collections::BTreeMap::new();
+                for i in 0u8..=15 {
+                    groups.entry(table[i as usize]).or_default().push(i);
+                }
+                let arms: Vec<(hir::HirBlock, Vec<u8>)> = groups
+                    .into_iter()
+                    .map(|(out_v, ins)| {
+                        (
+                            hir::HirBlock {
+                                ops: vec![hir::HirOp::Set(*dst, out_v)],
+                                result_slot: None,
+                            },
+                            ins,
+                        )
+                    })
+                    .collect();
+                self.lower_match(*src, &arms);
             }
             HirOp::Skip => self.lower_skip(),
             HirOp::Block(b) => self.lower_block_scope(b),

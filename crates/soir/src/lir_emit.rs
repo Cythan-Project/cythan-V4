@@ -190,30 +190,6 @@ impl<'g> LirEmit<'g> {
                 ));
                 slot
             }
-            NodeKind::Inc(a) => {
-                let src = self.ensure_value(a);
-                let dst = self.slot(node);
-                if src != dst {
-                    self.out.push(CompilableInstruction::Copy(
-                        Var(dst as usize),
-                        AsmValue::Var(Var(src as usize)),
-                    ));
-                }
-                self.out.push(CompilableInstruction::Increment(Var(dst as usize)));
-                dst
-            }
-            NodeKind::Dec(a) => {
-                let src = self.ensure_value(a);
-                let dst = self.slot(node);
-                if src != dst {
-                    self.out.push(CompilableInstruction::Copy(
-                        Var(dst as usize),
-                        AsmValue::Var(Var(src as usize)),
-                    ));
-                }
-                self.out.push(CompilableInstruction::Decrement(Var(dst as usize)));
-                dst
-            }
             NodeKind::Phi { .. } | NodeKind::EffPhi { .. } => self.slot(node),
             NodeKind::Proj {
                 kind: ProjKind::Param(_),

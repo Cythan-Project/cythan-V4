@@ -13,8 +13,6 @@ pub struct Context {
 #[derive(Debug, Clone)]
 pub enum CompilableInstruction {
     Copy(Var, AsmValue), // to, from - from isn't mutated
-    Increment(Var),      // in, in is mutated
-    Decrement(Var),      // in, in is mutated
     Jump(Label),         // Goto a label
     Label(Label),        // Defines a label
     If0(Var, Label),     // Jumps to the label if the thing is equals to 0
@@ -91,14 +89,6 @@ impl CompilableInstruction {
                     }
                 }
             }
-            Self::Increment(a) => {
-                Self::check_compile_var(a, template, ctx);
-                template.add_code(Cow::Owned(format!("inc({})", a)))
-            }
-            Self::Decrement(a) => {
-                Self::check_compile_var(a, template, ctx);
-                template.add_code(Cow::Owned(format!("dec({})", a)))
-            }
             Self::Jump(a) => template.add_code(Cow::Owned(format!("jump({})", a))),
             Self::Label(a) => template.add_code(Cow::Owned(format!("{}:no_op", a))),
             Self::If0(a, b) => {
@@ -157,8 +147,6 @@ impl Display for CompilableInstruction {
                     AsmValue::Number(a) => a.0.to_string(),
                 }
             ),
-            Self::Increment(a) => write!(f, "${}++", a.0,),
-            Self::Decrement(a) => write!(f, "${}--", a.0,),
             Self::Jump(a) => write!(f, "jmp {}", a),
             Self::Label(a) => write!(f, "{}", a),
             Self::If0(a, b) => write!(f, "if ${} {}", a.0, b),

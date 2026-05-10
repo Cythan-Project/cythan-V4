@@ -183,8 +183,8 @@ fn hir_to_mir_converts_basic_ops() {
         ops: vec![
             HirOp::Set(SlotId(0), 5),
             HirOp::Copy(SlotId(1), SlotId(0)),
-            HirOp::inc(SlotId(1)),
-            HirOp::dec(SlotId(1)),
+            HirOp::MapValue(SlotId(1), SlotId(1), crate::ir::INC_TABLE),
+            HirOp::MapValue(SlotId(1), SlotId(1), crate::ir::DEC_TABLE),
             HirOp::Stop,
         ],
         result_slot: None,

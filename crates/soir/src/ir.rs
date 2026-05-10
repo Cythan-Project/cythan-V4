@@ -226,10 +226,6 @@ pub enum NodeKind {
     /// Literal u4 constant. Pure, no inputs.
     Const(u8),
 
-    /// u4 increment (mod 16). Pure.
-    Inc(NodeId),
-    /// u4 decrement (mod 16). Pure.
-    Dec(NodeId),
     /// u4 addition (mod 16). Pure. Introduced by later rewrites;
     /// HIR-gen never produces this directly.
     Add(NodeId, NodeId),
@@ -328,9 +324,6 @@ impl NodeKind {
             NodeKind::Proj { of, .. } => {
                 v.push(*of);
             }
-            NodeKind::Inc(a) | NodeKind::Dec(a) => {
-                v.push(*a);
-            }
             NodeKind::Add(a, b) | NodeKind::Sub(a, b) | NodeKind::Eq(a, b) => {
                 v.push(*a);
                 v.push(*b);
@@ -370,8 +363,6 @@ impl NodeKind {
             NodeKind::Match { .. } => "Match",
             NodeKind::Proj { .. } => "Proj",
             NodeKind::Const(_) => "Const",
-            NodeKind::Inc(_) => "Inc",
-            NodeKind::Dec(_) => "Dec",
             NodeKind::Add(..) => "Add",
             NodeKind::Sub(..) => "Sub",
             NodeKind::Eq(..) => "Eq",
@@ -439,8 +430,6 @@ pub struct Node {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum PureKey {
     Const(u8),
-    Inc(NodeId),
-    Dec(NodeId),
     Add(NodeId, NodeId),
     Sub(NodeId, NodeId),
     Eq(NodeId, NodeId),
@@ -454,7 +443,7 @@ pub struct Graph {
     sig: typer::FlatSig,
     /// GVN cache for pure nodes. Keyed by the op's shape; value
     /// is the id of the (first) node that realised that shape.
-    /// Populated by `alloc_const` / `alloc_inc` / etc; plain
+    /// Populated by `alloc_const` / `alloc_add` / etc; plain
     /// `alloc` bypasses it (for effectful and control nodes).
     pure_cache: HashMap<PureKey, NodeId>,
 }
@@ -484,35 +473,6 @@ impl Graph {
             return id;
         }
         let id = self.alloc(NodeKind::Const(v));
-        self.pure_cache.insert(key, id);
-        id
-    }
-
-    /// GVN + const-fold for u4 increment. Folds `Inc(Const(n))`
-    /// to `Const((n+1) & 0xF)`.
-    pub fn alloc_inc(&mut self, a: NodeId) -> NodeId {
-        if let Some(v) = self.as_const(a) {
-            return self.alloc_const((v + 1) & 0x0F);
-        }
-        let key = PureKey::Inc(a);
-        if let Some(&id) = self.pure_cache.get(&key) {
-            return id;
-        }
-        let id = self.alloc(NodeKind::Inc(a));
-        self.pure_cache.insert(key, id);
-        id
-    }
-
-    /// GVN + const-fold for u4 decrement.
-    pub fn alloc_dec(&mut self, a: NodeId) -> NodeId {
-        if let Some(v) = self.as_const(a) {
-            return self.alloc_const(v.wrapping_sub(1) & 0x0F);
-        }
-        let key = PureKey::Dec(a);
-        if let Some(&id) = self.pure_cache.get(&key) {
-            return id;
-        }
-        let id = self.alloc(NodeKind::Dec(a));
         self.pure_cache.insert(key, id);
         id
     }
@@ -800,8 +760,6 @@ fn rewrite_kind_inputs(kind: NodeKind, from: NodeId, to: NodeId) -> NodeKind {
             arm_values,
         },
         NodeKind::Proj { of, kind } => NodeKind::Proj { of: swap(of), kind },
-        NodeKind::Inc(a) => NodeKind::Inc(swap(a)),
-        NodeKind::Dec(a) => NodeKind::Dec(swap(a)),
         NodeKind::Add(a, b) => NodeKind::Add(swap(a), swap(b)),
         NodeKind::Sub(a, b) => NodeKind::Sub(swap(a), swap(b)),
         NodeKind::Eq(a, b) => NodeKind::Eq(swap(a), swap(b)),

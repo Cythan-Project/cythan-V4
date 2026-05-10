@@ -18,11 +18,12 @@ pub const DEC_TABLE: [u8; 16] =
 pub enum Mir {
     Set(u32, u8),
     Copy(u32, u32),                       // to, from - from isn't mutated
-    /// `MapValue(src, dst, table)` — `dst = table[src]`. Replaces
-    /// `Increment` / `Decrement`. The MIR-to-LIR lowering recognizes the
-    /// canonical inc/dec tables (with src == dst) and emits the tight
-    /// `inc(s)` / `dec(s)` LIR instructions; any other shape falls back
-    /// to a flat 16-arm Match-of-Copy.
+    /// `MapValue(src, dst, table)` — `dst = table[src]`. The single
+    /// 1-cell-in / 1-cell-out lookup primitive: every `+= 1`, `eq`,
+    /// `gt`, etc. ends up here once the conversion pass has folded
+    /// the matching nested-match shapes. MIR-to-LIR lowers it as a
+    /// `Match` whose arms are grouped by output value (so a boolean
+    /// table emits 2 arms, a permutation table emits 16).
     MapValue(u32, u32, [u8; 16]),
     If0(u32, MirCodeBlock, MirCodeBlock), // Jumps to the label if the thing is equals to 0
     Loop(MirCodeBlock),
@@ -36,15 +37,6 @@ pub enum Mir {
     Match(u32, Vec<(MirCodeBlock, Vec<u8>)>),
 }
 
-impl Mir {
-    pub fn increment(slot: u32) -> Mir {
-        Mir::MapValue(slot, slot, INC_TABLE)
-    }
-
-    pub fn decrement(slot: u32) -> Mir {
-        Mir::MapValue(slot, slot, DEC_TABLE)
-    }
-}
 
 impl Display for Mir {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -210,29 +202,24 @@ impl Mir {
                 state.copy(Var(*a as usize), AsmValue::Var(Var(*b as usize)))
             }
             Self::MapValue(src, dst, table) => {
-                // Tight bytecode for the canonical inc/dec shapes.
-                if *src == *dst && *table == INC_TABLE {
-                    state.inc(Var(*src as usize));
-                } else if *src == *dst && *table == DEC_TABLE {
-                    state.dec(Var(*src as usize));
-                } else {
-                    // General lookup: group input values by output so a
-                    // table with K distinct outputs lowers to K arms,
-                    // not 16. Saves ≥10× bytecode for boolean-valued
-                    // tables (true/false → 2 arms instead of 16).
-                    let mut groups: std::collections::BTreeMap<u8, Vec<u8>> =
-                        std::collections::BTreeMap::new();
-                    for i in 0u8..=15 {
-                        groups.entry(table[i as usize]).or_default().push(i);
-                    }
-                    let arms: Vec<(MirCodeBlock, Vec<u8>)> = groups
-                        .into_iter()
-                        .map(|(out_v, ins)| {
-                            (MirCodeBlock(vec![Mir::Set(*dst, out_v)]), ins)
-                        })
-                        .collect();
-                    return Mir::Match(*src, arms).to_asm(state);
+                // Group input values by output so a table with K distinct
+                // outputs lowers to K Match arms, not 16. Boolean tables
+                // (true/false) collapse to 2 arms; full-permutation
+                // tables (e.g. inc/dec) keep 16. No specialised "inc"
+                // bytecode any more — it's the same Match machinery as
+                // any other lookup.
+                let mut groups: std::collections::BTreeMap<u8, Vec<u8>> =
+                    std::collections::BTreeMap::new();
+                for i in 0u8..=15 {
+                    groups.entry(table[i as usize]).or_default().push(i);
                 }
+                let arms: Vec<(MirCodeBlock, Vec<u8>)> = groups
+                    .into_iter()
+                    .map(|(out_v, ins)| {
+                        (MirCodeBlock(vec![Mir::Set(*dst, out_v)]), ins)
+                    })
+                    .collect();
+                return Mir::Match(*src, arms).to_asm(state);
             }
             Self::If0(a, b, c) => {
                 if b == c {

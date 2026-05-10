@@ -1069,24 +1069,11 @@ impl<'a> Generator<'a> {
             self.check_mutable_slot(SlotId(dst_slot.0 + i), sp)?;
         }
 
-        // Native U4 fast path: `+= 1` / `-= 1` lower to MapValue with the
-        // canonical inc/dec table. The MIR-to-LIR pass detects this shape
-        // and emits the tight `inc(s)` / `dec(s)` Cythan macros.
-        if dst_ty == "U4" {
-            if let ast::Expr::Number(1) = value.0 {
-                let op_hir = match op {
-                    ast::CompoundOp::AddAssign => HirOp::inc(dst_slot),
-                    ast::CompoundOp::SubAssign => HirOp::dec(dst_slot),
-                };
-                block.push(op_hir);
-                return Ok(());
-            }
-            // Generic form for U4: loop N times emit Inc/Dec. For small
-            // integer literals this is OK; for non-literals we synthesize
-            // `while other { target += 1; other -= 1; }`-style lowering
-            // via a Call to the trait method. But traits aren't wired to
-            // ops yet; fall back to a Call of AddAssign::add_assign.
-        }
+        // U4 `+=`/`-=` lower through the regular `add_assign`/`sub_assign`
+        // trait calls just like every other compound assignment. The
+        // specializer + match-to-mapvalue pass collapse the inlined
+        // 16x16 lookup down to a single MapValue when the rhs is a
+        // constant.
 
         // General form: desugar to `target = target OP value` via a Call to
         // the appropriate AddAssign/SubAssign method. Phase 4 doesn't have

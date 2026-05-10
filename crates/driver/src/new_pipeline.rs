@@ -806,7 +806,26 @@ pub fn compile_via_soir(
     let trimmed = elide_unused_args(demut, entry);
     let inlined = inline_program_full(&trimmed, entry, Some(&reg), Some(&db))
         .map_err(|e| format!("inline: {}", e))?;
-    let graph = soir::translate_function(&inlined);
+    // Same post-inline cleanup as the classical pipeline: unroll +
+    // specialize + match-merge + match-to-mapvalue. Without these,
+    // post-inline `count += 1` (now an inlined 16x16 lookup) would
+    // dominate the soir graph instead of collapsing back to a single
+    // MapValue node.
+    let (unrolled, _) =
+        unroll_loops_with_stats(inlined.body, DEFAULT_UNROLL_FACTOR, None);
+    let specialized = specialize_to_fixpoint(unrolled);
+    let merged = merge_adjacent_matches(specialized);
+    let respecialized = specialize_to_fixpoint(merged);
+    let cleaned = optimize_block(respecialized);
+    let live_at_exit = output_slots_of(&inlined.sig);
+    let lva_cleaned = eliminate_dead_writes(cleaned, &live_at_exit);
+    let cleaned2 = optimize_block(lva_cleaned);
+    let (final_block, _) = hir::match_to_mapvalue::rewrite_block(cleaned2);
+    let final_fn = hir::HirFunction {
+        body: final_block,
+        ..inlined
+    };
+    let graph = soir::translate_function(&final_fn);
     let mir = soir::schedule(&graph);
     Ok(mir)
 }

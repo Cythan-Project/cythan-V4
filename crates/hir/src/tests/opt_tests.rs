@@ -91,7 +91,7 @@ fn if0_not_folded_when_slot_has_multiple_writes() {
     // Set(s0, 0); Inc(s0); If0(s0, ...) — Inc mutates s0, so we can't fold.
     let input = block(vec![
         HirOp::Set(sid(0), 0),
-        HirOp::inc(sid(0)),
+        HirOp::MapValue(sid(0), sid(0), crate::ir::INC_TABLE),
         HirOp::if_zero(
             sid(0),
             block(vec![HirOp::Set(sid(1), 10)]),
@@ -195,7 +195,7 @@ fn loop_writing_slot_disables_const_prop() {
     // uses of s0 that happen inside/after the loop to its initial value.
     let input = block(vec![
         HirOp::Set(sid(0), 0),
-        HirOp::Loop(block(vec![HirOp::inc(sid(0))])),
+        HirOp::Loop(block(vec![HirOp::MapValue(sid(0), sid(0), crate::ir::INC_TABLE)])),
         HirOp::if_zero(
             sid(0),
             block(vec![HirOp::Set(sid(1), 10)]),

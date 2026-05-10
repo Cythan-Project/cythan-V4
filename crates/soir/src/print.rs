@@ -112,8 +112,6 @@ fn format_node(out: &mut String, kind: &NodeKind) {
         NodeKind::Const(v) => {
             write!(out, "Const {}", v).unwrap();
         }
-        NodeKind::Inc(a) => write!(out, "Inc {}", a).unwrap(),
-        NodeKind::Dec(a) => write!(out, "Dec {}", a).unwrap(),
         NodeKind::Add(a, b) => write!(out, "Add {} {}", a, b).unwrap(),
         NodeKind::Sub(a, b) => write!(out, "Sub {} {}", a, b).unwrap(),
         NodeKind::Eq(a, b) => write!(out, "Eq {} {}", a, b).unwrap(),

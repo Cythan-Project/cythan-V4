@@ -514,7 +514,7 @@ mod tests {
             0,
         );
         let body = HirBlock {
-            ops: vec![HirOp::inc(SlotId(0))],
+            ops: vec![HirOp::MapValue(SlotId(0), SlotId(0), crate::ir::INC_TABLE)],
             result_slot: None,
         };
         let f = mk_func(sig, body, 2);
