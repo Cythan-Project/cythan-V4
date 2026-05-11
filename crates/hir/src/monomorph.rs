@@ -301,6 +301,22 @@ fn subst_expr(expr: &ast::Expr, bindings: &HashMap<String, ConcreteTemplateArg>)
                 .map(|e| Box::new((subst_expr(&e.0, bindings), e.1.clone()))),
         },
         Loop(b) => Loop(Box::new((subst_block(&b.0, bindings), b.1.clone()))),
+        For {
+            var_ty,
+            var_name,
+            iter,
+            body,
+        } => For {
+            var_ty: (subst_type(&var_ty.0, bindings), var_ty.1.clone()),
+            var_name: var_name.clone(),
+            iter: Box::new((subst_expr(&iter.0, bindings), iter.1.clone())),
+            body: Box::new((subst_block(&body.0, bindings), body.1.clone())),
+        },
+        Range { start, end, inclusive } => Range {
+            start: Box::new((subst_expr(&start.0, bindings), start.1.clone())),
+            end: Box::new((subst_expr(&end.0, bindings), end.1.clone())),
+            inclusive: *inclusive,
+        },
         Return(e) => Return(
             e.as_ref()
                 .map(|v| Box::new((subst_expr(&v.0, bindings), v.1.clone()))),

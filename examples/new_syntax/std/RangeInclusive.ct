@@ -1,0 +1,39 @@
+// Inclusive numeric range — `start..=end`. Tracks `done` separately
+// because `end + 1` would overflow `T` for `end == T::MAX`
+// (e.g. `for U4 i in 0..=15` would otherwise wrap to 0 immediately).
+// One extra cell over `Range<T>`; same generic shape.
+
+use Iter;
+
+struct RangeInclusive<T> {
+    T cur,
+    T end,
+    Bool done,
+}
+
+extension RangeInclusive<T> {
+    fn new(T start, T end): Self {
+        Self { cur: start, end: end, done: false }
+    }
+}
+
+impl<T> Iter<T> for RangeInclusive<T> {
+    fn next(mut self): Option<T> {
+        if self.cur == self.end {
+            if self.done {
+                Option<T>::none()
+            } else {
+                self.done = true;
+                Option::some(self.cur)
+            }
+        } else {
+            T v = self.cur;
+            self.cur += 1;
+            Option::some(v)
+        }
+        // Note: keep `done` as the leading branch. `if cond { then }
+        // else { else }` lowers to a match where `cond != 0` takes
+        // the then-arm; placing the cheap `none` arm there keeps the
+        // hot path straight-line.
+    }
+}

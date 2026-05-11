@@ -148,6 +148,10 @@ fn stdlib_files() -> Vec<(String, String)> {
         "std/U8.ct",
         "std/Array.ct",
         "std/DynArray.ct",
+        "std/Option.ct",
+        "std/Iter.ct",
+        "std/Range.ct",
+        "std/RangeInclusive.ct",
     ]
     .iter()
     .map(|rel| (rel.to_string(), new_syntax_file(rel)))

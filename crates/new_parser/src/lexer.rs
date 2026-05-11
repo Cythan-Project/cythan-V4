@@ -77,6 +77,10 @@ pub fn lexer() -> impl Parser<char, Vec<(Token, Span)>, Error = Simple<char>> {
         just("&&").to(Token::AndAnd),
         just("||").to(Token::OrOr),
         just("..=").to(Token::DotDotEq),
+        // `..` MUST come after `..=` so the longest-match rule
+        // tokenises `..=` correctly. (chumsky's `choice` tries
+        // alternatives in order.)
+        just("..").to(Token::DotDot),
     ));
     let single_op = choice((
         just('.').to(Token::Dot),

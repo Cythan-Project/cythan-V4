@@ -400,6 +400,17 @@ impl<'a> Generator<'a> {
                 block.push(HirOp::Loop(inner?));
                 Ok(())
             }
+            ast::Expr::For {
+                var_ty,
+                var_name,
+                iter,
+                body,
+            } => self.gen_for(var_ty, var_name, iter, body, sp, block),
+            ast::Expr::Range {
+                start,
+                end,
+                inclusive,
+            } => self.gen_range(start, end, *inclusive, sp, dst, block),
             ast::Expr::Break => {
                 if self.loop_depth == 0 {
                     return Err(self.control_flow_error("break", sp));
@@ -2075,6 +2086,255 @@ impl<'a> Generator<'a> {
             out_arms.push((ab, values));
         }
         block.push(HirOp::Match(scrut_slot, out_arms));
+        Ok(())
+    }
+
+    // ---- for / range ----------------------------------------------------
+
+    /// Build the AST `Type` for `Range<T>` or `RangeInclusive<T>`.
+    fn build_range_ty(
+        &self,
+        elem_ty: &ast::Spanned<ast::Type>,
+        sp: &new_parser::Span,
+        inclusive: bool,
+    ) -> ast::Type {
+        let stem = if inclusive { "RangeInclusive" } else { "Range" };
+        ast::Type {
+            name: (stem.to_string(), sp.clone()),
+            templates: vec![(
+                ast::TypeOrValue::Type(elem_ty.0.clone()),
+                elem_ty.1.clone(),
+            )],
+            qself: None,
+        }
+    }
+
+    /// Lower `Range<T>::new(start, end)` (or `RangeInclusive`) into
+    /// `dst`. `elem_ty` is the element type `T`. The actual call is
+    /// synthesised as a `StaticCall` AST and lowered through
+    /// `gen_expr_into` so all the existing template-arg + monomorph
+    /// + inliner machinery does the work for us.
+    fn gen_range_into_with_t(
+        &mut self,
+        start: &ast::Spanned<ast::Expr>,
+        end: &ast::Spanned<ast::Expr>,
+        inclusive: bool,
+        elem_ty: &ast::Spanned<ast::Type>,
+        sp: &new_parser::Span,
+        dst: Option<SlotId>,
+        block: &mut HirBlock,
+    ) -> Result<(), HirError> {
+        let range_ty = self.build_range_ty(elem_ty, sp, inclusive);
+        let synth = ast::Expr::StaticCall {
+            ty: (range_ty, sp.clone()),
+            name: ("new".to_string(), sp.clone()),
+            templates: vec![],
+            args: vec![start.clone(), end.clone()],
+        };
+        self.gen_expr_into(&synth, sp, dst, block)
+    }
+
+    /// Bare `start..end` / `start..=end` outside a for-header. We need
+    /// a T from somewhere — default to U4, the type of bare integer
+    /// literals. Users who want a wider range write the `for` header's
+    /// type annotation, which routes through `gen_for` instead.
+    fn gen_range(
+        &mut self,
+        start: &ast::Spanned<ast::Expr>,
+        end: &ast::Spanned<ast::Expr>,
+        inclusive: bool,
+        sp: &new_parser::Span,
+        dst: Option<SlotId>,
+        block: &mut HirBlock,
+    ) -> Result<(), HirError> {
+        // Synthesise a U4 element type. Future work could promote based
+        // on the bound literals' actual types.
+        let elem_ty: ast::Spanned<ast::Type> = (
+            ast::Type {
+                name: ("U4".to_string(), sp.clone()),
+                templates: vec![],
+                qself: None,
+            },
+            sp.clone(),
+        );
+        self.gen_range_into_with_t(start, end, inclusive, &elem_ty, sp, dst, block)
+    }
+
+    /// Lower `for VTY V in ITER { BODY }` to the equivalent of:
+    /// ```text
+    /// {
+    ///   mut <ITER_TY> __iter = <ITER>;
+    ///   loop {
+    ///     match __iter.next() {
+    ///       Option::Some(V) => { BODY }
+    ///       Option::None    => { break }
+    ///     }
+    ///   }
+    /// }
+    /// ```
+    /// The `Option::Some(V)` binding piggybacks on existing
+    /// pattern-binding logic in `gen_match` (line ~1797), which already
+    /// allocates a fresh slot for `V` of the right type. We only
+    /// orchestrate the synthesis.
+    fn gen_for(
+        &mut self,
+        var_ty: &ast::Spanned<ast::Type>,
+        var_name: &ast::Spanned<String>,
+        iter: &ast::Spanned<ast::Expr>,
+        body: &ast::Spanned<ast::Block>,
+        sp: &new_parser::Span,
+        block: &mut HirBlock,
+    ) -> Result<(), HirError> {
+        // Pick the iter's full type. For `start..end` / `start..=end`,
+        // we know it's `Range<VTY>` / `RangeInclusive<VTY>` and
+        // synthesise an explicit StaticCall — the surrounding
+        // type-driven path is the only way V1 needs to handle ranges.
+        // For other iterator expressions we trust `infer_expr_type`.
+        let (iter_ast_ty, synth_iter): (ast::Type, ast::Spanned<ast::Expr>) =
+            match &iter.0 {
+                ast::Expr::Range { start, end, inclusive } => {
+                    let range_ty = self.build_range_ty(var_ty, &iter.1, *inclusive);
+                    let synth = ast::Expr::StaticCall {
+                        ty: (range_ty.clone(), iter.1.clone()),
+                        name: ("new".to_string(), iter.1.clone()),
+                        templates: vec![],
+                        args: vec![(*start.clone()), (*end.clone())],
+                    };
+                    (range_ty, (synth, iter.1.clone()))
+                }
+                _ => {
+                    // Reconstruct an AST type from inferred name + args.
+                    let name = self.infer_expr_type(&iter.0, &iter.1)?;
+                    let args = self.infer_receiver_type_args(&iter.0);
+                    let templates = args
+                        .iter()
+                        .map(|a| (lower_concrete_to_ast_tv(a), iter.1.clone()))
+                        .collect();
+                    let ty = ast::Type {
+                        name: (name, iter.1.clone()),
+                        templates,
+                        qself: None,
+                    };
+                    (ty, iter.clone())
+                }
+            };
+
+        // Allocate __iter as a mut local. Use the same path
+        // `gen_declaration` uses so sizing handles generics
+        // (Range<U4>, ArrayIter<U4, 9, U4>, etc.).
+        let resolved_ast_ty = self
+            .reg
+            .resolve_qself_deep(&iter_ast_ty, &iter.1, &self.simple.type_name)
+            .map_err(|e| HirError::at(e.message, iter.1.clone()))?;
+        let resolved = self.resolve_ty_name(&resolved_ast_ty.name.0);
+        let iter_size = if !resolved_ast_ty.templates.is_empty() {
+            self.reg
+                .resolve_type_size(&resolved_ast_ty, &iter.1)
+                .map_err(|e| HirError::at(e.message, iter.1.clone()))?
+        } else {
+            self.type_size(&resolved)
+                .map_err(|_| self.unknown_type_diag(&resolved, &iter.1))?
+        };
+        let iter_slot = self.alloc_temp(&resolved, iter_size);
+        for i in 0..iter_size {
+            let ix = (iter_slot.0 + i) as usize;
+            self.slot_mut[ix] = true;
+            self.slot_name[ix] = "__iter".to_string();
+        }
+        let iter_template_args: Vec<ConcreteTemplateArg> = resolved_ast_ty
+            .templates
+            .iter()
+            .map(|(tv, _)| lower_tv(tv))
+            .collect();
+
+        // Open a fresh scope so the synthetic `__iter` and (later) the
+        // loop variable don't leak.
+        self.scopes.push(std::collections::HashMap::new());
+        self.scopes.last_mut().unwrap().insert(
+            "__iter".to_string(),
+            LocalBinding {
+                slot: iter_slot,
+                type_name: resolved.clone(),
+                size: iter_size,
+                mutable: true,
+                field_offsets: None,
+                template_args: iter_template_args.clone(),
+            },
+        );
+
+        // Emit the iter initialiser into the slot.
+        self.gen_expr_into(&synth_iter.0, &synth_iter.1, Some(iter_slot), block)?;
+
+        // Synthesise the loop body:
+        //   match __iter.next() {
+        //     Option::Some(V) => { BODY },
+        //     Option::None    => { break },
+        //   }
+        let next_call = (
+            ast::Expr::MethodCall {
+                receiver: Box::new((
+                    ast::Expr::Variable("__iter".to_string()),
+                    iter.1.clone(),
+                )),
+                name: ("next".to_string(), sp.clone()),
+                templates: vec![],
+                args: vec![],
+            },
+            sp.clone(),
+        );
+        let opt_ty = ast::Type {
+            name: ("Option".to_string(), sp.clone()),
+            templates: vec![(
+                ast::TypeOrValue::Type(var_ty.0.clone()),
+                var_ty.1.clone(),
+            )],
+            qself: None,
+        };
+        let some_arm = ast::MatchArm {
+            pattern: (
+                ast::Pattern::Variant {
+                    ty: (opt_ty.clone(), sp.clone()),
+                    variant: ("Some".to_string(), sp.clone()),
+                    binding: Some((
+                        ast::PatternBinding::Name(var_name.0.clone()),
+                        var_name.1.clone(),
+                    )),
+                },
+                sp.clone(),
+            ),
+            body: (
+                ast::Expr::Block(Box::new((body.0.clone(), body.1.clone()))),
+                body.1.clone(),
+            ),
+        };
+        let none_arm = ast::MatchArm {
+            pattern: (
+                ast::Pattern::Variant {
+                    ty: (opt_ty, sp.clone()),
+                    variant: ("None".to_string(), sp.clone()),
+                    binding: None,
+                },
+                sp.clone(),
+            ),
+            body: (ast::Expr::Break, sp.clone()),
+        };
+        let match_expr: ast::Spanned<ast::Expr> = (
+            ast::Expr::Match {
+                scrutinee: Box::new(next_call),
+                arms: vec![some_arm, none_arm],
+            },
+            sp.clone(),
+        );
+
+        // Lower into a Loop.
+        self.loop_depth += 1;
+        let inner = self.gen_block(&[match_expr], None)?;
+        self.loop_depth -= 1;
+        block.push(HirOp::Loop(inner));
+
+        // Pop the synthetic scope (also drops the loop variable's
+        // binding from gen_match's scope-insert at the Some-arm).
+        self.scopes.pop();
         Ok(())
     }
 
@@ -3787,6 +4047,12 @@ impl<'a> Generator<'a> {
             ast::Expr::Loop(_) | ast::Expr::Return(_) | ast::Expr::Break
             | ast::Expr::Continue | ast::Expr::Declaration { .. } | ast::Expr::Assign { .. }
             | ast::Expr::CompoundAssign { .. } => "<?>".into(),
+            // `for` is statement-shaped (no value); `<?>` matches the
+            // sibling control-flow handling above.
+            ast::Expr::For { .. } => "<?>".into(),
+            ast::Expr::Range { inclusive, .. } => {
+                if *inclusive { "RangeInclusive".into() } else { "Range".into() }
+            }
         })
     }
 }

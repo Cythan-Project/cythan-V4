@@ -22,6 +22,7 @@ mod if_let_tests;
 mod misc_edge_tests;
 mod blanket_impl_tests;
 mod resolution_tests;
+mod for_loop_tests;
 mod iter_string_tests;
 mod path_import_tests;
 mod diagnostic_tests;

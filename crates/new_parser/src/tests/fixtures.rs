@@ -305,6 +305,21 @@ impl StripSpans for Expr {
                 else_.strip_spans();
             }
             Expr::Loop(b) => b.strip_spans(),
+            Expr::For {
+                var_ty,
+                var_name,
+                iter,
+                body,
+            } => {
+                var_ty.strip_spans();
+                var_name.strip_spans();
+                iter.strip_spans();
+                body.strip_spans();
+            }
+            Expr::Range { start, end, .. } => {
+                start.strip_spans();
+                end.strip_spans();
+            }
             Expr::Return(e) => e.strip_spans(),
             Expr::Match { scrutinee, arms } => {
                 scrutinee.strip_spans();

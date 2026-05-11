@@ -24,6 +24,10 @@ fn try_build_morpion_registry() -> Result<typer::TypeRegistry, Vec<typer::TyperE
         ("std/U4.ct", load("std/U4.ct")),
         ("std/U8.ct", load("std/U8.ct")),
         ("std/Array.ct", load("std/Array.ct")),
+        ("std/Option.ct", load("std/Option.ct")),
+        ("std/Iter.ct", load("std/Iter.ct")),
+        ("std/Range.ct", load("std/Range.ct")),
+        ("std/RangeInclusive.ct", load("std/RangeInclusive.ct")),
         ("Morpion.ct", load("Morpion.ct")),
     ];
     let parsed: Vec<_> = parts
@@ -128,7 +132,9 @@ fn morpion_inline_end_to_end() {
     // reconstruct it for the inliner.
     let reg = try_build_morpion_registry()
         .unwrap_or_else(|e| panic!("typer: {:?}", e));
-    let inlined = crate::inline::inline_program_with_registry(&fns, &entry, Some(&reg))
+    let db = typer::FunctionDB::from_registry(&reg)
+        .unwrap_or_else(|e| panic!("fn_db: {:?}", e));
+    let inlined = crate::inline::inline_program_full(&fns, &entry, Some(&reg), Some(&db))
         .expect("inline");
     let _mir = crate::hir_to_mir(&inlined.body).expect("mir conv");
 }

@@ -39,6 +39,8 @@ fn compile_program(
         ("std/Iter.ct", load("std/Iter.ct")),
         ("std/ArrayIter.ct", load("std/ArrayIter.ct")),
         ("std/String.ct", load("std/String.ct")),
+        ("std/Range.ct", load("std/Range.ct")),
+        ("std/RangeInclusive.ct", load("std/RangeInclusive.ct")),
         ("user.ct", extra.to_string()),
     ];
     let parsed: Vec<_> = parts

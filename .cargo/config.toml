@@ -1,0 +1,10 @@
+# macOS Sequoia's new ld trips an internal assertion
+# (`name.size() <= maxLength`) on this workspace once the binary
+# pulls in enough monomorphised generics. `ld_classic` is the
+# stable fallback Apple kept around for exactly this reason.
+# Linux + non-macOS builds are unaffected.
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-Wl,-ld_classic"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-Wl,-ld_classic"]

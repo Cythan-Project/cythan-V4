@@ -460,6 +460,27 @@ pub fn expr_parser() -> impl Parser<Token, Spanned<Expr>, Error = PErr> + Clone 
             .ignore_then(block.clone())
             .map_with_span(|b, sp| (Expr::Loop(Box::new(b)), sp));
 
+        // `for TYPE IDENT in EXPR { BLOCK }`. Type annotation is
+        // mandatory — matches Cythan's `mut U4 i = 0` style and
+        // sidesteps inference questions for V1.
+        let for_expr = just(Token::For)
+            .ignore_then(type_parser())
+            .then(ident_tok().map_with_span(|s, sp| (s, sp)))
+            .then_ignore(just(Token::In))
+            .then(expr.clone())
+            .then(block.clone())
+            .map_with_span(|(((var_ty, var_name), iter), body), sp| {
+                (
+                    Expr::For {
+                        var_ty,
+                        var_name,
+                        iter: Box::new(iter),
+                        body: Box::new(body),
+                    },
+                    sp,
+                )
+            });
+
         let return_expr = just(Token::Return)
             .ignore_then(expr.clone().or_not())
             .map_with_span(|e, sp| (Expr::Return(e.map(Box::new)), sp));
@@ -508,6 +529,7 @@ pub fn expr_parser() -> impl Parser<Token, Spanned<Expr>, Error = PErr> + Clone 
             paren_expr.map_with_span(|e, sp| (e, sp)),
             if_expr,
             loop_expr,
+            for_expr,
             match_expr,
             return_expr,
             block_expr,
@@ -626,10 +648,36 @@ pub fn expr_parser() -> impl Parser<Token, Spanned<Expr>, Error = PErr> + Clone 
             .foldl(binop_fold);
 
         // ||
-        and_expr
+        let or_expr = and_expr
             .clone()
             .then(just(Token::OrOr).to(BinOp::Or).then(and_expr).repeated())
-            .foldl(binop_fold)
+            .foldl(binop_fold);
+
+        // Range — top of the precedence ladder. `..` (exclusive) and
+        // `..=` (inclusive). Single optional operator, no chaining
+        // (`a..b..c` is rejected by the surrounding parser since the
+        // result of `a..b` is a value, not a number).
+        or_expr
+            .clone()
+            .then(
+                choice((
+                    just(Token::DotDotEq).to(true),
+                    just(Token::DotDot).to(false),
+                ))
+                .then(or_expr)
+                .or_not(),
+            )
+            .map_with_span(|(lhs, rest), sp| match rest {
+                None => lhs,
+                Some((inclusive, rhs)) => (
+                    Expr::Range {
+                        start: Box::new(lhs),
+                        end: Box::new(rhs),
+                        inclusive,
+                    },
+                    sp,
+                ),
+            })
     })
 }
 

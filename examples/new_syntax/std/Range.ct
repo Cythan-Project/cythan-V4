@@ -1,0 +1,38 @@
+// Half-open numeric range. `for U4 i in 0..9 { … }` desugars to
+// `Range<U4>::new(0, 9)` plumbed through `Iter<U4>::next` — the
+// recogniser in `crates/hir/src/gen.rs::gen_for` synthesises the
+// constructor call.
+//
+// Generic over `T`. Any type with `Eq` (for the `cur == end` check)
+// and `AddAssign` (for `cur += 1`) works — `U4` and `U8` are both
+// covered out of the box; a user-defined `U12` plus operator impls
+// gets `Range<U12>` for free.
+//
+// Wrap-around caveat: `for U4 i in 0..16` reads as `0..0` because
+// the literal `16` cell-masks to `0` in U4. Use `RangeInclusive` for
+// "all values of T".
+
+use Iter;
+
+struct Range<T> {
+    T cur,
+    T end,
+}
+
+extension Range<T> {
+    fn new(T start, T end): Self {
+        Self { cur: start, end: end }
+    }
+}
+
+impl<T> Iter<T> for Range<T> {
+    fn next(mut self): Option<T> {
+        if self.cur == self.end {
+            Option<T>::none()
+        } else {
+            T v = self.cur;
+            self.cur += 1;
+            Option::some(v)
+        }
+    }
+}

@@ -193,12 +193,30 @@ pub enum Expr {
         else_: Option<Box<Spanned<Expr>>>,
     },
     Loop(Box<Spanned<Block>>),
+    /// `for TYPE NAME in ITER { BODY }`. Lowered in HIR-gen — the
+    /// iter expression's type is needed to wire `Iter::next` calls,
+    /// and that's a typer concern. The AST keeps the user-written
+    /// shape verbatim.
+    For {
+        var_ty: Spanned<Type>,
+        var_name: Spanned<String>,
+        iter: Box<Spanned<Expr>>,
+        body: Box<Spanned<Block>>,
+    },
     Break,
     Continue,
     Return(Option<Box<Spanned<Expr>>>),
     Match {
         scrutinee: Box<Spanned<Expr>>,
         arms: Vec<MatchArm>,
+    },
+    /// `start..end` (exclusive) or `start..=end` (inclusive). HIR-gen
+    /// lowers to `Range::new(start, end)` / `RangeInclusive::new(...)`
+    /// once the element type is fixed by surrounding context.
+    Range {
+        start: Box<Spanned<Expr>>,
+        end: Box<Spanned<Expr>>,
+        inclusive: bool,
     },
     Block(Box<Spanned<Block>>),
 
